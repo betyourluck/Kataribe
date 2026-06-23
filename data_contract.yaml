@@ -101,9 +101,10 @@ DeltaProposer:                    # 提案者の抽象 (依存性逆転の境界
 
 GmPlay:                           # 実クラウド通しプレイ CLI (harness bin "play")
   wiring:  "LlmClient を DeltaProposer として run_turn に配線。stdin から行動、scenarios/*.yaml ロード"
-  status:  "✅ 通しプレイ成功 (2026-06-23, claude-opus-4-8 @ Anthropic 互換)。密室脱出 goal 到達 (turn4, 4/4 一発合格)"
-  proven:  "LLM が制約内で構造化出力を継続できる / schemars schema を Anthropic が受理 / 正本の段階裁定 (flag→item→unlock→move) が正しく機能"
-  next:    "敵対プレイ (嘘の op → 却下→再生成) の実 LLM 挙動測定。決定論テストでは証明済"
+  status:  "✅ 通しプレイ + 敵対プレイ成功 (2026-06-23, claude-opus-4-8 @ Anthropic 互換)"
+  proven_happy:    "正規筋で goal 到達 (turn4, 4/4 一発合格)。構造化出力継続 / schemars schema 受理 / 段階裁定 (flag→item→unlock→move)"
+  proven_adversarial: "prompt層=gate を読み不可能行動を自ら拒否 / engine層=原子性違反デルタを却下→理由還流→合法部分手に修正 (attempts=2)。再生成のプレーン echo が実API で通る (#15 実証)"
+  next:    "Memoria 脚接続 (伏線/性格のみ) → UI 殻。UI 時 narration の literal \\n 正規化 (#16)"
 
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:

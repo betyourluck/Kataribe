@@ -47,7 +47,8 @@ cargo clippy --workspace --all-targets  # lint
 - 合計 **24/24 green**、clippy clean。
 - ✅ `harness` bin `play`: 実クラウド通しプレイ CLI。`LlmClient` を `DeltaProposer` に配線、`.env` 実キーで密室脱出を回す（`cargo run -p harness --bin play`、stdin 対話 or 台本流し込み）。
 - ✅ **核心的未知の測定 (2026-06-23, claude-opus-4-8 @ Anthropic 互換)**: 密室脱出を実 LLM で通しプレイし **goal 到達（turn 4, 4/4 一発合格）**。LLM がエンジンの制約内で構造化出力を出し続けられることを実証。schemars 生成スキーマも Anthropic 互換層が受理（`failures.md #3` 解決）。実 API で判明した罠は `failures.md #12-13`（temperature 非対応 / dotenv 副作用）。
-- ⬜ 次: **敵対プレイの実測** ── LLM が嘘の op（幻アイテム・未達移動）を出した時の却下→再生成を実 LLM で観る（決定論テストでは証明済、実 LLM 挙動は未観測）。その後: Memoria 脚の接続、Tauri+Vue UI 殻の移植。
+- ✅ **敵対プレイ実測 (2026-06-23)**: 「正本 > 文章力」を実 API で実証。LLM は scenario_brief の gate を読み不可能な単独行動（解錠前 move・幻 master_key）を自ら拒否（prompt 層接地）。複数ステップを束ねた行動では原子性違反デルタを提案 → エンジン却下 → 理由還流 → LLM が合法な部分手に修正（attempts=2）。`failures.md #15`（再生成のプレーン echo 形式が実 API で通る）を実証、`#14`/`#16` は watch。
+- ⬜ 次: Memoria 脚の接続（伏線・キャラ性格の semantic recall のみ、可変世界状態は禁忌）→ Tauri+Vue UI 殻の移植。UI 接続時は narration の literal `\n` 正規化（`#16`）。
 
 ## ルーツ
 

@@ -117,3 +117,14 @@ echo** + 却下理由を user テキストで積む → 履歴に dangling tool_
 ため)。ただし**却下→再生成の実 API 挙動は未検証** (happy path で発火せず)。敵対プレイで初検証する。
 注意: 将来 maintainer が「正規の tool_use+tool_result に直す」と、forced tool 後に tool_result が
 必須になり、かえって複雑化する。現設計 (プレーン echo) は意図的選択であることを明記。
+✅ **検証 (2026-06-23, 敵対プレイ)**: 複数ステップを束ねた行動で LLM が原子性違反デルタを提案
+→ エンジン却下 → プレーン echo + 却下理由を user テキストで還流 → LLM が合法な部分手に修正
+(attempts=2, 2 ターンで再現)。**再生成のメッセージ形は実 Anthropic API で通る**ことを実証。
+副産物: LLM は scenario_brief の gate を読み、不可能な単独行動 (解錠前 move・幻 master_key) は
+そもそも提案せず narration で拒否した (prompt 層接地が有効)。却下が発火したのは「欲張って束ねた」
+時のみ = 正本の原子性が「一手ずつの正しい前進」を強制する設計が実 LLM で機能。
+
+### 16. (軽微) narration に二重エスケープ \n が混じることがある
+敵対プレイ turn4 で narration に literal `\n\n` が出た。モデルが tool 引数 JSON に `\\n\\n`
+(二重エスケープ) を書いたため、serde で 1 段戻しても `\n` が残った。我々のバグではなくモデル出力の癖。
+UI 層を繋ぐ時は narration を表示前に正規化する (literal `\n` → 改行 or 除去) と良い。低優先。
