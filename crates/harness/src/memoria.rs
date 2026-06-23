@@ -11,10 +11,13 @@
 //!
 //! # 依存性逆転 ([`DeltaProposer`](crate::DeltaProposer) と同型)
 //!
-//! [`Memoria`] trait に対して書く。第一実装 [`LoreStore`] は **tag/id 一致の決定論 recall**。
-//! embedding ベースの semantic recall 版は同 trait の裏で差し替えられる
-//! (`ScriptedProposer` → `LlmClient` と同じ swap パス)。`()` は「recall しない」null 実装。
+//! [`Memoria`] trait に対して書く。実装 [`LoreStore`] は **文字 bigram TF-IDF の cosine 類似**で
+//! semantic recall する (日本語は単語境界が無いため文字 n-gram が頑健、依存ゼロ・決定論・テスト可能)。
+//! authored cue の exact id/tag 一致は意味類似に依らず常に最上位で保証する (旧 exact 挙動の上位互換)。
+//! 神経 embedding 版が要れば同 trait 裏で差し替え可 (`ScriptedProposer` → `LlmClient` と同じ swap)。
+//! `()` は「recall しない」null 実装。
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use gm_core::{FiredTrigger, TriggerId};
@@ -52,17 +55,90 @@ impl Memoria for () {
     }
 }
 
-/// 第一実装: ロード済み lore 断片への **tag/id 一致の決定論 recall**。
+/// cosine 類似がこの閾値以上の fragment を recall する (exact id/tag 一致は score 1.0 で常に通過)。
+const RECALL_THRESHOLD: f64 = 0.08;
+
+/// fragment の検索対象テキスト (id + tags + 本文) を結合する。
+fn document_of(f: &MemoryFragment) -> String {
+    format!("{} {} {}", f.id, f.tags.join(" "), f.text)
+}
+
+/// 文字 bigram に分解する。日本語は単語境界が無いため文字 n-gram が頑健。
+/// 空白は無視。1 文字しか無ければ unigram にフォールバック。
+fn bigrams(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).collect();
+    match chars.len() {
+        0 => Vec::new(),
+        1 => vec![chars[0].to_string()],
+        _ => chars.windows(2).map(|w| w.iter().collect()).collect(),
+    }
+}
+
+/// 語の出現頻度 (TF)。
+fn term_freq(tokens: &[String]) -> HashMap<String, f64> {
+    let mut tf = HashMap::new();
+    for t in tokens {
+        *tf.entry(t.clone()).or_insert(0.0) += 1.0;
+    }
+    tf
+}
+
+/// 疎ベクトルの内積 (小さい方を走査)。
+fn dot(a: &HashMap<String, f64>, b: &HashMap<String, f64>) -> f64 {
+    let (small, big) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    small.iter().filter_map(|(k, v)| big.get(k).map(|w| v * w)).sum()
+}
+
+/// L2 ノルム。
+fn l2(v: &HashMap<String, f64>) -> f64 {
+    v.values().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+/// 実装: ロード済み lore への **文字 bigram TF-IDF cosine の semantic recall**。
 ///
-/// embedding semantic 版に差し替えても [`Memoria`] の利用側 (resolve_recall / CLI) は無変更。
+/// 構築時に各 fragment の TF-IDF ベクトルと IDF (コーパス統計) を前計算する。recall は cue を
+/// 同じ方式でベクトル化し cosine を取る。embedding 版に差し替えても利用側 (resolve_recall / CLI) は無変更。
 #[derive(Debug, Clone, Default)]
 pub struct LoreStore {
     fragments: Vec<MemoryFragment>,
+    /// bigram -> IDF (smoothed)。コーパス (fragments) から算出。
+    idf: HashMap<String, f64>,
+    /// fragments と整列した TF-IDF ベクトル。
+    vectors: Vec<HashMap<String, f64>>,
+    /// vectors の L2 ノルム (cosine 用に前計算)。
+    norms: Vec<f64>,
 }
 
 impl LoreStore {
     pub fn new(fragments: Vec<MemoryFragment>) -> Self {
-        Self { fragments }
+        let n = fragments.len() as f64;
+        // 各 fragment の bigram TF。
+        let tfs: Vec<HashMap<String, f64>> = fragments
+            .iter()
+            .map(|f| term_freq(&bigrams(&document_of(f))))
+            .collect();
+        // DF (出現 fragment 数) → IDF (smoothed: ln((N+1)/(df+1)) + 1)。
+        let mut df: HashMap<String, f64> = HashMap::new();
+        for tf in &tfs {
+            for k in tf.keys() {
+                *df.entry(k.clone()).or_insert(0.0) += 1.0;
+            }
+        }
+        let idf: HashMap<String, f64> = df
+            .into_iter()
+            .map(|(k, d)| (k, ((n + 1.0) / (d + 1.0)).ln() + 1.0))
+            .collect();
+        // TF-IDF ベクトルと L2 ノルム。
+        let vectors: Vec<HashMap<String, f64>> = tfs
+            .iter()
+            .map(|tf| {
+                tf.iter()
+                    .map(|(k, t)| (k.clone(), t * idf.get(k).copied().unwrap_or(1.0)))
+                    .collect()
+            })
+            .collect();
+        let norms = vectors.iter().map(l2).collect();
+        Self { fragments, idf, vectors, norms }
     }
 
     pub fn len(&self) -> usize {
@@ -72,16 +148,45 @@ impl LoreStore {
     pub fn is_empty(&self) -> bool {
         self.fragments.is_empty()
     }
+
+    /// cue を TF-IDF ベクトル化する (IDF はコーパスから流用、未知 bigram は idf=1.0)。
+    fn vectorize(&self, cue: &str) -> HashMap<String, f64> {
+        term_freq(&bigrams(cue))
+            .iter()
+            .map(|(k, t)| (k.clone(), t * self.idf.get(k).copied().unwrap_or(1.0)))
+            .collect()
+    }
 }
 
 impl Memoria for LoreStore {
     fn recall(&self, cue: &str) -> Vec<MemoryFragment> {
-        // id 完全一致を優先、無ければ tag 一致。決定論順 (authored 順)。
-        self.fragments
+        let cue_vec = self.vectorize(cue);
+        let cue_norm = l2(&cue_vec);
+
+        let mut scored: Vec<(usize, f64)> = self
+            .fragments
             .iter()
-            .filter(|f| f.id == cue || f.tags.iter().any(|t| t == cue))
-            .cloned()
-            .collect()
+            .enumerate()
+            .filter_map(|(i, f)| {
+                // authored cue の exact id/tag 一致は意味類似に依らず保証 (旧 exact 挙動の上位互換)。
+                let exact = f.id == cue || f.tags.iter().any(|t| t == cue);
+                let score = if exact {
+                    1.0
+                } else if cue_norm == 0.0 || self.norms[i] == 0.0 {
+                    0.0
+                } else {
+                    dot(&cue_vec, &self.vectors[i]) / (cue_norm * self.norms[i])
+                };
+                (score >= RECALL_THRESHOLD).then_some((i, score))
+            })
+            .collect();
+        // score 降順、同点は id 昇順で決定論的に。
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| self.fragments[a.0].id.cmp(&self.fragments[b.0].id))
+        });
+        scored.into_iter().map(|(i, _)| self.fragments[i].clone()).collect()
     }
 }
 
@@ -190,26 +295,44 @@ mod tests {
         }
     }
 
-    /// 【id recall】cue が id に一致すると、その伏線が返る。
+    /// 【id recall (上位互換)】cue が id に一致すると score 1.0 で最上位に返る。
     #[test]
     fn recall_by_id_returns_lore() {
         let got = store().recall("childhood_promise");
-        assert_eq!(got.len(), 1);
+        assert!(!got.is_empty());
+        assert_eq!(got[0].id, "childhood_promise", "exact id 一致は最上位");
         assert!(got[0].text.contains("指切り"), "伏線の本文が返る");
     }
 
-    /// 【tag recall】cue が tag に一致しても hit する (semantic surface)。
+    /// 【tag recall (上位互換)】cue が tag に一致しても最上位で hit する。
     #[test]
     fn recall_by_tag_returns_lore() {
         let got = store().recall("幼少期");
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].id, "childhood_promise");
+        assert!(!got.is_empty());
+        assert_eq!(got[0].id, "childhood_promise", "exact tag 一致は最上位");
     }
 
     /// 【該当無し】無関係な cue は空を返す (捏造しない)。
     #[test]
     fn recall_miss_is_empty() {
-        assert!(store().recall("存在しない伏線").is_empty());
+        assert!(store().recall("竜と魔法の城砦").is_empty());
+    }
+
+    /// 【semantic】exact 一致でない cue でも、本文に bigram が重なれば cosine で hit する。
+    /// 「樫の木の下の誓い」は id/tag のどれとも一致しないが、伏線本文 (樫の木/誓) と意味的に近い。
+    #[test]
+    fn recall_ranks_semantically_related_cue() {
+        let got = store().recall("樫の木の下で誓った");
+        assert!(!got.is_empty(), "exact 一致でなくても近い伏線を引く");
+        assert_eq!(got[0].id, "childhood_promise", "最も近い伏線が最上位");
+    }
+
+    /// 【ランク】cue に近い方の伏線が先頭に来る (cosine 降順)。
+    #[test]
+    fn recall_ranks_closest_first() {
+        let got = store().recall("甘い飴をなめる癖");
+        assert!(!got.is_empty());
+        assert_eq!(got[0].id, "alice_sweet_tooth", "性格の伏線が約束より上位");
     }
 
     /// 【橋渡し】発火トリガーの cue を Memoria で解決すると FiredBeat に伏線が載る。
@@ -219,8 +342,8 @@ mod tests {
         let beats = resolve_recall(&store(), &fired);
         assert_eq!(beats.len(), 1);
         assert_eq!(beats[0].id, "recall_promise");
-        assert_eq!(beats[0].recalled.len(), 1, "cue が伏線に解決される");
-        assert!(beats[0].recalled[0].text.contains("樫の木"));
+        assert!(!beats[0].recalled.is_empty(), "cue が伏線に解決される");
+        assert!(beats[0].recalled[0].text.contains("樫の木"), "最上位は cue に最も近い伏線");
     }
 
     /// 【cue 無し】recall を持たないトリガーは伏線を引かない (静的な反応ビート)。
@@ -243,7 +366,8 @@ mod tests {
         let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../memoria"));
         let store = load_lore(dir).expect("memoria/ をロードできる");
         let got = store.recall("childhood_promise");
-        assert_eq!(got.len(), 1, "ファイル名 childhood_promise が id になる");
+        assert!(!got.is_empty(), "ファイル名 childhood_promise が id になる");
+        assert_eq!(got[0].id, "childhood_promise");
         assert!(!got[0].text.trim().is_empty(), "伏線の本文がある");
     }
 

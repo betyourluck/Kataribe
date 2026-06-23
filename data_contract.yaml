@@ -164,16 +164,16 @@ Trigger:                          # ✅Phase C (Scenario.triggers): エンジン
 # 正本 gm_core の専有)。型で構造保証: MemoryFragment は state フィールドを持てず、recall は &self。
 Memoria:                          # ✅memoria_bridge (実装済): recall の抽象 (DeltaProposer と同型の依存性逆転)
   trait:    "recall(cue:&str)->Vec<MemoryFragment>。&self=世界状態を変えない型レベル保証"
-  first_impl:"LoreStore: tag/id 一致の決定論 recall。embedding semantic 版は同 trait 裏で差し替え (ScriptedProposer→LlmClient と同 swap)"
+  impl:     "✅LoreStore: 文字 bigram TF-IDF の cosine semantic recall。閾値以上を score 降順・同点 id 昇順で返す。exact id/tag 一致は score 1.0 で常に最上位 (旧 exact 挙動の上位互換)。依存ゼロ・決定論・テスト可能。日本語は単語境界が無いので文字 n-gram。神経 embedding 版は同 trait 裏で差し替え可"
   null_impl:"() は常に空 (recall を使わない経路で &() を渡す)"
   resolve:  "resolve_recall(memoria, &[FiredTrigger])->Vec<FiredBeat>。発火列の cue を解決 (純粋 retrieval)"
   load:     "load_lore(dir): memoria/*.yaml を MemoryFragment 化 (ファイル名=id、load_characters と同型)"
   boundary: "engine は Memoria 非依存・決定論のまま。gm_core は cue を不透明 String として運ぶだけ"
 
 MemoryFragment:                   # 不変の authored lore (memoria/*.yaml)
-  id:   "TriggerId 相当の recall 主キー (ファイル名)。loader が充填"
-  tags: "[string] recall の別名キー (semantic surface)。cue がいずれか一致で hit"
-  text: "語りに注入する伏線/性格の本文。**可変世界状態は書かない** (型に state フィールドが無い)"
+  id:   "TriggerId 相当の recall 主キー (ファイル名)。exact 一致で最上位 hit。loader が充填"
+  tags: "[string] recall の別名キー。exact 一致で最上位 hit。本文と共に bigram cosine の対象"
+  text: "語りに注入する伏線/性格の本文。**可変世界状態は書かない** (型に state フィールドが無い)。cosine 検索対象"
 
 FiredBeat:                        # 発火ビート + recall 解決 (FiredTrigger の harness 拡張)
   id: TriggerId
@@ -183,4 +183,4 @@ FiredBeat:                        # 発火ビート + recall 解決 (FiredTrigge
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
   ui:      "LocalAI prompt(Tauri+Vue) 殻の移植。narration の literal \\n 正規化 (#16)"
-  memoria_embedding: "LoreStore を embedding semantic recall に格上げ (同 Memoria trait 裏で差し替え, tag 一致→意味的近傍)。usage-over-extension: tag recall が不足と接地できてから。recall→prompt 注入は ✅実装済"
+  memoria_neural: "LoreStore の bigram TF-IDF cosine を**神経 embedding** に格上げ (同 Memoria trait 裏で差し替え)。usage-over-extension: TF-IDF cosine が不足と接地できてから。語彙の表層に依らない真の意味近傍が要る時のみ。recall→prompt 注入・bigram cosine は ✅実装済"
