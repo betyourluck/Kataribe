@@ -1,9 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gm_core"]
-# 次フェーズで追加予定:
-#   crates/llm_client   — LocalAI llm_client.py を Rust移植 (クラウドLLM/structured output)
-#   crates/harness      — CLI playthrough + 敵対テスト
+members = ["crates/gm_core", "crates/llm_client", "crates/harness"]
 
 [workspace.package]
 edition = "2021"
@@ -14,3 +11,11 @@ rust-version = "1.80"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"
+# llm_client 用 (クラウド LLM ナレーター脚)
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+schemars = "0.8"
+thiserror = "2"
+dotenvy = "0.15"
+# 自前 crate
+gm_core = { path = "crates/gm_core" }

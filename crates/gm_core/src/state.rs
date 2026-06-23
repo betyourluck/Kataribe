@@ -68,6 +68,7 @@ impl RngState {
 
 /// LLM が毎ターン返す唯一の出力形。`ops` 以外の経路で state を変えることはできない。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StateDelta {
     #[serde(default)]
     pub narration: String,
@@ -88,6 +89,7 @@ impl StateDelta {
 ///
 /// 例: `{"op":"add_item","item":"rusty_key"}`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum StateOp {
     AddItem { item: ItemId },

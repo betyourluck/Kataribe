@@ -1,0 +1,22 @@
+[package]
+name = "llm_client"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "クラウド LLM ナレーター脚。OpenAI 互換 chat/completions + tool-use 強制で gm_core::StateDelta を構造化出力させる。"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+schemars.workspace = true
+thiserror.workspace = true
+dotenvy.workspace = true
+# 正本の型 (StateDelta/StateOp) を structured output の宛先にする。
+# schema feature で JSON Schema を機械生成する (規格=実装の単一真実源)。
+gm_core = { workspace = true, features = ["schema"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
