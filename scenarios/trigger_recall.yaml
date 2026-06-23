@@ -31,11 +31,13 @@ flag_rules: {}
 
 triggers:
   # 好感度が 30 に達した瞬間、忘れていた約束を思い出す。
+  # recall: memoria/childhood_promise.yaml の伏線を発火点で recall し、語りに注入する。
   - id: recall_promise
     when: { kind: stat_at_least, entity: alice, key: 好感度, value: 30 }
     effects:
       - { op: set_flag, key: promise_remembered, value: true }
     narration: アリスは暖炉の火を見つめ、幼い日に交わした約束をふと思い出した。
+    recall: childhood_promise
   # 想起したフラグを起点に、同じ適用内で連鎖発火する (誓いの更新)。
   - id: renew_vow
     when: { kind: flag_is, key: promise_remembered, value: true }

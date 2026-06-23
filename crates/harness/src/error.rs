@@ -15,4 +15,8 @@ pub enum HarnessError {
     /// 外部キャラ定義ファイルの読み込み/パース失敗。
     #[error("キャラ定義の読み込み失敗 ({path}): {detail}")]
     CharacterLoad { path: String, detail: String },
+
+    /// 伏線 lore ファイル (`memoria/*.yaml`) の読み込み/パース失敗。
+    #[error("伏線の読み込み失敗 ({path}): {detail}")]
+    LoreLoad { path: String, detail: String },
 }

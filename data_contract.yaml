@@ -14,6 +14,7 @@ GameState:
   entities: { EntityId: { StatKey: i64 } }  # キャラ別の数値の真実。算術はエンジン、LLMは値を持てない。"player" は主人公
   rng: { seed: u64, cursor: u64 }  # ダイスは決定論・監査可能。LLMは結果を持たない
   turn: u32                     # 受理されたデルタ数。却下では進まない
+  fired: [TriggerId]            # 発火済みトリガー集合 (Phase C)。edge-triggered once の latch。セーブ対象
 
 # --- LLM が毎ターン返す構造化出力 (これ以外の形を出せない) -------------------
 StateDelta:
@@ -145,14 +146,40 @@ GmPlay:                           # 実クラウド通しプレイ CLI (harness 
 Taboo:                            # ✅Phase B (CharacterDef.taboos): 硬い禁忌 (実装済)
   semantics: "delta 適用後に taboo(Gate) が false→true 真化するなら却下。キャラが自分の禁忌を破れない"
   mechanism: "check_taboos: state の clone に apply_ops で射影し edge(false→true)判定。Trigger と同機構"
-Trigger:                          # Phase C (未実装、設計凍結): エンジンが保証する反応ビート
-  when: Gate                      # 発火条件 (好感度>=50 等)
-  effects: "[StateOp] 機械的効果 (フラグ・stat・解放) をエンジンが原子適用"
-  narration: "語りの指示を LLM に注入 (例: アリスは子供時代の約束を思い出す)"
-  once: "edge-triggered。GameState.fired: Set<TriggerId> で発火済み追跡 (セーブ対象)"
-  memoria_bridge: "『思い出す』系トリガーは Memoria 脚と合流: 条件成立→伏線 recall→語りに注入"
+Trigger:                          # ✅Phase C (Scenario.triggers): エンジンが保証する反応ビート (実装済)
+  id: TriggerId                   # シナリオ内で一意。発火済み追跡のキー
+  when: Gate                      # 発火条件 (好感度>=30 等)
+  effects: "[StateOp] 機械的効果 (フラグ・stat・解放) をエンジンが原子適用。authored=信頼済で validate しない (LLM提案でない)"
+  narration: "語りの指示。FiredTrigger として apply の戻り (ApplyOutcome.fired) に載り、harness が Accepted で注入"
+  once: "edge-triggered once。GameState.fired: Set<TriggerId> で latch (セーブ対象)。when が真のままでも再発火しない"
+  evaluation: "受理・適用後の実 state で fire_triggers が発火判定。adjudicate(純粋)は発火させない"
+  cascade: "効果が別 trigger の when を真化させる連鎖は settle まで回す (各 trigger 高々1回=必ず停止, authored 順で決定論)"
+  mechanism: "fire_triggers: 禁忌(check_taboos)の双対。却下せず発火し、effects を apply_ops で原子適用"
+  recall: "✅memoria_bridge: Trigger.recall(cue) を発火時 passthrough → FiredTrigger.recall。harness が Memoria で解決"
+  memoria_bridge: "✅実装済: 条件成立→発火(cue 運搬)→harness resolve_recall(Memoria)→伏線を語りに注入"
+
+# --- Memoria 脚 (crate harness::memoria。三権分立の「Memoria が覚える」) ------
+# 伏線・キャラ性格の recall。**可変世界状態は絶対に持たない** (HP/所持品/フラグ/位置/数値は
+# 正本 gm_core の専有)。型で構造保証: MemoryFragment は state フィールドを持てず、recall は &self。
+Memoria:                          # ✅memoria_bridge (実装済): recall の抽象 (DeltaProposer と同型の依存性逆転)
+  trait:    "recall(cue:&str)->Vec<MemoryFragment>。&self=世界状態を変えない型レベル保証"
+  first_impl:"LoreStore: tag/id 一致の決定論 recall。embedding semantic 版は同 trait 裏で差し替え (ScriptedProposer→LlmClient と同 swap)"
+  null_impl:"() は常に空 (recall を使わない経路で &() を渡す)"
+  resolve:  "resolve_recall(memoria, &[FiredTrigger])->Vec<FiredBeat>。発火列の cue を解決 (純粋 retrieval)"
+  load:     "load_lore(dir): memoria/*.yaml を MemoryFragment 化 (ファイル名=id、load_characters と同型)"
+  boundary: "engine は Memoria 非依存・決定論のまま。gm_core は cue を不透明 String として運ぶだけ"
+
+MemoryFragment:                   # 不変の authored lore (memoria/*.yaml)
+  id:   "TriggerId 相当の recall 主キー (ファイル名)。loader が充填"
+  tags: "[string] recall の別名キー (semantic surface)。cue がいずれか一致で hit"
+  text: "語りに注入する伏線/性格の本文。**可変世界状態は書かない** (型に state フィールドが無い)"
+
+FiredBeat:                        # 発火ビート + recall 解決 (FiredTrigger の harness 拡張)
+  id: TriggerId
+  narration: "authored な静的語り"
+  recalled: "[MemoryFragment] cue を Memoria で解決した伏線 (無ければ空)"
 
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
-  memoria: "episodic/伏線/キャラ性格の semantic recall。可変世界状態は絶対に置かない。Trigger と合流"
-  ui:      "LocalAI prompt(Tauri+Vue) 殻の移植"
+  ui:      "LocalAI prompt(Tauri+Vue) 殻の移植。narration の literal \\n 正規化 (#16)"
+  memoria_next: "LoreStore を embedding semantic recall に格上げ (同 trait 裏)。recall 結果の LLM プロンプト注入 (次ターン語りで自然に織る)"

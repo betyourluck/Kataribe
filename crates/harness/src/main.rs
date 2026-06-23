@@ -18,7 +18,7 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 use gm_core::{is_goal, GameState, Lang, Scenario};
-use harness::{load_characters, run_turn, TurnOutcome};
+use harness::{load_characters, load_lore, resolve_recall, run_turn, TurnOutcome};
 use llm_client::{LlmClient, LlmConfig};
 
 /// 既定シナリオ (cwd 非依存: crate からの相対で解決)。
@@ -70,6 +70,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         scenario.characters.entry(id).or_insert(def); // inline 優先、無ければ外部ファイル
     }
 
+    // 伏線 lore (scenarios/ の隣の memoria/) をロード。トリガー発火点で recall する (memoria_bridge)。
+    let lore_dir = Path::new(&scenario_path)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|root| root.join("memoria"))
+        .unwrap_or_else(|| Path::new("memoria").to_path_buf());
+    let lore = load_lore(&lore_dir)?;
+    eprintln!("[伏線] {} 件ロード", lore.len());
+
     // 初期 stat (HP/STR 等) をシナリオから読んで状態を作る。
     let mut state = scenario.initial_state(SEED);
 
@@ -101,9 +110,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let mark = if r.success { "成功" } else { "失敗" };
                     println!("  🎲 1d{} = {} (DC {}) → {mark}", r.sides, r.result, r.dc);
                 }
-                // 反応ビート (Phase C): 条件が真化した瞬間にエンジンが発火させた語り。
-                for f in &fired {
-                    println!("  ✦ {}", f.narration);
+                // 反応ビート (Phase C) + memoria_bridge: 発火点で伏線を recall して語りに注入。
+                for beat in resolve_recall(&lore, &fired) {
+                    println!("  ✦ {}", beat.narration);
+                    for frag in &beat.recalled {
+                        // 伏線 (不変 lore) を「思い出した記憶」として差し込む。
+                        println!("    ┊ {}", frag.text.trim().replace('\n', "\n    ┊ "));
+                    }
                 }
                 // 核心的未知の計測: 何回の再生成で合法な ops に収束したか。
                 if attempts > 1 {

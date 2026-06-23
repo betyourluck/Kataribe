@@ -30,10 +30,14 @@ pub struct RollOutcome {
 }
 
 /// 発火したトリガー (Phase C)。`narration` は語りへ注入する指示。
+///
+/// `recall` は Memoria 橋渡しの cue を**そのまま passthrough** したもの (engine は解釈しない)。
+/// 上位 (harness) が `recall` を Memoria で解決して伏線を語りに注入する。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FiredTrigger {
     pub id: TriggerId,
     pub narration: String,
+    pub recall: Option<String>,
 }
 
 /// デルタ受理時の適用結果。ダイスの出目と、その適用が連鎖発火させたトリガー群。
@@ -223,6 +227,7 @@ fn fire_triggers(
         fired.push(FiredTrigger {
             id: t.id.clone(),
             narration: t.narration.clone(),
+            recall: t.recall.clone(), // cue を passthrough。解釈は harness。
         });
     }
     fired

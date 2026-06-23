@@ -122,6 +122,11 @@ pub struct Trigger {
     /// 発火時に語りへ注入する指示 (例「アリスは子供時代の約束を思い出す」)。検証しない。
     #[serde(default)]
     pub narration: String,
+    /// Memoria 橋渡し (memoria_bridge): 発火時に伏線/性格を recall するための cue (tag/id)。
+    /// gm_core はこれを**解釈せず運ぶだけ** (engine は Memoria 非依存・決定論のまま)。
+    /// 解決は上位 (harness) の責務。`None` なら recall しない静的な反応ビート。
+    #[serde(default)]
+    pub recall: Option<String>,
 }
 
 /// シナリオ全体。`scenarios/*.yaml` から読み込まれる。

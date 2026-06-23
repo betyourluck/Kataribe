@@ -9,12 +9,14 @@
 
 mod error;
 mod loader;
+mod memoria;
 pub mod prompt;
 mod proposer;
 mod turn;
 
 pub use error::HarnessError;
 pub use loader::load_characters;
+pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use proposer::DeltaProposer;
 pub use turn::{run_turn, TurnOutcome};
 
@@ -180,6 +182,50 @@ mod tests {
             other => panic!("ダイス要求自体は合法: {other:?}"),
         }
         assert_eq!(s.rng.cursor, 1, "エンジンが 1 回振ったので cursor が進む");
+    }
+
+    /// 【memoria_bridge 結線】トリガー発火 (engine) → recall cue → Memoria が伏線を返す、の
+    /// 端から端まで。可変状態は正本 (GameState) に在り、Memoria は伏線のみ持つ (境界の実証)。
+    #[test]
+    fn trigger_fire_bridges_to_recalled_lore() {
+        use gm_core::apply;
+
+        const TRIGGER_RECALL: &str = include_str!("../../../scenarios/trigger_recall.yaml");
+        let sc = Scenario::from_yaml(TRIGGER_RECALL).unwrap();
+        let mut s = sc.initial_state(7);
+
+        // 好感度を閾値 30 まで上げる → recall_promise が発火 (cue=childhood_promise を運ぶ)。
+        let out = apply(
+            &mut s,
+            &sc,
+            &StateDelta::new(
+                "",
+                vec![StateOp::AdjustStat {
+                    entity: "alice".into(),
+                    key: "好感度".into(),
+                    delta: 30,
+                }],
+            ),
+        )
+        .expect("好感度上昇は合法");
+        assert!(out.fired.iter().any(|f| f.id == "recall_promise"));
+
+        // 発火列の cue を Memoria で解決 → 伏線が語りに載る。
+        let store = load_lore(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../memoria"
+        )))
+        .unwrap();
+        let beats = resolve_recall(&store, &out.fired);
+        let promise = beats.iter().find(|b| b.id == "recall_promise").unwrap();
+        assert!(!promise.recalled.is_empty(), "発火点で伏線が recall される");
+
+        // 境界: 可変の真実 (好感度) は正本にあり、Memoria の伏線は不変 lore のみ。
+        assert_eq!(s.stat_of("alice", "好感度"), 30, "数値の真実は engine が握る");
+        assert!(
+            promise.recalled[0].text.contains("樫の木") || promise.recalled[0].text.contains("小指"),
+            "Memoria が返すのは伏線 (可変状態ではない)"
+        );
     }
 
     /// 【プロンプト健全性】盤面要約にシナリオ要素が、状態要約に現在地が含まれる。
