@@ -279,4 +279,21 @@ mod tests {
         let sb = prompt::state_brief(&s);
         assert!(sb.contains("cell"), "現在地が含まれる");
     }
+
+    /// 【正本の接地 / 行商ネックレス対策】GM プロンプトは「行動文は意図」「所持品に無い物は
+    /// 存在しない」「narration は非検証ゆえ GM 自身が矛盾を防ぐ」を刷り込む (failures #23)。
+    /// narration には engine バックストップが無いので、この刷り込みが唯一の防衛線。
+    #[test]
+    fn gm_system_grounds_unowned_items() {
+        let s = prompt::GM_SYSTEM;
+        assert!(s.contains("意図"), "プレイヤー行動文が『意図』であることを明示する");
+        assert!(
+            s.contains("所持品リストに無い") || s.contains("手元に無い"),
+            "未所持の物は存在しない旨を刷り込む"
+        );
+        assert!(
+            s.contains("検証されない"),
+            "narration は非検証=GM 自身が一貫性を守る旨を明示する"
+        );
+    }
 }

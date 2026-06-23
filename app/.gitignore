@@ -1,0 +1,9 @@
+# フロントエンド
+node_modules/
+dist/
+
+# Tauri / Rust ビルド成果物
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Tauri が生成するアイコン以外のキャッシュは追跡しない

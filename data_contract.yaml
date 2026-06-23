@@ -180,7 +180,24 @@ FiredBeat:                        # 発火ビート + recall 解決 (FiredTrigge
   narration: "authored な静的語り"
   recalled: "[MemoryFragment] cue を Memoria で解決した伏線 (無ければ空)"
 
+# --- デスクトップ UI (app/src-tauri = Tauri2 backend, app/src = Vue3 frontend) ----
+# LocalAI prompt 殻 (Tauri2+Vue3+Vite+Tailwind+Pinia) の足場を移植。chat/project/MCP/SSE は捨て、
+# GM プレイ画面を新規。バックエンドは harness::run_turn を Tauri command で叩くだけ (正本は不変)。
+# **正本との境界**: GameState/Scenario/LlmClient/LoreStore は backend が tokio::Mutex で保持 (sled の
+# ような排他資源でないので State 保持は安全, failures Tauri 罠とは別)。frontend は状態の真実を持たず、
+# command が返す view DTO を描画するだけ (CLI bin play と同じ「提示経路」を GUI に置換)。
+DesktopUi:
+  backend:  "app/src-tauri (Tauri2)。workspace 外の独立 cargo project (重い tauri 依存を core workspace から隔離, LocalAI と同流儀)。harness/gm_core/llm_client を path 依存"
+  state:    "GameSession { state: GameState, scenario, lore: LoreStore, client: LlmClient, pending_lore, lang } を Mutex<Option<_>> で manage。new_game で初期化"
+  command_new_game: "new_game(scenario_path?) -> GameView。シナリオ+characters+lore をロードし初期 state を作り session に格納、開幕 view を返す"
+  command_play_turn: "play_turn(action) -> TurnView。session を lock し run_turn(pending_lore 注入) → 発火 recall を pending_lore に詰め直す → view を返す。CLI ループの GUI 版"
+  view_dto: "frontend 用 serde DTO。GameView{title,location,description,state} / TurnView{accepted,narration,rolls,beats,attempts,reasons,state,goal_reached} / StateView{turn,location,inventory,flags,entities,goal_reached} / BeatView{narration,recalled[]} / RollView{sides,dc,result,success}"
+  narration_norm: "view 返却前に narration の literal \\n を実改行へ正規化 (#16)。提示層の責務、正本は触らない"
+  i18n:     "却下理由は session.lang で localize 済み文字列にして返す (frontend は素の文字列を描画)。KATARIBE_LANG で切替"
+  frontend: "✅app/src (Vue3+Pinia)。store game.ts が invoke(new_game/play_turn) を叩き、会話ログ(opening/player/narration/✦beat/┊recalled/rolls/reject/system) + 行動入力 + 状態パネル(turn/所在/所持/フラグ/能力値/goal) を描画。暖炉テーマ(Tailwind)。vue-tsc + vite build green"
+  verify:   "✅backend cargo check green (harness 結線が型検査通過) / ✅frontend vue-tsc+vite build green。GUI 実機起動 (npm run tauri dev, WebView2 必須) は user の Windows 機で確認"
+  icons:    "現状 app/src-tauri/icons は LocalAI 由来の Tauri デフォルト (プレースホルダ)。配布時に差し替え (npm run tauri icon)"
+
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
-  ui:      "LocalAI prompt(Tauri+Vue) 殻の移植。narration の literal \\n 正規化 (#16)"
   memoria_neural: "LoreStore の bigram TF-IDF cosine を**神経 embedding** に格上げ (同 Memoria trait 裏で差し替え)。usage-over-extension: TF-IDF cosine が不足と接地できてから。語彙の表層に依らない真の意味近傍が要る時のみ。recall→prompt 注入・bigram cosine は ✅実装済"

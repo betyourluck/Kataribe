@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    @apply bg-ink text-parchment font-serif antialiased;
+  }
+}
+
+/* 控えめなスクロールバー (暖炉テーマ) */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-ash rounded-full;
+}

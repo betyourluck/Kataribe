@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Kataribe メインウィンドウの権限。コア既定のみ (custom command new_game/play_turn は app 定義なので追加権限不要)。",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

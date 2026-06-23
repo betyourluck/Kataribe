@@ -1,0 +1,54 @@
+# 実測用 demo 盤面: memoria_bridge を実 LLM で観察する。
+# trigger_recall.yaml との違いは測定都合の2点:
+#   (1) 発火閾値を 好感度>=5 に下げる — 実機 LLM は好感度を +1〜3/ターンで刻むため
+#       (2026-06-24 実測)、30 では数ターンで届かない。realistic 増分で発火を観察する。
+#   (2) recall cue を曖昧文字列にする — id/tag と exact 一致しないので、TF-IDF cosine の
+#       semantic recall 経路が発火する (exact 一致なら score 1.0 で素通りしてしまう)。
+# テスト用の trigger_recall.yaml はエンジン PoC の盤面なので不変。これは実測専用。
+
+title: 約束の想起（実測 demo）
+start: parlor
+
+initial_stats: {}
+
+characters:
+  alice:
+    name: アリス
+    profile: |
+      宿屋の娘。幼い頃に主人公と「いつか必ず」と約束を交わした——本人はまだ思い出していない。
+    stats:
+      好感度: { initial: 0, min: 0, max: 100 }
+
+allowed_flags:
+  - promise_remembered
+  - vow_renewed
+
+# vow_renewed は LLM が直接立てられないよう、想起済みを前提条件にする
+# (renew_vow トリガーの effects は authored・信頼済なので gate を経ずに立てられる)。
+flag_rules:
+  vow_renewed: { kind: flag_is, key: promise_remembered, value: true }
+
+triggers:
+  # 好感度 5 で発火。recall cue は曖昧文字列 → TF-IDF cosine で childhood_promise を引く。
+  - id: recall_promise
+    when: { kind: stat_at_least, entity: alice, key: 好感度, value: 5 }
+    effects:
+      - { op: set_flag, key: promise_remembered, value: true }
+    narration: アリスの表情がふと遠くなり、長く忘れていた約束の記憶がよみがえる。
+    recall: 丘の樫の木で交わした幼い約束
+  - id: renew_vow
+    when: { kind: flag_is, key: promise_remembered, value: true }
+    effects:
+      - { op: set_flag, key: vow_renewed, value: true }
+    narration: 思い出した約束を、アリスは今あらためて心に誓い直す。
+
+# alice には好感度 stat が必要 (trigger_recall.yaml では inline 宣言)。
+# ここでは characters/ 外部ファイルに頼らず inline で好感度を宣言する。
+
+locations:
+  parlor:
+    description: 暖炉のある宿屋の談話室。カウンターの奥にアリスが立っている。
+    items: {}
+    exits: []
+
+goal: { kind: flag_is, key: vow_renewed, value: true }

@@ -1,0 +1,28 @@
+[package]
+name = "kataribe-desktop"
+version = "0.1.0"
+description = "Kataribe — 忘れない・矛盾しない GM のデスクトップ殻"
+edition = "2021"
+
+# 親 workspace (crates/*) に属さない独立 project として扱わせる。
+# 重い tauri 依存を core workspace の `cargo test --workspace` ループから隔離する
+# (LocalAI prompt/src-tauri と同流儀)。harness/gm_core/llm_client は path 依存。
+[workspace]
+
+[lib]
+# Windows でビルド衝突を避けるため _lib サフィックス (Tauri 慣習)。
+name = "kataribe_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
+dotenvy = "0.15"
+gm_core = { path = "../../crates/gm_core" }
+llm_client = { path = "../../crates/llm_client" }
+harness = { path = "../../crates/harness" }
