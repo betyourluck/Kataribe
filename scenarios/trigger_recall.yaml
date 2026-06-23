@@ -1,0 +1,52 @@
+# PoC シナリオ: 約束の想起 (Phase C — 反応ビート/トリガーの最小盤面)
+# 禁忌 (Phase B) の双対。禁忌が「真化を却下」するのに対し、トリガーは「真化で発火」する。
+#
+# 正規の筋 (LLM もプレイヤーも明示しない — エンジンが反応を保証する):
+#   アリスの好感度を 30 まで上げる
+#     → trigger recall_promise 発火: promise_remembered=true + 想起の語り
+#     → 連鎖で trigger renew_vow 発火: vow_renewed=true + 誓い直しの語り
+#     → goal (vow_renewed) 到達
+#
+# 「伏線が必ず回収される」: 好感度が閾値を越えた瞬間、エンジンが想起→誓い直しの
+# 連鎖を settle させる。LLM が忘れても、世界の反応性はエンジンが握る。
+
+title: 約束の想起
+start: parlor
+
+initial_stats: {}        # 主人公は数値を持たない (この盤面では)
+
+characters:
+  alice:
+    name: アリス
+    profile: |
+      宿屋の娘。幼い頃に主人公と「いつか必ず」と約束を交わした——本人はまだ思い出していない。
+    stats:
+      好感度: { initial: 0, min: 0, max: 100 }
+
+allowed_flags:
+  - promise_remembered
+  - vow_renewed
+
+flag_rules: {}
+
+triggers:
+  # 好感度が 30 に達した瞬間、忘れていた約束を思い出す。
+  - id: recall_promise
+    when: { kind: stat_at_least, entity: alice, key: 好感度, value: 30 }
+    effects:
+      - { op: set_flag, key: promise_remembered, value: true }
+    narration: アリスは暖炉の火を見つめ、幼い日に交わした約束をふと思い出した。
+  # 想起したフラグを起点に、同じ適用内で連鎖発火する (誓いの更新)。
+  - id: renew_vow
+    when: { kind: flag_is, key: promise_remembered, value: true }
+    effects:
+      - { op: set_flag, key: vow_renewed, value: true }
+    narration: 思い出した約束を、アリスは今あらためて心に誓い直す。
+
+locations:
+  parlor:
+    description: 暖炉のある宿屋の談話室。カウンターの奥にアリスが立っている。
+    items: {}
+    exits: []
+
+goal: { kind: flag_is, key: vow_renewed, value: true }

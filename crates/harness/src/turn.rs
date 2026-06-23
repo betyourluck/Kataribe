@@ -3,7 +3,10 @@
 //! 提案 → 裁定 → 却下なら理由を戻して再生成 → 受理なら原子適用。
 //! 正本 (gm_core) が真実を握り、LLM の流暢な嘘はここで構造的に弾かれる。
 
-use gm_core::{adjudicate, apply, GameState, Lang, RejectReason, RollOutcome, Scenario, StateDelta, Verdict};
+use gm_core::{
+    adjudicate, apply, FiredTrigger, GameState, Lang, RejectReason, RollOutcome, Scenario,
+    StateDelta, Verdict,
+};
 use llm_client::ChatMessage;
 
 use crate::error::HarnessError;
@@ -17,6 +20,8 @@ pub enum TurnOutcome {
     Accepted {
         narration: String,
         rolls: Vec<RollOutcome>,
+        /// この適用で発火した反応ビート (Phase C)。`narration` を語りに注入する。
+        fired: Vec<FiredTrigger>,
         /// 受理までに要した試行回数 (1 = 一発合格)。
         attempts: u32,
     },
@@ -67,12 +72,14 @@ pub async fn run_turn<P: DeltaProposer>(
 
         match adjudicate(state, scenario, &delta) {
             Verdict::Accept => {
-                // adjudicate が通ったので apply は成功するはず。RNG はここで決定論的に振られる。
-                let rolls = apply(state, scenario, &delta)
+                // adjudicate が通ったので apply は成功するはず。RNG はここで決定論的に振られ、
+                // 適用後に発火した反応ビート (Phase C) も返る。
+                let out = apply(state, scenario, &delta)
                     .expect("adjudicate 済みなら apply は成功する");
                 return Ok(TurnOutcome::Accepted {
                     narration: delta.narration,
-                    rolls,
+                    rolls: out.rolls,
+                    fired: out.fired,
                     attempts: attempt,
                 });
             }

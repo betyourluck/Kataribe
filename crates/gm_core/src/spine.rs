@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::{default_entity, EntityId, FlagKey, GameState, ItemId, LocationId, StatKey, PLAYER};
+use crate::state::{
+    default_entity, EntityId, FlagKey, GameState, ItemId, LocationId, StateOp, StatKey, TriggerId,
+    PLAYER,
+};
 
 /// state に対して評価される条件。
 ///
@@ -100,6 +103,27 @@ pub struct CharacterDef {
     pub taboos: Vec<Gate>,
 }
 
+/// 反応ビート (Phase C)。禁忌 ([`CharacterDef::taboos`]) の双対 — 真化を**却下**する代わりに、
+/// 真化したら**発火**する。発火条件 `when` が成立した瞬間 (edge)、authored な `effects` を
+/// エンジンが原子適用し、`narration` を語りに注入する。同じ「delta 適用後の Gate 評価」機構を
+/// 禁忌と共有する (禁忌は射影 clone で却下判定、トリガーは実 state で発火)。
+///
+/// `effects` は authored (シナリオ作者が書く信頼済の op) なので検証しない — LLM 提案ではない。
+/// 一度発火すると [`GameState::fired`] に latch され、`when` が真のままでも二度と発火しない。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trigger {
+    /// 発火済み追跡のための識別子 (シナリオ内で一意)。
+    pub id: TriggerId,
+    /// 発火条件。delta 適用後の state で真化した瞬間に発火する。
+    pub when: Gate,
+    /// 発火時にエンジンが原子適用する機械的効果 (フラグ・stat・解放)。authored・信頼済。
+    #[serde(default)]
+    pub effects: Vec<StateOp>,
+    /// 発火時に語りへ注入する指示 (例「アリスは子供時代の約束を思い出す」)。検証しない。
+    #[serde(default)]
+    pub narration: String,
+}
+
 /// シナリオ全体。`scenarios/*.yaml` から読み込まれる。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scenario {
@@ -117,6 +141,9 @@ pub struct Scenario {
     /// 登場人物 (player 以外)。外部 `characters/*.yaml` を読み込んで注入する。
     #[serde(default)]
     pub characters: BTreeMap<EntityId, CharacterDef>,
+    /// 反応ビート (Phase C)。`when` 成立で `effects` を原子適用し `narration` を注入する。
+    #[serde(default)]
+    pub triggers: Vec<Trigger>,
     pub locations: BTreeMap<LocationId, Location>,
     /// 達成でクリアとなる条件。
     pub goal: Gate,

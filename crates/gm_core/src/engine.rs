@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::reason::RejectReason;
 use crate::spine::Scenario;
-use crate::state::{GameState, StateDelta, StateOp};
+use crate::state::{GameState, StateDelta, StateOp, TriggerId};
 
 /// 裁定結果。`Reject` は**構造化された**理由を含む (文面は提示層が言語ごとに生成)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +27,22 @@ pub struct RollOutcome {
     pub dc: u32,
     pub result: u32,
     pub success: bool,
+}
+
+/// 発火したトリガー (Phase C)。`narration` は語りへ注入する指示。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FiredTrigger {
+    pub id: TriggerId,
+    pub narration: String,
+}
+
+/// デルタ受理時の適用結果。ダイスの出目と、その適用が連鎖発火させたトリガー群。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyOutcome {
+    /// `request_roll` とトリガー効果が振ったダイスの出目 (適用順)。
+    pub rolls: Vec<RollOutcome>,
+    /// この適用で発火した反応ビート (authored 順・連鎖含む)。語りに注入する。
+    pub fired: Vec<FiredTrigger>,
 }
 
 /// 唯一の裁定者。**`state` を一切変更しない純粋関数**。
@@ -158,21 +174,58 @@ fn check_taboos(
 /// `adjudicate` が `Accept` の時のみデルタを**原子的に**適用する。
 ///
 /// `Reject` の場合 `state` は一切変更されず、`Err(Verdict::Reject)` を返す。
-/// 含まれる [`StateOp::RequestRoll`] はここで決定論的に振られ、結果を返す。
+/// 含まれる [`StateOp::RequestRoll`] はここで決定論的に振られる。適用後、発火条件が
+/// 真化したトリガー (Phase C) を連鎖発火させ、その出目と発火ビートも [`ApplyOutcome`] に含める。
 pub fn apply(
     state: &mut GameState,
     scenario: &Scenario,
     delta: &StateDelta,
-) -> Result<Vec<RollOutcome>, Verdict> {
+) -> Result<ApplyOutcome, Verdict> {
     // まず純粋関数で全検証 — ここを通ってから初めて state に触れる (原子性の担保)。
     match adjudicate(state, scenario, delta) {
         rejected @ Verdict::Reject { .. } => return Err(rejected),
         Verdict::Accept => {}
     }
 
-    let rolls = apply_ops(state, scenario, delta);
+    let mut rolls = apply_ops(state, scenario, delta);
     state.turn += 1;
-    Ok(rolls)
+    // 反応ビート (禁忌の双対)。受理・適用済みの実 state に対して発火判定する。
+    let fired = fire_triggers(state, scenario, &mut rolls);
+    Ok(ApplyOutcome { rolls, fired })
+}
+
+/// 受理・適用後の `state` に対し、発火条件 `when` が真でまだ発火していないトリガーを発火させる。
+///
+/// 禁忌 (`check_taboos`) の双対: 禁忌が「真化を却下」するのに対し、トリガーは「真化で発火」する。
+/// 発火は authored な `effects` を **検証せず** 原子適用し (シナリオ作者の信頼済データ、LLM 提案でない)、
+/// [`GameState::fired`] に latch して二度目の発火を抑止する (edge-triggered once)。
+/// 効果が別トリガーの `when` を真化させる連鎖は、新たな発火が無くなるまで settle する
+/// (各トリガーは高々 1 回発火するので必ず停止)。authored 順に評価して決定論を保つ。
+fn fire_triggers(
+    state: &mut GameState,
+    scenario: &Scenario,
+    rolls: &mut Vec<RollOutcome>,
+) -> Vec<FiredTrigger> {
+    let mut fired = Vec::new();
+    loop {
+        // 未発火かつ発火条件成立の最初のトリガー (authored 順)。
+        let next = scenario
+            .triggers
+            .iter()
+            .find(|t| !state.fired.contains(&t.id) && t.when.eval(state));
+        let Some(t) = next else { break };
+
+        // 効果は authored・信頼済なので validate せず原子適用する。
+        let effect_delta = StateDelta::new(String::new(), t.effects.clone());
+        rolls.extend(apply_ops(state, scenario, &effect_delta));
+
+        state.fired.insert(t.id.clone());
+        fired.push(FiredTrigger {
+            id: t.id.clone(),
+            narration: t.narration.clone(),
+        });
+    }
+    fired
 }
 
 /// delta の各 op を state に適用する (検証なし)。`apply` と taboo 射影が共有する。
@@ -247,6 +300,8 @@ mod tests {
     const STRENGTH_TRIAL: &str = include_str!("../../../scenarios/strength_trial.yaml");
     // キャラ別ステータスの最小盤面。
     const HEROINE_ROUTE: &str = include_str!("../../../scenarios/heroine_route.yaml");
+    // 反応ビート (Phase C) の最小盤面。
+    const TRIGGER_RECALL: &str = include_str!("../../../scenarios/trigger_recall.yaml");
 
     fn scenario() -> Scenario {
         Scenario::from_yaml(LOCKED_ROOM).expect("locked_room.yaml がパースできること")
@@ -258,6 +313,19 @@ mod tests {
 
     fn route() -> Scenario {
         Scenario::from_yaml(HEROINE_ROUTE).expect("heroine_route.yaml がパースできること")
+    }
+
+    fn recall() -> Scenario {
+        Scenario::from_yaml(TRIGGER_RECALL).expect("trigger_recall.yaml がパースできること")
+    }
+
+    /// アリスの好感度を増やす delta (発火条件を跨ぐための糖衣)。
+    fn raise_affection(amount: i64) -> StateDelta {
+        d(vec![StateOp::AdjustStat {
+            entity: "alice".into(),
+            key: "好感度".into(),
+            delta: amount,
+        }])
     }
 
     fn fresh(sc: &Scenario) -> GameState {
@@ -372,10 +440,10 @@ mod tests {
     fn request_roll_is_adjudicated_by_engine() {
         let sc = scenario();
         let mut s = fresh(&sc);
-        let rolls = apply(&mut s, &sc, &d(vec![StateOp::RequestRoll { sides: 20, dc: 10 }]))
+        let out = apply(&mut s, &sc, &d(vec![StateOp::RequestRoll { sides: 20, dc: 10 }]))
             .expect("ダイス要求自体は合法");
-        assert_eq!(rolls.len(), 1);
-        let outcome = &rolls[0];
+        assert_eq!(out.rolls.len(), 1);
+        let outcome = &out.rolls[0];
         assert!((1..=20).contains(&outcome.result));
         assert_eq!(outcome.success, outcome.result >= 10);
         assert_eq!(s.rng.cursor, 1, "1回振ったので cursor が進む");
@@ -638,6 +706,102 @@ mod tests {
         ]);
         assert!(apply(&mut s, &sc, &delta).is_err());
         assert_eq!(s.stat("str"), 12, "却下されたデルタは stat を変えない");
+        assert_eq!(s.turn, 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // 反応ビート PoC (Phase C): 禁忌の双対。真化を却下する代わりに真化で発火する。
+    // 「伏線が必ず回収される」をエンジンが保証する (LLM の忘却に依存しない)。
+    // -------------------------------------------------------------------------
+
+    /// 【発火】好感度が閾値 (30) を越えると trigger が発火し、効果と語りが返る。
+    #[test]
+    fn trigger_fires_on_threshold_and_applies_effect() {
+        let sc = recall();
+        let mut s = sc.initial_state(7);
+        assert!(!s.flag("promise_remembered"));
+
+        let out = apply(&mut s, &sc, &raise_affection(30)).expect("好感度上昇は合法");
+
+        assert!(s.flag("promise_remembered"), "発火効果でフラグが立つ");
+        assert!(
+            out.fired.iter().any(|f| f.id == "recall_promise"),
+            "recall_promise が発火したと返る"
+        );
+        assert!(
+            out.fired.iter().any(|f| f.id == "recall_promise" && !f.narration.is_empty()),
+            "語りの指示が載っている"
+        );
+        assert!(s.fired.contains("recall_promise"), "発火済みが latch される");
+    }
+
+    /// 【連鎖】効果が次の trigger の when を真化させ、同じ適用内で settle する。
+    /// 好感度 30 → recall_promise → (promise_remembered) → renew_vow → goal 到達。
+    #[test]
+    fn trigger_cascade_settles_in_one_apply() {
+        let sc = recall();
+        let mut s = sc.initial_state(7);
+        assert!(!is_goal(&s, &sc));
+
+        let out = apply(&mut s, &sc, &raise_affection(30)).expect("好感度上昇は合法");
+
+        // 一度の適用で 2 つの反応ビートが連鎖発火する。
+        let ids: Vec<&str> = out.fired.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["recall_promise", "renew_vow"], "authored 順に連鎖発火");
+        assert!(s.flag("vow_renewed"));
+        assert!(is_goal(&s, &sc), "連鎖の果てに goal (vow_renewed) 到達");
+    }
+
+    /// 【閾値未満】条件が成立しなければ発火しない。
+    #[test]
+    fn trigger_does_not_fire_below_threshold() {
+        let sc = recall();
+        let mut s = sc.initial_state(7);
+        let out = apply(&mut s, &sc, &raise_affection(20)).expect("好感度上昇は合法");
+        assert!(out.fired.is_empty(), "好感度 20 では発火しない");
+        assert!(!s.flag("promise_remembered"));
+        assert!(s.fired.is_empty());
+    }
+
+    /// 【once / latch】一度発火した trigger は、when が真のままでも二度と発火しない。
+    #[test]
+    fn trigger_fires_at_most_once() {
+        let sc = recall();
+        let mut s = sc.initial_state(7);
+        apply(&mut s, &sc, &raise_affection(30)).unwrap(); // 1 回目: 連鎖発火
+        assert!(s.fired.contains("recall_promise") && s.fired.contains("renew_vow"));
+
+        // さらに好感度を上げても (when は依然真) 再発火しない。
+        let out = apply(&mut s, &sc, &raise_affection(5)).expect("好感度上昇は合法");
+        assert!(out.fired.is_empty(), "latch 済みなので再発火しない");
+    }
+
+    /// 【純粋性】adjudicate は trigger を発火させない (state を一切変えない)。
+    /// 発火は受理・適用後の apply の責務であり、裁定は純粋なまま。
+    #[test]
+    fn adjudicate_does_not_fire_triggers() {
+        let sc = recall();
+        let s = sc.initial_state(7);
+        let v = adjudicate(&s, &sc, &raise_affection(30));
+        assert!(v.is_accept(), "好感度上昇自体は受理される");
+        assert!(!s.flag("promise_remembered"), "adjudicate は発火させない (純粋)");
+        assert!(s.fired.is_empty(), "adjudicate は fired を変えない");
+    }
+
+    /// 【却下時は不発】不正 op を含むデルタは却下され、trigger も発火しない (原子性)。
+    #[test]
+    fn rejected_delta_fires_no_trigger() {
+        let sc = recall();
+        let mut s = sc.initial_state(7);
+        // 好感度 +30 (単体なら閾値を跨ぐ) と未宣言 stat の不正 op を束ねる。
+        let delta = d(vec![
+            StateOp::AdjustStat { entity: "alice".into(), key: "好感度".into(), delta: 30 },
+            StateOp::AdjustStat { entity: "alice".into(), key: "mana".into(), delta: 1 }, // 未宣言で不正
+        ]);
+        assert!(apply(&mut s, &sc, &delta).is_err());
+        assert_eq!(s.stat_of("alice", "好感度"), 0, "却下なら好感度も動かない");
+        assert!(!s.flag("promise_remembered"), "却下されたデルタは trigger を発火させない");
+        assert!(s.fired.is_empty());
         assert_eq!(s.turn, 0);
     }
 }

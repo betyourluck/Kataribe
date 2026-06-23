@@ -9,6 +9,8 @@ pub type LocationId = String;
 pub type FlagKey = String;
 pub type StatKey = String;
 pub type EntityId = String;
+/// トリガーの識別子 (発火済み集合 `GameState.fired` のキー)。
+pub type TriggerId = String;
 
 /// 主人公の規約的 EntityId。op/gate が entity を省略した時の既定。
 pub const PLAYER: &str = "player";
@@ -33,6 +35,10 @@ pub struct GameState {
     pub rng: RngState,
     #[serde(default)]
     pub turn: u32,
+    /// 発火済みトリガーの集合 (Phase C)。edge-triggered once のラッチ。**セーブ対象**:
+    /// 一度発火した反応ビートは二度と発火しない (`when` が真のままでも latch で抑止)。
+    #[serde(default)]
+    pub fired: BTreeSet<TriggerId>,
 }
 
 impl GameState {
@@ -45,6 +51,7 @@ impl GameState {
             entities: BTreeMap::new(),
             rng: RngState { seed, cursor: 0 },
             turn: 0,
+            fired: BTreeSet::new(),
         }
     }
 

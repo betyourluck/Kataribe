@@ -95,11 +95,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
 
         match run_turn(&client, &mut state, &scenario, action.trim(), MAX_ATTEMPTS, lang).await {
-            Ok(TurnOutcome::Accepted { narration, rolls, attempts }) => {
+            Ok(TurnOutcome::Accepted { narration, rolls, fired, attempts }) => {
                 println!("\n{narration}");
                 for r in &rolls {
                     let mark = if r.success { "成功" } else { "失敗" };
                     println!("  🎲 1d{} = {} (DC {}) → {mark}", r.sides, r.result, r.dc);
+                }
+                // 反応ビート (Phase C): 条件が真化した瞬間にエンジンが発火させた語り。
+                for f in &fired {
+                    println!("  ✦ {}", f.narration);
                 }
                 // 核心的未知の計測: 何回の再生成で合法な ops に収束したか。
                 if attempts > 1 {
