@@ -6,6 +6,8 @@
 use gm_core::spine::Gate;
 use gm_core::{GameState, Lang, RejectReason, Scenario};
 
+use crate::memoria::MemoryFragment;
+
 /// GM の役割定義。世界状態の変更は ops 経由のみ、という拘束を毎ターン刷り込む。
 pub const GM_SYSTEM: &str = "\
 あなたは TRPG のゲームマスター (GM) です。プレイヤーの行動に応じて物語を進めます。\n\
@@ -109,6 +111,27 @@ pub fn state_brief(state: &GameState) -> String {
         "# 現在の状態 (turn {})\n- 現在地: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}",
         state.turn, state.location, inv, flags, entities,
     )
+}
+
+/// memoria_bridge: 直前ターンの発火で recall された伏線を、語りに織り込ませる指示にする。
+///
+/// 伏線は**不変 lore** であり状態変更ではない — だから「思い出す様子を narration に織り込め、
+/// ops には書くな」と明示する (正本の境界を prompt 層でも守る)。空なら空文字 (注入しない)。
+pub fn recalled_lore_note(fragments: &[MemoryFragment]) -> String {
+    if fragments.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "\n\n# いま思い出された記憶（語りに織り込むこと）\n\
+         直前の出来事をきっかけに、登場人物が次の記憶を想起しています。今回の narration に、\
+         自然に思い出す様子として織り込んでください。これは状態変更ではないので ops には書かないこと。\n",
+    );
+    for f in fragments {
+        // 改行は潰して 1 行の箇条書きにする (split_whitespace が前後空白も処理)。
+        let text = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        s.push_str(&format!("- {text}\n"));
+    }
+    s
 }
 
 /// 却下された時に LLM へ戻す修正指示。構造化理由を `lang` でレンダリングして見せ、

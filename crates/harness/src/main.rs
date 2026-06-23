@@ -92,6 +92,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // --- ターンループ ---
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
+    // 直前ターンの発火で recall された伏線。次ターンの語りに織り込ませる (memoria_bridge, 輪の閉じ)。
+    let mut pending_lore: Vec<harness::MemoryFragment> = Vec::new();
     loop {
         print!("> ");
         io::stdout().flush().ok();
@@ -103,7 +105,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             None => break, // EOF
         };
 
-        match run_turn(&client, &mut state, &scenario, action.trim(), MAX_ATTEMPTS, lang).await {
+        let outcome = run_turn(
+            &client,
+            &mut state,
+            &scenario,
+            action.trim(),
+            MAX_ATTEMPTS,
+            lang,
+            &pending_lore, // 前ターンの伏線を注入
+        )
+        .await;
+        pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
+        match outcome {
             Ok(TurnOutcome::Accepted { narration, rolls, fired, attempts }) => {
                 println!("\n{narration}");
                 for r in &rolls {
@@ -116,6 +129,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     for frag in &beat.recalled {
                         // 伏線 (不変 lore) を「思い出した記憶」として差し込む。
                         println!("    ┊ {}", frag.text.trim().replace('\n', "\n    ┊ "));
+                        // 次ターンの語りに織り込ませるため持ち越す。
+                        pending_lore.push(frag.clone());
                     }
                 }
                 // 核心的未知の計測: 何回の再生成で合法な ops に収束したか。

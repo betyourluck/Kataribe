@@ -7,6 +7,8 @@ use gm_core::{
     adjudicate, apply, FiredTrigger, GameState, Lang, RejectReason, RollOutcome, Scenario,
     StateDelta, Verdict,
 };
+
+use crate::memoria::MemoryFragment;
 use llm_client::ChatMessage;
 
 use crate::error::HarnessError;
@@ -43,6 +45,10 @@ impl TurnOutcome {
 /// `max_attempts` 回まで提案を裁定し、却下されるたびに理由を messages に積んで再生成させる。
 /// 受理されたら `state` に原子適用して [`TurnOutcome::Accepted`]、尽きたら [`TurnOutcome::Rejected`]
 /// (このとき `state` は一切変わっていない)。
+///
+/// `recalled_lore` は memoria_bridge: 直前ターンの発火で Memoria から recall された伏線。
+/// 今回の語りに「思い出す様子」として織り込ませるため prompt に注入する (空なら注入しない)。
+#[allow(clippy::too_many_arguments)]
 pub async fn run_turn<P: DeltaProposer>(
     proposer: &P,
     state: &mut GameState,
@@ -50,8 +56,10 @@ pub async fn run_turn<P: DeltaProposer>(
     player_action: &str,
     max_attempts: u32,
     lang: Lang,
+    recalled_lore: &[MemoryFragment],
 ) -> Result<TurnOutcome, HarnessError> {
     // 盤面と現在状態を毎ターン新規に提示する (state は正本の唯一の真実)。
+    // recalled_lore があれば「いま思い出された記憶」として語りに織り込ませる (memoria_bridge)。
     let mut messages = vec![
         ChatMessage::system(format!(
             "{}\n\n{}",
@@ -59,8 +67,9 @@ pub async fn run_turn<P: DeltaProposer>(
             prompt::scenario_brief(scenario)
         )),
         ChatMessage::user(format!(
-            "{}\n\n# プレイヤーの行動\n{}",
+            "{}{}\n\n# プレイヤーの行動\n{}",
             prompt::state_brief(state),
+            prompt::recalled_lore_note(recalled_lore),
             player_action
         )),
     ];

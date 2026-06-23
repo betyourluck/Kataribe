@@ -121,13 +121,14 @@ LlmConfig:                        # 環境変数からの設定 (LocalAI config.
 # --- GM ターンループ (crate harness。三権を 1 ターンに結線) ------------------
 # LLM が提案し (llm_client)、エンジンが裁く (gm_core)。LocalAI _self_repair_loop 同型。
 GmTurn:
-  signature:  "run_turn(proposer, &mut state, scenario, player_action, max_attempts) -> TurnOutcome"
+  signature:  "run_turn(proposer, &mut state, scenario, player_action, max_attempts, lang, recalled_lore) -> TurnOutcome"
   loop:       "propose → adjudicate → Accept なら apply(原子適用) / Reject なら reasons を messages に積んで再生成、max_attempts まで"
-  outcome:    "Accepted{narration, rolls, attempts} | Rejected{last_reasons, attempts}。Rejected 時 state は無傷"
+  outcome:    "Accepted{narration, rolls, fired, attempts} | Rejected{last_reasons, attempts}。Rejected 時 state は無傷"
   inversion:  "ループは DeltaProposer trait に対して書く。本番=LlmClient, テスト=ScriptedProposer。却下→再生成を実APIなしで決定論検証"
   messages:   "毎ターン state から新規構築 (GM persona + scenario_brief + state_brief + player_action)。state が唯一の真実なので履歴に古い状態を溜めない"
   feedback:   "却下時は LLM の提案(JSON)を assistant 発話、却下理由+修正指示を user 発話として積む (self_repair の核)"
   prompt:     "scenario_brief は gate を平易な日本語化して提示 (嘘を減らし再生成回数を下げる補助。最終裁定は正本)"
+  recall_inject: "✅memoria_bridge 輪の閉じ: recalled_lore (前ターン発火の伏線) を recalled_lore_note で prompt に注入 → ナレーターが『いま思い出された記憶』として語りに織り込む。状態変更でない旨を明示し ops に書かせない (境界を prompt 層でも維持)。bin は pending_lore を 1 ターン持ち越す"
   boundary:   "harness は messages 構築 + 裁定結線のみ。実 LLM 結線 (LlmClient::propose) はネットワーク経路でテスト外、実クラウド通しプレイで検証"
 
 DeltaProposer:                    # 提案者の抽象 (依存性逆転の境界)
@@ -182,4 +183,4 @@ FiredBeat:                        # 発火ビート + recall 解決 (FiredTrigge
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
   ui:      "LocalAI prompt(Tauri+Vue) 殻の移植。narration の literal \\n 正規化 (#16)"
-  memoria_next: "LoreStore を embedding semantic recall に格上げ (同 trait 裏)。recall 結果の LLM プロンプト注入 (次ターン語りで自然に織る)"
+  memoria_embedding: "LoreStore を embedding semantic recall に格上げ (同 Memoria trait 裏で差し替え, tag 一致→意味的近傍)。usage-over-extension: tag recall が不足と接地できてから。recall→prompt 注入は ✅実装済"
