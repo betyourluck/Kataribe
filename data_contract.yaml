@@ -1,0 +1,69 @@
+# =============================================================================
+# Kataribe data_contract  v0.1  (Phase 0: 名詞の凍結)
+#
+# 設計の全体重を支える「名詞」。コードの前にこれを凍結する (Gemini Forge 第2掟)。
+# 三権分立: LLMは提案し、エンジンが裁き、Memoriaが覚え、シナリオが縛る。
+# 本 contract が定義するのは「エンジン=正本」と「シナリオ=拘束」の境界。
+# =============================================================================
+
+# --- 正本 (Rust gm_core が所有する唯一の真実) -------------------------------
+GameState:
+  location: LocationId          # 現在地。Move は Scenario の exit がある時のみ変わる
+  inventory: [ItemId]           # 集合。AddItem は「現在地に在り、取得gate達成」時のみ
+  flags: { FlagKey: bool }      # 許可フラグのみ。SetFlag(true) は flag_rules の gate 達成時のみ
+  rng: { seed: u64, cursor: u64 }  # ダイスは決定論・監査可能。LLMは結果を持たない
+  turn: u32                     # 受理されたデルタ数。却下では進まない
+
+# --- LLM が毎ターン返す構造化出力 (これ以外の形を出せない) -------------------
+StateDelta:
+  narration: string             # 情景/NPC台詞。検証しない (LLMの領分)
+  ops: [StateOp]                # 構造化された状態変更要求。エンジンが全件検証
+
+StateOp:                        # 内部タグ "op" 付き列挙
+  - { op: add_item,     item: ItemId }
+  - { op: remove_item,  item: ItemId }
+  - { op: set_flag,     key: FlagKey, value: bool }
+  - { op: move,         to: LocationId }
+  - { op: request_roll, sides: u32, dc: u32 }   # 結果は書かない。エンジンが振って裁く
+
+# --- 裁定の不変条件 (engine::adjudicate / apply が守る掟) --------------------
+adjudication:
+  purity:     "adjudicate は state を一切変更しない純粋関数"
+  atomicity:  "1つでも不正な op があればデルタ全体を却下し、state は無傷"
+  add_item:   "現在地 items に無い / 取得gate未達 / 既所持 → Reject"
+  remove_item:"未所持の物は手放せない → Reject"
+  set_flag:   "未許可キー / flag_rules の gate 未達 (value=true時) → Reject"
+  move:       "現在地から to への exit が無い / exit.gate 未達 → Reject"
+  request_roll:"LLMは結果を主張できない (op構造上不可能)。面数<1 → Reject"
+
+# --- シナリオ脊椎 (拘束。scenarios/*.yaml が Scenario として読まれる) --------
+Scenario:
+  title: string
+  start: LocationId
+  allowed_flags: [FlagKey]
+  flag_rules: { FlagKey: Gate }     # 記載なければ Always
+  locations: { LocationId: Location }
+  goal: Gate                        # 達成でクリア
+
+Location:
+  description: string
+  items: { ItemId: Gate }           # 拾得可能なアイテム → 拾うための gate
+  exits: [Exit]
+
+Exit:
+  to: LocationId
+  gate: Gate                        # 記載なければ Always
+
+Gate:                               # 内部タグ "kind" 付き列挙。エンジンが state に対して評価
+  - { kind: always }
+  - { kind: has_item, item: ItemId }
+  - { kind: flag_is, key: FlagKey, value: bool }
+  - { kind: location_is, at: LocationId }
+  - { kind: all, of: [Gate] }
+  - { kind: any, of: [Gate] }
+
+# --- まだ繋がない脚 (PoC スコープ外。ループ Green 後に接続) ------------------
+deferred:
+  memoria:  "episodic/伏線/キャラ性格の semantic recall。可変世界状態は絶対に置かない"
+  llm:      "クラウドLLM。base_url+api_key 抽象。native structured output / tool-use"
+  ui:       "LocalAI prompt(Tauri+Vue) 殻の移植"

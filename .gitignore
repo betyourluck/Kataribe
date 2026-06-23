@@ -1,0 +1,17 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.orig
+
+# 環境・機密 (クラウドLLMキーは絶対にコミットしない)
+.env
+.env.*
+!.env.example
+*.key
+agent-key.txt
+
+# エディタ / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

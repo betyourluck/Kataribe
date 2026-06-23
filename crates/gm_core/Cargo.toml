@@ -1,0 +1,11 @@
+[package]
+name = "gm_core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "TRPG-GM の正本 (state machine)。三権分立の「エンジン=裁定」脚。"
+
+[dependencies]
+serde.workspace = true
+serde_yaml.workspace = true
