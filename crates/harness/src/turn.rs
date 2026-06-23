@@ -3,7 +3,7 @@
 //! 提案 → 裁定 → 却下なら理由を戻して再生成 → 受理なら原子適用。
 //! 正本 (gm_core) が真実を握り、LLM の流暢な嘘はここで構造的に弾かれる。
 
-use gm_core::{adjudicate, apply, Scenario, GameState, RollOutcome, StateDelta, Verdict};
+use gm_core::{adjudicate, apply, GameState, Lang, RejectReason, RollOutcome, Scenario, StateDelta, Verdict};
 use llm_client::ChatMessage;
 
 use crate::error::HarnessError;
@@ -20,9 +20,9 @@ pub enum TurnOutcome {
         /// 受理までに要した試行回数 (1 = 一発合格)。
         attempts: u32,
     },
-    /// 最大試行回数まで却下され続けた。**state は無傷**。
+    /// 最大試行回数まで却下され続けた。**state は無傷**。理由は構造化 (表示は localize)。
     Rejected {
-        last_reasons: Vec<String>,
+        last_reasons: Vec<RejectReason>,
         attempts: u32,
     },
 }
@@ -44,6 +44,7 @@ pub async fn run_turn<P: DeltaProposer>(
     scenario: &Scenario,
     player_action: &str,
     max_attempts: u32,
+    lang: Lang,
 ) -> Result<TurnOutcome, HarnessError> {
     // 盤面と現在状態を毎ターン新規に提示する (state は正本の唯一の真実)。
     let mut messages = vec![
@@ -77,7 +78,7 @@ pub async fn run_turn<P: DeltaProposer>(
             }
             Verdict::Reject { reasons } => {
                 // 履歴の一貫性のため、LLM が出した提案 (の痕跡) と却下理由を会話に積む。
-                push_rejection(&mut messages, &delta, &reasons);
+                push_rejection(&mut messages, &delta, &reasons, lang);
                 last_reasons = reasons;
             }
         }
@@ -90,10 +91,16 @@ pub async fn run_turn<P: DeltaProposer>(
 }
 
 /// 却下された提案を assistant 発話として、修正指示を user 発話として積む (self_repair の核)。
-fn push_rejection(messages: &mut Vec<ChatMessage>, delta: &StateDelta, reasons: &[String]) {
+/// 却下理由は `lang` でレンダリングして LLM に戻す。
+fn push_rejection(
+    messages: &mut Vec<ChatMessage>,
+    delta: &StateDelta,
+    reasons: &[RejectReason],
+    lang: Lang,
+) {
     // LLM 自身の直前の提案を会話履歴に残す (何を直すかの参照点になる)。
     let echoed = serde_json::to_string(delta)
         .unwrap_or_else(|_| delta.narration.clone());
     messages.push(ChatMessage::assistant(echoed));
-    messages.push(ChatMessage::user(prompt::rejection_feedback(reasons)));
+    messages.push(ChatMessage::user(prompt::rejection_feedback(reasons, lang)));
 }

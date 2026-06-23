@@ -42,6 +42,14 @@ adjudication:
   adjust_stat:"scenario.initial_stats に無いキー → Reject (未宣言の stat は作れない)"
   scale_stat: "未宣言キー → Reject / den=0 (ゼロ除算) → Reject。LLMは /0 でエンジンを壊せない"
   stat_clamp: "PoC: 全 stat は 0 下限でクランプ (HP=0 は死)。上限・最小は将来 scenario で宣言可能に"
+  reasons:    "Verdict::Reject は構造化 RejectReason 列 (文字列でなくデータ)。ルールはエンジン不変、文面は提示層"
+
+# --- 却下理由の構造化と多言語 (reason.rs) -----------------------------------
+# エンジンは「なぜ却下したか」をデータで返し、文面は提示層が言語ごとに生成する。
+# 検証ルール (所持/移動/gate の力学) はエンジンの普遍法則として残し、文字列だけ分離。
+RejectReason:                     # 内部タグ "code" 付き列挙 (item_not_here / divide_by_zero 等 12 種)
+  localize: "localize(lang) -> String。Lang=Ja|En。新言語は ja()/en() と同型の一手で追加"
+  rationale:"テスト頑健化 (文字列一致→variant 一致) + i18n + 将来のトーン差し替えの土台"
 
 # --- シナリオ脊椎 (拘束。scenarios/*.yaml が Scenario として読まれる) --------
 Scenario:

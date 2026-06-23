@@ -10,9 +10,11 @@
 //! - **決定論**: ダイスは seeded RNG。同じ seed/cursor は同じ目を返し、監査可能。
 
 pub mod engine;
+pub mod reason;
 pub mod spine;
 pub mod state;
 
 pub use engine::{adjudicate, apply, is_goal, RollOutcome, Verdict};
+pub use reason::{Lang, RejectReason};
 pub use spine::{Exit, Gate, Location, Scenario};
 pub use state::{FlagKey, GameState, ItemId, LocationId, RngState, StatKey, StateDelta, StateOp};

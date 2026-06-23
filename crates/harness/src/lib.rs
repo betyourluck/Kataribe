@@ -26,7 +26,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use gm_core::{GameState, Scenario, StateDelta, StateOp};
+    use gm_core::{GameState, Lang, Scenario, StateDelta, StateOp};
     use llm_client::ChatMessage;
 
     use super::*;
@@ -86,7 +86,7 @@ mod tests {
             value: true,
         }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 1),
             other => panic!("受理されるべき: {other:?}"),
@@ -107,7 +107,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 2, "2回目で受理"),
             other => panic!("最終的に受理されるべき: {other:?}"),
@@ -127,7 +127,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        run_turn(&p, &mut s, &sc, "鍵を探す", 3).await.unwrap();
+        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja).await.unwrap();
 
         let second = p.seen_text(2);
         assert!(second.contains("却下"), "再生成プロンプトに却下の文脈があるはず");
@@ -148,7 +148,7 @@ mod tests {
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]), // 引き出し前で却下
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja).await.unwrap();
         match outcome {
             TurnOutcome::Rejected { attempts, last_reasons } => {
                 assert_eq!(attempts, 3);
@@ -168,7 +168,7 @@ mod tests {
         let mut s = fresh(&sc); // seed=42, cursor=0
         let p = ScriptedProposer::new(vec![delta(vec![StateOp::RequestRoll { sides: 20, dc: 10 }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { rolls, .. } => {
                 assert_eq!(rolls.len(), 1);

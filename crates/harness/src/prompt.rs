@@ -3,8 +3,8 @@
 //! 正本 (gm_core) が最終裁定するので、prompt は「嘘をつきにくくする」補助でしかない。
 //! それでも gate/出口/アイテムを明示して見せることで、却下→再生成の回数を減らす。
 
-use gm_core::{GameState, Scenario};
 use gm_core::spine::Gate;
+use gm_core::{GameState, Lang, RejectReason, Scenario};
 
 /// GM の役割定義。世界状態の変更は ops 経由のみ、という拘束を毎ターン刷り込む。
 pub const GM_SYSTEM: &str = "\
@@ -88,14 +88,15 @@ pub fn state_brief(state: &GameState) -> String {
     )
 }
 
-/// 却下された時に LLM へ戻す修正指示。理由をそのまま見せて ops を直させる (self_repair の核)。
-pub fn rejection_feedback(reasons: &[String]) -> String {
+/// 却下された時に LLM へ戻す修正指示。構造化理由を `lang` でレンダリングして見せ、
+/// ops を直させる (self_repair の核)。
+pub fn rejection_feedback(reasons: &[RejectReason], lang: Lang) -> String {
     let mut s = String::from(
         "提出された ops はエンジンに却下されました。以下の理由をすべて解消し、\
          今ある盤面の事実だけを使って ops を修正し、emit_delta を再提出してください。\n",
     );
     for r in reasons {
-        s.push_str(&format!("- {r}\n"));
+        s.push_str(&format!("- {}\n", r.localize(lang)));
     }
     s
 }

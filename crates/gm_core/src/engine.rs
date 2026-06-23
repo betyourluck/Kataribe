@@ -2,15 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::reason::RejectReason;
 use crate::spine::Scenario;
 use crate::state::{GameState, StateDelta, StateOp};
 
-/// 裁定結果。`Reject` は人間/LLM 双方に読める理由を含む。
+/// 裁定結果。`Reject` は**構造化された**理由を含む (文面は提示層が言語ごとに生成)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum Verdict {
     Accept,
-    Reject { reasons: Vec<String> },
+    Reject { reasons: Vec<RejectReason> },
 }
 
 impl Verdict {
@@ -36,7 +37,9 @@ pub fn adjudicate(state: &GameState, scenario: &Scenario, delta: &StateDelta) ->
         Some(l) => l,
         None => {
             return Verdict::Reject {
-                reasons: vec![format!("現在地 '{}' がシナリオに存在しない", state.location)],
+                reasons: vec![RejectReason::CurrentLocationMissing {
+                    location: state.location.clone(),
+                }],
             };
         }
     };
@@ -47,58 +50,58 @@ pub fn adjudicate(state: &GameState, scenario: &Scenario, delta: &StateDelta) ->
         match op {
             StateOp::AddItem { item } => {
                 if state.has_item(item) {
-                    reasons.push(format!("'{item}' は既に所持している"));
+                    reasons.push(RejectReason::ItemAlreadyHeld { item: item.clone() });
                     continue;
                 }
                 match loc.items.get(item) {
-                    None => reasons.push(format!("'{item}' はこの場所には存在しない")),
+                    None => reasons.push(RejectReason::ItemNotHere { item: item.clone() }),
                     Some(gate) => {
                         if !gate.eval(state) {
-                            reasons.push(format!("'{item}' はまだ取得できない (前提条件が未達)"));
+                            reasons.push(RejectReason::ItemGateUnmet { item: item.clone() });
                         }
                     }
                 }
             }
             StateOp::RemoveItem { item } => {
                 if !state.has_item(item) {
-                    reasons.push(format!("'{item}' を所持していないので手放せない"));
+                    reasons.push(RejectReason::ItemNotHeld { item: item.clone() });
                 }
             }
             StateOp::SetFlag { key, value } => {
                 if !scenario.allowed_flags.contains(key) {
-                    reasons.push(format!("フラグ '{key}' は許可されていない"));
+                    reasons.push(RejectReason::FlagNotAllowed { key: key.clone() });
                     continue;
                 }
                 if *value && !scenario.flag_gate(key).eval(state) {
-                    reasons.push(format!("フラグ '{key}' を立てる前提条件が未達"));
+                    reasons.push(RejectReason::FlagGateUnmet { key: key.clone() });
                 }
             }
             StateOp::Move { to } => match loc.exits.iter().find(|e| &e.to == to) {
-                None => reasons.push(format!("'{to}' への出口は存在しない")),
+                None => reasons.push(RejectReason::NoExit { to: to.clone() }),
                 Some(exit) => {
                     if !exit.gate.eval(state) {
-                        reasons.push(format!("'{to}' への移動条件が未達"));
+                        reasons.push(RejectReason::MoveGateUnmet { to: to.clone() });
                     }
                 }
             },
             StateOp::RequestRoll { sides, dc: _ } => {
                 if *sides < 1 {
-                    reasons.push("ダイスの面数は1以上でなければならない".to_string());
+                    reasons.push(RejectReason::DiceSidesInvalid);
                 }
                 // 出目はエンジンが振る。LLM は結果を主張できない (op 構造上不可能)。
             }
             StateOp::AdjustStat { key, delta: _ } => {
                 if !scenario.knows_stat(key) {
-                    reasons.push(format!("stat '{key}' はこのシナリオに宣言されていない"));
+                    reasons.push(RejectReason::UnknownStat { key: key.clone() });
                 }
                 // 算術 (current + delta) と 0 クランプは apply がエンジンとして行う。
             }
             StateOp::ScaleStat { key, num: _, den } => {
                 if !scenario.knows_stat(key) {
-                    reasons.push(format!("stat '{key}' はこのシナリオに宣言されていない"));
+                    reasons.push(RejectReason::UnknownStat { key: key.clone() });
                 }
                 if *den == 0 {
-                    reasons.push(format!("stat '{key}' をゼロで割ることはできない"));
+                    reasons.push(RejectReason::DivideByZero { key: key.clone() });
                 }
             }
         }
@@ -178,6 +181,7 @@ pub fn is_goal(state: &GameState, scenario: &Scenario) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reason::RejectReason;
     use crate::state::{RngState, StateOp};
 
     // 密室脱出シナリオをコンパイル時に埋め込む (cwd 非依存)。
@@ -265,7 +269,10 @@ mod tests {
         let v = adjudicate(&s, &sc, &d(vec![StateOp::AddItem { item: "master_key".into() }]));
         match v {
             Verdict::Reject { reasons } => {
-                assert!(reasons.iter().any(|r| r.contains("存在しない")));
+                assert!(reasons.iter().any(|r| matches!(
+                    r,
+                    RejectReason::ItemNotHere { item } if item == "master_key"
+                )));
             }
             Verdict::Accept => panic!("幻のアイテムを受理してはならない"),
         }
@@ -376,7 +383,9 @@ mod tests {
         let before = s.stat("gold");
         let v = adjudicate(&s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 1, den: 0 }]));
         match v {
-            Verdict::Reject { reasons } => assert!(reasons.iter().any(|r| r.contains("ゼロ"))),
+            Verdict::Reject { reasons } => assert!(reasons
+                .iter()
+                .any(|r| matches!(r, RejectReason::DivideByZero { key } if key == "gold"))),
             Verdict::Accept => panic!("ゼロ除算を受理してはならない"),
         }
         let r = apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 1, den: 0 }]));
@@ -391,7 +400,9 @@ mod tests {
         let s = sc.initial_state(42);
         let v = adjudicate(&s, &sc, &d(vec![StateOp::AdjustStat { key: "mana".into(), delta: 9000 }]));
         match v {
-            Verdict::Reject { reasons } => assert!(reasons.iter().any(|r| r.contains("宣言されていない"))),
+            Verdict::Reject { reasons } => assert!(reasons
+                .iter()
+                .any(|r| matches!(r, RejectReason::UnknownStat { key } if key == "mana"))),
             Verdict::Accept => panic!("未宣言 stat の操作を受理してはならない"),
         }
     }

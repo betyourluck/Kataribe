@@ -15,7 +15,7 @@
 use std::error::Error;
 use std::io::{self, BufRead, Write};
 
-use gm_core::{is_goal, GameState, Scenario};
+use gm_core::{is_goal, GameState, Lang, Scenario};
 use harness::{run_turn, TurnOutcome};
 use llm_client::{LlmClient, LlmConfig};
 
@@ -23,6 +23,14 @@ use llm_client::{LlmClient, LlmConfig};
 const DEFAULT_SCENARIO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scenarios/locked_room.yaml");
 /// 1 ターンあたりの再生成上限。
 const MAX_ATTEMPTS: u32 = 4;
+
+/// 却下理由の表示言語。`KATARIBE_LANG=en` で英語、既定は日本語。
+fn lang_from_env() -> Lang {
+    match std::env::var("KATARIBE_LANG").as_deref() {
+        Ok("en") | Ok("En") | Ok("EN") => Lang::En,
+        _ => Lang::Ja,
+    }
+}
 /// 初期 RNG seed (決定論再現用。将来は引数化)。
 const SEED: u64 = 42;
 
@@ -30,6 +38,7 @@ const SEED: u64 = 42;
 async fn main() -> Result<(), Box<dyn Error>> {
     // .env を読み込む (アプリ入口の責務。LlmConfig::from_env は env を読むだけ)。
     dotenvy::dotenv().ok();
+    let lang = lang_from_env();
 
     // --- 設定 ---
     let config = match LlmConfig::from_env() {
@@ -73,7 +82,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             None => break, // EOF
         };
 
-        match run_turn(&client, &mut state, &scenario, action.trim(), MAX_ATTEMPTS).await {
+        match run_turn(&client, &mut state, &scenario, action.trim(), MAX_ATTEMPTS, lang).await {
             Ok(TurnOutcome::Accepted { narration, rolls, attempts }) => {
                 println!("\n{narration}");
                 for r in &rolls {
@@ -99,7 +108,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(TurnOutcome::Rejected { last_reasons, attempts }) => {
                 println!("\n（GM は {attempts} 回試みたが、筋の通る一手を出せなかった）");
                 for r in &last_reasons {
-                    println!("  - {r}");
+                    println!("  - {}", r.localize(lang));
                 }
                 println!("  ※ 状態は変化していません。別の行動を試してください。");
             }
