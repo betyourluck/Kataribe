@@ -1,0 +1,42 @@
+# PoC シナリオ: 力の試練 (数値の最小盤面)
+# 「真偽の最小盤面」だった密室脱出に対し、これは「数値の最小盤面」。
+# AdjustStat(+/-) / ScaleStat(×/÷) / StatAtLeast を最短で測る。
+#
+# 正規の筋:
+#   1. 鍛錬する          → adjust_stat str +3   (12 → 15)
+#   2. 重い扉を押し開ける → move hall            (gate: str>=15 かつ hp>=1)
+#   => goal (location_is hall)
+#
+# 数値の罠:
+#   - hp が 0 になると hp>=1 を満たせず脱出不能 (死)。
+#   - 宣言されていない stat (例: mana) は adjust/scale できない。
+#   - scale_stat の den=0 (ゼロ除算) はエンジンが却下する。
+
+title: 力の試練
+start: cell
+
+initial_stats:
+  hp: 10        # 体力。0 で死。
+  str: 12       # 腕力。扉を押すには 15 必要。
+  gold: 0       # 乗除デモ用。
+
+allowed_flags: []
+
+locations:
+  cell:
+    description: 苔むした石室。錆びた滑車に繋がれた巨大な石扉が道を塞いでいる。押し開けるには相応の腕力が要りそうだ。
+    items: {}
+    exits:
+      - to: hall
+        gate:
+          kind: all
+          of:
+            - { kind: stat_at_least, key: str, value: 15 }   # 力が足りねば押せない
+            - { kind: stat_at_least, key: hp,  value: 1 }    # 死んでいては出られない
+
+  hall:
+    description: 石扉の先に広がる回廊。微かな風が、外への道を示している。
+    items: {}
+    exits: []
+
+goal: { kind: location_is, at: hall }

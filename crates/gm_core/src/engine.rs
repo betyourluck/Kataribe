@@ -87,6 +87,20 @@ pub fn adjudicate(state: &GameState, scenario: &Scenario, delta: &StateDelta) ->
                 }
                 // 出目はエンジンが振る。LLM は結果を主張できない (op 構造上不可能)。
             }
+            StateOp::AdjustStat { key, delta: _ } => {
+                if !scenario.knows_stat(key) {
+                    reasons.push(format!("stat '{key}' はこのシナリオに宣言されていない"));
+                }
+                // 算術 (current + delta) と 0 クランプは apply がエンジンとして行う。
+            }
+            StateOp::ScaleStat { key, num: _, den } => {
+                if !scenario.knows_stat(key) {
+                    reasons.push(format!("stat '{key}' はこのシナリオに宣言されていない"));
+                }
+                if *den == 0 {
+                    reasons.push(format!("stat '{key}' をゼロで割ることはできない"));
+                }
+            }
         }
     }
 
@@ -136,6 +150,16 @@ pub fn apply(
                     success: result >= *dc,
                 });
             }
+            // --- 算術はエンジンが行う。LLM は意図だけ提案、値は持てない ---
+            StateOp::AdjustStat { key, delta } => {
+                let next = (state.stat(key) + delta).max(0); // 加減 + 0 クランプ
+                state.stats.insert(key.clone(), next);
+            }
+            StateOp::ScaleStat { key, num, den } => {
+                // den != 0 は adjudicate が保証済。乗算先行で精度を確保し 0 クランプ。
+                let next = (state.stat(key).saturating_mul(*num) / den).max(0);
+                state.stats.insert(key.clone(), next);
+            }
         }
     }
     state.turn += 1;
@@ -158,9 +182,15 @@ mod tests {
 
     // 密室脱出シナリオをコンパイル時に埋め込む (cwd 非依存)。
     const LOCKED_ROOM: &str = include_str!("../../../scenarios/locked_room.yaml");
+    // 数値の最小盤面。
+    const STRENGTH_TRIAL: &str = include_str!("../../../scenarios/strength_trial.yaml");
 
     fn scenario() -> Scenario {
         Scenario::from_yaml(LOCKED_ROOM).expect("locked_room.yaml がパースできること")
+    }
+
+    fn trial() -> Scenario {
+        Scenario::from_yaml(STRENGTH_TRIAL).expect("strength_trial.yaml がパースできること")
     }
 
     fn fresh(sc: &Scenario) -> GameState {
@@ -279,5 +309,120 @@ mod tests {
         assert!((1..=20).contains(&outcome.result));
         assert_eq!(outcome.success, outcome.result >= 10);
         assert_eq!(s.rng.cursor, 1, "1回振ったので cursor が進む");
+    }
+
+    // =========================================================================
+    // 数値ステータス PoC: 四則演算をエンジンが代行する (LLM は値を持てない)
+    // =========================================================================
+
+    /// 初期 stat はシナリオから読まれる。
+    #[test]
+    fn stats_load_from_scenario() {
+        let sc = trial();
+        let s = sc.initial_state(42);
+        assert_eq!(s.stat("hp"), 10);
+        assert_eq!(s.stat("str"), 12);
+        assert_eq!(s.stat("gold"), 0);
+        assert_eq!(s.stat("mana"), 0, "未宣言 stat は 0 扱い");
+    }
+
+    /// 【加減】AdjustStat はエンジンが current + delta を計算する。LLM は値を書かない。
+    #[test]
+    fn adjust_stat_is_computed_by_engine() {
+        let sc = trial();
+        let mut s = sc.initial_state(42);
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "str".into(), delta: 3 }]))
+            .expect("宣言済 stat の加算は合法");
+        assert_eq!(s.stat("str"), 15, "12 + 3 をエンジンが計算");
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "gold".into(), delta: 25 }]))
+            .expect("加算");
+        assert_eq!(s.stat("gold"), 25);
+    }
+
+    /// 【0クランプ】HP は 0 未満にならない。死亡判定 (hp>=1 gate) の土台。
+    #[test]
+    fn hp_clamps_at_zero_and_blocks_exit() {
+        let sc = trial();
+        let mut s = sc.initial_state(42);
+        // まず脱出に必要な力をつける。
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "str".into(), delta: 3 }])).unwrap();
+        // 致命の一撃。-100 でも 0 でクランプ (負の HP にならない)。
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "hp".into(), delta: -100 }])).unwrap();
+        assert_eq!(s.stat("hp"), 0, "HP は 0 でクランプ");
+        // str は足りるが hp=0 なので脱出 gate (hp>=1) を満たせない = 死んでいては出られない。
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::Move { to: "hall".into() }]));
+        assert!(!v.is_accept(), "hp=0 では hall へ出られない");
+    }
+
+    /// 【乗除】ScaleStat はエンジンが current * num / den を計算する。
+    #[test]
+    fn scale_stat_multiplies_and_divides() {
+        let sc = trial();
+        let mut s = sc.initial_state(42);
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "gold".into(), delta: 10 }])).unwrap();
+        // ×2: 報酬を倍に。
+        apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 2, den: 1 }])).unwrap();
+        assert_eq!(s.stat("gold"), 20, "10 × 2 をエンジンが計算");
+        // ÷2: 半減。
+        apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 1, den: 2 }])).unwrap();
+        assert_eq!(s.stat("gold"), 10, "20 / 2 をエンジンが計算");
+    }
+
+    /// 【ゼロ除算ガード】den=0 はエンジンが却下する。LLM は /0 で壊せない。state 無傷。
+    #[test]
+    fn divide_by_zero_is_rejected() {
+        let sc = trial();
+        let mut s = sc.initial_state(42);
+        let before = s.stat("gold");
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 1, den: 0 }]));
+        match v {
+            Verdict::Reject { reasons } => assert!(reasons.iter().any(|r| r.contains("ゼロ"))),
+            Verdict::Accept => panic!("ゼロ除算を受理してはならない"),
+        }
+        let r = apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 1, den: 0 }]));
+        assert!(r.is_err(), "apply も却下する");
+        assert_eq!(s.stat("gold"), before, "却下では state 無傷");
+    }
+
+    /// 【未宣言 stat の遮断】シナリオに無い stat は作れない (幻ステータス却下)。
+    #[test]
+    fn unknown_stat_is_rejected() {
+        let sc = trial();
+        let s = sc.initial_state(42);
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::AdjustStat { key: "mana".into(), delta: 9000 }]));
+        match v {
+            Verdict::Reject { reasons } => assert!(reasons.iter().any(|r| r.contains("宣言されていない"))),
+            Verdict::Accept => panic!("未宣言 stat の操作を受理してはならない"),
+        }
+    }
+
+    /// 【数値 gate × 正規プレイ】鍛えて力 15 にしてから扉を押すと脱出できる。
+    #[test]
+    fn train_then_exit_reaches_goal() {
+        let sc = trial();
+        let mut s = sc.initial_state(42);
+        assert!(!is_goal(&s, &sc));
+        // 力 12 のままでは押せない。
+        assert!(!adjudicate(&s, &sc, &d(vec![StateOp::Move { to: "hall".into() }])).is_accept());
+        // 鍛錬して 12 → 15。
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "str".into(), delta: 3 }])).unwrap();
+        // 今度は押せる。
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "hall".into() }]))
+            .expect("str>=15 かつ hp>=1 なら脱出できる");
+        assert!(is_goal(&s, &sc), "goal (hall) 到達");
+    }
+
+    /// 【原子性 × stat】不正 op を含むデルタは全体却下、stat も無傷。
+    #[test]
+    fn mixed_stat_delta_is_atomic() {
+        let sc = trial();
+        let mut s = sc.initial_state(42);
+        let delta = d(vec![
+            StateOp::AdjustStat { key: "str".into(), delta: 3 },   // 単体なら合法
+            StateOp::ScaleStat { key: "gold".into(), num: 1, den: 0 }, // ゼロ除算で不正
+        ]);
+        assert!(apply(&mut s, &sc, &delta).is_err());
+        assert_eq!(s.stat("str"), 12, "却下されたデルタは stat を変えない");
+        assert_eq!(s.turn, 0);
     }
 }

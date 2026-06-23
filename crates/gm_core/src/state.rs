@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub type ItemId = String;
 pub type LocationId = String;
 pub type FlagKey = String;
+pub type StatKey = String;
 
 /// ゲームの唯一の真実。エンジンだけが [`crate::apply`] 経由で変更できる。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,6 +17,9 @@ pub struct GameState {
     pub inventory: BTreeSet<ItemId>,
     #[serde(default)]
     pub flags: BTreeMap<FlagKey, bool>,
+    /// 数値の真実 (HP/STR/好感度/金 等)。算術はエンジンだけが [`crate::apply`] で行う。
+    #[serde(default)]
+    pub stats: BTreeMap<StatKey, i64>,
     pub rng: RngState,
     #[serde(default)]
     pub turn: u32,
@@ -28,6 +32,7 @@ impl GameState {
             location: location.into(),
             inventory: BTreeSet::new(),
             flags: BTreeMap::new(),
+            stats: BTreeMap::new(),
             rng: RngState { seed, cursor: 0 },
             turn: 0,
         }
@@ -40,6 +45,11 @@ impl GameState {
     /// 未設定フラグは false 扱い。
     pub fn flag(&self, key: &str) -> bool {
         self.flags.get(key).copied().unwrap_or(false)
+    }
+
+    /// 未設定 stat は 0 扱い。
+    pub fn stat(&self, key: &str) -> i64 {
+        self.stats.get(key).copied().unwrap_or(0)
     }
 }
 
@@ -98,4 +108,10 @@ pub enum StateOp {
     Move { to: LocationId },
     /// ダイスを振る要求。**結果は含めない** — エンジンが振って裁く。
     RequestRoll { sides: u32, dc: u32 },
+    /// stat への加減 (+/−)。エンジンが `clamp(current + delta)` を計算する。
+    /// LLM は変化量(意図)だけを提案し、結果の値は持てない。
+    AdjustStat { key: StatKey, delta: i64 },
+    /// stat への乗除 (×/÷)。エンジンが `clamp(current * num / den)` を計算する。
+    /// `den == 0` (ゼロ除算) はエンジンが却下するので、LLM は /0 で壊せない。
+    ScaleStat { key: StatKey, num: i64, den: i64 },
 }

@@ -15,4 +15,4 @@ pub mod state;
 
 pub use engine::{adjudicate, apply, is_goal, RollOutcome, Verdict};
 pub use spine::{Exit, Gate, Location, Scenario};
-pub use state::{FlagKey, GameState, ItemId, LocationId, RngState, StateDelta, StateOp};
+pub use state::{FlagKey, GameState, ItemId, LocationId, RngState, StatKey, StateDelta, StateOp};

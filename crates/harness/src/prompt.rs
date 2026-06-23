@@ -23,6 +23,7 @@ fn gate_brief(gate: &Gate) -> String {
         Gate::HasItem { item } => format!("「{item}」を所持していること"),
         Gate::FlagIs { key, value } => format!("状態「{key}」が {value} であること"),
         Gate::LocationIs { at } => format!("「{at}」にいること"),
+        Gate::StatAtLeast { key, value } => format!("能力「{key}」が {value} 以上であること"),
         Gate::All { of } => {
             let parts: Vec<String> = of.iter().map(gate_brief).collect();
             format!("すべて満たす({})", parts.join(" / "))

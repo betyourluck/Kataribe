@@ -124,6 +124,16 @@ echo** + 却下理由を user テキストで積む → 履歴に dangling tool_
 そもそも提案せず narration で拒否した (prompt 層接地が有効)。却下が発火したのは「欲張って束ねた」
 時のみ = 正本の原子性が「一手ずつの正しい前進」を強制する設計が実 LLM で機能。
 
+## crates/gm_core (2026-06-23 数値ステータス PoC)
+
+### 17. Gate/StateOp に variant を足すと全 match 箇所がコンパイルエラー (= 機能、罠でない)
+`Gate::StatAtLeast` 追加で `harness/prompt.rs::gate_brief` が non-exhaustive エラー (E0004)。
+これは**バグでなく設計の利点** ── 網羅 match が「新条件を扱い忘れる」のを構造的に防ぐ
+(北極星「矛盾しない」のコンパイラ強制版)。variant 追加時の更新箇所チェックリスト:
+(a) gm_core engine.rs `adjudicate` (検証) + `apply` (適用), (b) spine.rs `Gate::eval`,
+(c) harness prompt.rs `gate_brief` (LLM への日本語化), (d) llm_client schema テスト
+(StateOp 追加時、schemars が自動で schema に載せるので**プロンプト変更は不要** = 機械生成の利点)。
+
 ### 16. (軽微) narration に二重エスケープ \n が混じることがある
 敵対プレイ turn4 で narration に literal `\n\n` が出た。モデルが tool 引数 JSON に `\\n\\n`
 (二重エスケープ) を書いたため、serde で 1 段戻しても `\n` が残った。我々のバグではなくモデル出力の癖。

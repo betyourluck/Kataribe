@@ -90,7 +90,10 @@ mod tests {
         assert!(s.contains("narration"), "narration プロパティが schema に無い");
         assert!(s.contains("ops"), "ops プロパティが schema に無い");
         // StateOp の内部タグと各 op 値 (serde rename_all=snake_case)
-        for op in ["add_item", "remove_item", "set_flag", "move", "request_roll"] {
+        for op in [
+            "add_item", "remove_item", "set_flag", "move", "request_roll",
+            "adjust_stat", "scale_stat",
+        ] {
             assert!(s.contains(op), "op '{op}' が schema に無い (型と乖離)");
         }
     }

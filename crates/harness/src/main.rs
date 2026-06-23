@@ -49,7 +49,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|e| format!("シナリオを読めません ({scenario_path}): {e}"))?;
     let scenario = Scenario::from_yaml(&yaml)?;
 
-    let mut state = GameState::new(scenario.start.clone(), SEED);
+    // 初期 stat (HP/STR 等) をシナリオから読んで状態を作る。
+    let mut state = scenario.initial_state(SEED);
 
     // --- 開幕描写 ---
     println!("=== {} ===", scenario.title);

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::{FlagKey, GameState, ItemId, LocationId};
+use crate::state::{FlagKey, GameState, ItemId, LocationId, StatKey};
 
 /// state に対して評価される条件。
 ///
@@ -21,6 +21,8 @@ pub enum Gate {
     FlagIs { key: FlagKey, value: bool },
     /// 指定の場所にいる。
     LocationIs { at: LocationId },
+    /// 指定 stat が value 以上である (数値条件)。未設定 stat は 0 扱い。
+    StatAtLeast { key: StatKey, value: i64 },
     /// すべての子条件が通る (AND)。
     All { of: Vec<Gate> },
     /// いずれかの子条件が通る (OR)。
@@ -34,6 +36,7 @@ impl Gate {
             Gate::HasItem { item } => s.has_item(item),
             Gate::FlagIs { key, value } => s.flag(key) == *value,
             Gate::LocationIs { at } => &s.location == at,
+            Gate::StatAtLeast { key, value } => s.stat(key) >= *value,
             Gate::All { of } => of.iter().all(|g| g.eval(s)),
             Gate::Any { of } => of.iter().any(|g| g.eval(s)),
         }
@@ -74,6 +77,9 @@ pub struct Scenario {
     /// フラグを true にするための gate。記載なければ [`Gate::Always`]。
     #[serde(default)]
     pub flag_rules: BTreeMap<FlagKey, Gate>,
+    /// stat の初期値、かつ「宣言済 stat の集合」。ここに無いキーは adjust/scale 不可。
+    #[serde(default)]
+    pub initial_stats: BTreeMap<StatKey, i64>,
     pub locations: BTreeMap<LocationId, Location>,
     /// 達成でクリアとなる条件。
     pub goal: Gate,
@@ -91,5 +97,17 @@ impl Scenario {
     /// フラグを true にするための gate。未登録なら [`Gate::Always`]。
     pub fn flag_gate(&self, key: &str) -> Gate {
         self.flag_rules.get(key).cloned().unwrap_or(Gate::Always)
+    }
+
+    /// stat が宣言済か (adjust/scale の対象になれるか)。
+    pub fn knows_stat(&self, key: &str) -> bool {
+        self.initial_stats.contains_key(key)
+    }
+
+    /// 開始地点・初期 stat から初期状態を作る。
+    pub fn initial_state(&self, seed: u64) -> GameState {
+        let mut s = GameState::new(self.start.clone(), seed);
+        s.stats = self.initial_stats.clone();
+        s
     }
 }
