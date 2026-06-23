@@ -84,7 +84,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if attempts > 1 {
                     println!("  [GM は {attempts} 回目の提案で筋を通した]");
                 }
-                println!("  [所在: {} / 所持: {}]", state.location, inventory(&state));
+                println!(
+                    "  [所在: {} / 所持: {} / 能力値: {}]",
+                    state.location,
+                    inventory(&state),
+                    stats_line(&state),
+                );
 
                 if is_goal(&state, &scenario) {
                     println!("\n🎉 脱出成功。goal 到達 (turn {}).", state.turn);
@@ -114,5 +119,18 @@ fn inventory(state: &GameState) -> String {
         "なし".to_string()
     } else {
         state.inventory.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
+}
+
+fn stats_line(state: &GameState) -> String {
+    if state.stats.is_empty() {
+        "なし".to_string()
+    } else {
+        state
+            .stats
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }

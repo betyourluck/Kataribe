@@ -72,9 +72,19 @@ pub fn state_brief(state: &GameState) -> String {
         .map(|(k, _)| k.clone())
         .collect();
     let flags = if flags.is_empty() { "なし".to_string() } else { flags.join(", ") };
+    let stats = if state.stats.is_empty() {
+        "なし".to_string()
+    } else {
+        state
+            .stats
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     format!(
-        "# 現在の状態 (turn {})\n- 現在地: {}\n- 所持品: {}\n- 立っている状態: {}",
-        state.turn, state.location, inv, flags,
+        "# 現在の状態 (turn {})\n- 現在地: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}",
+        state.turn, state.location, inv, flags, stats,
     )
 }
 

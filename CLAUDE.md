@@ -43,6 +43,7 @@ cargo clippy --workspace --all-targets  # lint
 
 - ✅ `gm_core` 正本エンジン: 17/17 green。密室脱出（真偽の最小盤面）で不正遮断・原子性・敵対ターン・決定論ダイス、力の試練（数値の最小盤面）で**数値ステータス**を実証。
   - **数値ステータス** (`stats: BTreeMap<StatKey, i64>`): 四則演算をエンジンが代行。`AdjustStat`(＋/−) と `ScaleStat`(×/÷) で LLM は意図だけ提案・値は持てない。HP の 0 クランプ、**ゼロ除算は却下**、未宣言 stat（幻ステータス）の遮断、`StatAtLeast` 数値 gate を実証。式（ダイス＋能力修正の技能判定）は次の盤面。
+  - **実 LLM 検証 (2026-06-23, claude-opus-4-8)**: 力の試練を通しプレイし、LLM が `adjust_stat`（鍛錬で str+2/hp-2 のトレードオフ）と `scale_stat`（「腕力を倍に」→ str 12×2=24）を**プロンプト変更ゼロ**で提案（schemars 自動露出）、`StatAtLeast` gate（str≥15）を越えて goal 到達。「LLM が意図を言い、エンジンが値を計算する」を端から端まで実証。LLM は現在値を読んで数値推論し（"14 では一歩足りない"）、不可能な手は自ら拒否。
 - ✅ `crates/llm_client` ナレーター脚: LocalAI `llm_client.py` を Rust 移植。OpenAI 互換 + tool-use 強制 + schemars 機械生成 schema + フェンス JSON フォールバック + 指数 backoff。PoC 9/9 green。罠 6 件は `failures.md`。
 - ✅ `crates/harness` GM ターンループ: 提案 → 裁定 → 却下なら理由を戻して再生成（`_self_repair_loop` 同型）→ 受理なら原子適用。`DeltaProposer` trait で依存性逆転し、`ScriptedProposer` で「却下→再生成」を実 API なしで実証。PoC 6/6 green（一発合格・再生成・理由還流・最大試行で state 無傷・ダイス経路・prompt 健全性）。罠 4 件（#7-10）は `failures.md`。
 - 合計 **24/24 green**、clippy clean。
