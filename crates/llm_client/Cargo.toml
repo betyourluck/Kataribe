@@ -13,7 +13,6 @@ tokio.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
 thiserror.workspace = true
-dotenvy.workspace = true
 # 正本の型 (StateDelta/StateOp) を structured output の宛先にする。
 # schema feature で JSON Schema を機械生成する (規格=実装の単一真実源)。
 gm_core = { workspace = true, features = ["schema"] }

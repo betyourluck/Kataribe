@@ -28,6 +28,9 @@ const SEED: u64 = 42;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // .env を読み込む (アプリ入口の責務。LlmConfig::from_env は env を読むだけ)。
+    dotenvy::dotenv().ok();
+
     // --- 設定 ---
     let config = match LlmConfig::from_env() {
         Ok(c) => c,

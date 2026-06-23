@@ -23,6 +23,9 @@ OpenAI は概ね受けるが、厳格な structured-output モード (`strict: t
 `$ref` や `additionalProperties` の扱いで弾く可能性がある。**実クラウド通しプレイで要検証**。
 弾かれたら: (a) schema を inline 展開する、(b) strict を外す、(c) tool description で補強。
 現状は素の schemars 出力をそのまま渡している (PoC)。
+✅ **解決 (2026-06-23)**: claude-opus-4-8 @ Anthropic OpenAI 互換層は schemars 出力
+($defs/$ref/title 含む) を**そのまま受理**。密室脱出 通しプレイ成功 (4/4 一発合格・goal 到達)。
+他 provider (OpenAI strict モード等) は未検証だが、少なくとも Anthropic 互換では inline 展開不要。
 
 ### 4. パース失敗時に raw を捨てると再生成できない
 `adjudicate` の Reject も JSON パース失敗も、LLM に**戻して直させる**のが self_repair の核。
@@ -74,3 +77,22 @@ bin `play` の `main() -> Result<(), Box<dyn Error>>` で、`return Err(Box::new
 → 具体エラーは `Box::new(e)` でなく `e.into()` で返す。`From<E> for Box<dyn Error>` が効いて
 dyn に widening される。戻り値が dyn なら**全ての error 構築を .into() に統一**するのが安全。
 症状(5件のFrom未実装)は派手だが根は1行。mandate_logical_friction_processing の実例。
+
+## crates/llm_client (2026-06-23 実 API 初投入で判明)
+
+### 12. 新しめのモデルは `temperature` を非対応にしており送ると 400
+claude-opus-4-8 @ Anthropic 互換層は `temperature` パラメータを deprecated 扱いで拒否
+(`400 "temperature is deprecated for this model"`)。LocalAI は常に temperature を送っていたが、
+クラウドの新モデルでは弾かれる。
+→ `ChatRequest.temperature: Option<f32>` + `skip_serializing_if`。`LlmConfig.temperature` も
+Option にし、**`LLM_TEMPERATURE` 明示時のみ送る** (既定は省略 = provider 既定に委ねる)。
+.env.example も既定でコメントアウト。tool_choice 強制が構造を保証するので温度固定は不要だった。
+教訓: 互換 API でも「全 provider 共通の必須パラメータ」は思ったより少ない。未指定で provider
+既定に委ねるのが最も壊れにくい。送る前提でなく省略を既定にする。
+
+### 13. `from_env()` が `dotenvy::dotenv()` を呼ぶとテスト不能になる
+「api_key 欠落で Config エラー」を検証するテストが、実 .env 存在時に失敗。理由: from_env 内の
+dotenv が .env のキーをプロセス env に再注入し、`remove_var` を打ち消す。
+→ **.env 読み込みはアプリ入口 (bin main) の責務に移す**。from_env は env を読むだけ (副作用なし)。
+慣習的にも正しい分離 (lib は環境を勝手に書き換えない)。dotenvy 依存も llm_client → harness へ移動。
+教訓: テスト不能は設計の臭い。グローバル副作用 (env 書き換え) を純粋な読み取りから分離する。

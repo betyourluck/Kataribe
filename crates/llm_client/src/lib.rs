@@ -101,7 +101,7 @@ mod tests {
         let req = ChatRequest {
             model: "m".into(),
             messages: user_msgs(),
-            temperature: 0.1,
+            temperature: Some(0.1),
             max_tokens: 256,
             tools: vec![wire::Tool {
                 kind: wire::ToolKind::Function,
@@ -117,11 +117,16 @@ mod tests {
         assert_eq!(body["tool_choice"]["type"], "function");
         assert_eq!(body["tool_choice"]["function"]["name"], EMIT_DELTA_TOOL);
         assert_eq!(body["tools"][0]["function"]["name"], EMIT_DELTA_TOOL);
+        // f32→JSON は精度差が出るので近似比較 (明示時は temperature を送る)。
+        assert!(
+            (body["temperature"].as_f64().unwrap() - 0.1).abs() < 1e-3,
+            "明示時は temperature を送る"
+        );
         // ツール無しの generate ではキーごと消える (skip_serializing_if)。
         let plain = ChatRequest {
             model: "m".into(),
             messages: user_msgs(),
-            temperature: 0.2,
+            temperature: None,
             max_tokens: 256,
             tools: vec![],
             tool_choice: None,
@@ -129,6 +134,11 @@ mod tests {
         let pbody = serde_json::to_value(&plain).unwrap();
         assert!(pbody.get("tools").is_none(), "ツール無しなら tools は出さない");
         assert!(pbody.get("tool_choice").is_none());
+        // temperature 未設定 (None) なら **キーごと送らない** (新しめモデルは送ると 400)。
+        assert!(
+            pbody.get("temperature").is_none(),
+            "temperature None なら省略する (claude-opus-4-8 等は temperature 非対応)"
+        );
     }
 
     fn response_with_tool_args(args: &str) -> ChatResponse {

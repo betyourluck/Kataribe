@@ -40,7 +40,10 @@ impl ChatMessage {
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
-    pub temperature: f32,
+    /// 明示設定時のみ送る。新しめのモデル (例: claude-opus-4-8) は temperature を
+    /// 非対応にしており、送ると 400 を返す。未設定 (None) なら provider 既定に委ねる。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Tool>,

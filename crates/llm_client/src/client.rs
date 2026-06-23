@@ -70,8 +70,8 @@ impl LlmClient {
         };
         let req = ChatRequest {
             model: self.config.model.clone(),
-            // 構造化出力は低温で決定論寄りに (Python generate_json と同様 0.1)。
-            temperature: 0.1,
+            // temperature は config 任せ (未設定なら送らない)。tool_choice 強制が構造を保証する。
+            temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             messages,
             tools: vec![tool],

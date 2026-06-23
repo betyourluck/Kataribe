@@ -13,7 +13,8 @@ pub struct LlmConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
-    pub temperature: f32,
+    /// 明示設定時のみ送る (`None` なら provider 既定)。新しめのモデルは temperature 非対応。
+    pub temperature: Option<f32>,
     pub max_tokens: u32,
     pub request_timeout: Duration,
     /// chat 呼び出しの最大試行回数 (指数 backoff)。tenacity `stop_after_attempt` 同型。
@@ -24,15 +25,16 @@ impl LlmConfig {
     /// 環境変数から構築する。`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` は必須でないが、
     /// `api_key` が空の場合のみ `Config` エラーにする (キー無しでは API を叩けないため)。
     ///
+    /// プロセス env を読むだけ (副作用なし・テスト可能)。`.env` の読み込みは呼び出し側
+    /// (アプリ入口) の責務 — bin で `dotenvy::dotenv().ok()` を先に呼ぶ。
+    ///
     /// 既定値:
     /// - `LLM_BASE_URL` = `https://api.openai.com/v1`
     /// - `LLM_MODEL`    = `gpt-4o-mini`
-    /// - `LLM_TEMPERATURE` = `0.2`, `LLM_MAX_TOKENS` = `4096`
+    /// - `LLM_TEMPERATURE` = **未設定なら送らない** (provider 既定に委ねる)
+    /// - `LLM_MAX_TOKENS` = `4096`
     /// - `LLM_REQUEST_TIMEOUT_SECS` = `120`, `LLM_MAX_RETRIES` = `3`
     pub fn from_env() -> Result<Self, LlmError> {
-        // .env があれば読む。無くても (CI 等) エラーにしない。
-        let _ = dotenvy::dotenv();
-
         let api_key = env_opt("LLM_API_KEY").unwrap_or_default();
         if api_key.trim().is_empty() {
             return Err(LlmError::Config(
@@ -40,12 +42,20 @@ impl LlmConfig {
             ));
         }
 
+        // temperature は明示設定時のみ Some。新しめのモデルは送ると 400 になるため。
+        let temperature = match env_opt("LLM_TEMPERATURE") {
+            None => None,
+            Some(raw) => Some(raw.parse::<f32>().map_err(|_| {
+                LlmError::Config(format!("環境変数 LLM_TEMPERATURE の値 '{raw}' を解釈できません"))
+            })?),
+        };
+
         Ok(Self {
             base_url: env_opt("LLM_BASE_URL")
                 .unwrap_or_else(|| "https://api.openai.com/v1".into()),
             api_key,
             model: env_opt("LLM_MODEL").unwrap_or_else(|| "gpt-4o-mini".into()),
-            temperature: env_parse("LLM_TEMPERATURE", 0.2)?,
+            temperature,
             max_tokens: env_parse("LLM_MAX_TOKENS", 4096)?,
             request_timeout: Duration::from_secs(env_parse("LLM_REQUEST_TIMEOUT_SECS", 120)?),
             max_retries: env_parse("LLM_MAX_RETRIES", 3)?,
@@ -58,7 +68,7 @@ impl LlmConfig {
             base_url: base_url.into(),
             api_key: api_key.into(),
             model: model.into(),
-            temperature: 0.2,
+            temperature: None,
             max_tokens: 4096,
             request_timeout: Duration::from_secs(120),
             max_retries: 3,

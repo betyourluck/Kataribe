@@ -12,6 +12,7 @@ llm_client = { path = "../llm_client" }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+dotenvy.workspace = true
 
 # 実クラウド通しプレイ用の bin (ネットワーク必須、テスト対象外)。
 [[bin]]

@@ -101,8 +101,9 @@ DeltaProposer:                    # 提案者の抽象 (依存性逆転の境界
 
 GmPlay:                           # 実クラウド通しプレイ CLI (harness bin "play")
   wiring:  "LlmClient を DeltaProposer として run_turn に配線。stdin から行動、scenarios/*.yaml ロード"
-  status:  "bin 着地・設定エラーパス確認済。実キーでの通しプレイ (ネットワーク経路) は未実施"
-  metrics: "計測すべき核心的未知: 却下→再生成の収束回数(attempts) / 幻アイテム・未達移動の発生率 / narration 品質"
+  status:  "✅ 通しプレイ成功 (2026-06-23, claude-opus-4-8 @ Anthropic 互換)。密室脱出 goal 到達 (turn4, 4/4 一発合格)"
+  proven:  "LLM が制約内で構造化出力を継続できる / schemars schema を Anthropic が受理 / 正本の段階裁定 (flag→item→unlock→move) が正しく機能"
+  next:    "敵対プレイ (嘘の op → 却下→再生成) の実 LLM 挙動測定。決定論テストでは証明済"
 
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
