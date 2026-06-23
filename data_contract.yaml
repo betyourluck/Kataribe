@@ -139,7 +139,19 @@ GmPlay:                           # 実クラウド通しプレイ CLI (harness 
   proven_adversarial: "prompt層=gate を読み不可能行動を自ら拒否 / engine層=原子性違反デルタを却下→理由還流→合法部分手に修正 (attempts=2)。再生成のプレーン echo が実API で通る (#15 実証)"
   next:    "Memoria 脚接続 (伏線/性格のみ) → UI 殻。UI 時 narration の literal \\n 正規化 (#16)"
 
+# --- 反応機構: 禁忌(Phase B) と トリガー(Phase C) は双対 ---------------------
+# 両者とも「delta 適用後に Gate を評価する」同じ機構を使う。Phase B が機構を作り、
+# Phase C が再利用する。禁忌=Gate 真化を却下(負)、トリガー=Gate 真化で発火(正)。
+Taboo:                            # Phase B (CharacterDef.taboos): 硬い禁忌
+  semantics: "delta 適用後に taboo(Gate) が真化するなら却下。キャラが自分の禁忌を破れない"
+Trigger:                          # Phase C (未実装、設計凍結): エンジンが保証する反応ビート
+  when: Gate                      # 発火条件 (好感度>=50 等)
+  effects: "[StateOp] 機械的効果 (フラグ・stat・解放) をエンジンが原子適用"
+  narration: "語りの指示を LLM に注入 (例: アリスは子供時代の約束を思い出す)"
+  once: "edge-triggered。GameState.fired: Set<TriggerId> で発火済み追跡 (セーブ対象)"
+  memoria_bridge: "『思い出す』系トリガーは Memoria 脚と合流: 条件成立→伏線 recall→語りに注入"
+
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
-  memoria: "episodic/伏線/キャラ性格の semantic recall。可変世界状態は絶対に置かない"
+  memoria: "episodic/伏線/キャラ性格の semantic recall。可変世界状態は絶対に置かない。Trigger と合流"
   ui:      "LocalAI prompt(Tauri+Vue) 殻の移植"
