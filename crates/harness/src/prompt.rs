@@ -23,7 +23,9 @@ fn gate_brief(gate: &Gate) -> String {
         Gate::HasItem { item } => format!("「{item}」を所持していること"),
         Gate::FlagIs { key, value } => format!("状態「{key}」が {value} であること"),
         Gate::LocationIs { at } => format!("「{at}」にいること"),
-        Gate::StatAtLeast { key, value } => format!("能力「{key}」が {value} 以上であること"),
+        Gate::StatAtLeast { entity, key, value } => {
+            format!("{entity} の能力「{key}」が {value} 以上であること")
+        }
         Gate::All { of } => {
             let parts: Vec<String> = of.iter().map(gate_brief).collect();
             format!("すべて満たす({})", parts.join(" / "))
@@ -35,9 +37,22 @@ fn gate_brief(gate: &Gate) -> String {
     }
 }
 
-/// シナリオの盤面を要約する (場所・アイテム・出口・ゴール)。
+/// シナリオの盤面を要約する (登場人物・場所・アイテム・出口・ゴール)。
 pub fn scenario_brief(scenario: &Scenario) -> String {
     let mut s = format!("# シナリオ: {}\n", scenario.title);
+
+    // 登場人物の profile (設定・背景・性格・性向)。語りで一貫させるための素材。
+    if !scenario.characters.is_empty() {
+        s.push_str("\n## 登場人物\n");
+        for (id, c) in &scenario.characters {
+            let name = if c.name.is_empty() { id.as_str() } else { c.name.as_str() };
+            s.push_str(&format!("### {name} ({id})\n"));
+            if !c.profile.trim().is_empty() {
+                s.push_str(&format!("{}\n", c.profile.trim()));
+            }
+        }
+    }
+
     s.push_str("\n## 場所\n");
     for (id, loc) in &scenario.locations {
         s.push_str(&format!("### {id}\n{}\n", loc.description));
@@ -72,19 +87,27 @@ pub fn state_brief(state: &GameState) -> String {
         .map(|(k, _)| k.clone())
         .collect();
     let flags = if flags.is_empty() { "なし".to_string() } else { flags.join(", ") };
-    let stats = if state.stats.is_empty() {
+    // キャラ別の能力値 (entity ごとに 1 行)。
+    let entities = if state.entities.is_empty() {
         "なし".to_string()
     } else {
         state
-            .stats
+            .entities
             .iter()
-            .map(|(k, v)| format!("{k}={v}"))
+            .map(|(eid, stats)| {
+                let kv = stats
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{eid}: {kv}")
+            })
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(" / ")
     };
     format!(
         "# 現在の状態 (turn {})\n- 現在地: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}",
-        state.turn, state.location, inv, flags, stats,
+        state.turn, state.location, inv, flags, entities,
     )
 }
 

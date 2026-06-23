@@ -11,7 +11,7 @@ GameState:
   location: LocationId          # 現在地。Move は Scenario の exit がある時のみ変わる
   inventory: [ItemId]           # 集合。AddItem は「現在地に在り、取得gate達成」時のみ
   flags: { FlagKey: bool }      # 許可フラグのみ。SetFlag(true) は flag_rules の gate 達成時のみ
-  stats: { StatKey: i64 }       # 数値の真実 (HP/STR/好感度/金 等)。算術はエンジンが行う。LLMは値を持てない
+  entities: { EntityId: { StatKey: i64 } }  # キャラ別の数値の真実。算術はエンジン、LLMは値を持てない。"player" は主人公
   rng: { seed: u64, cursor: u64 }  # ダイスは決定論・監査可能。LLMは結果を持たない
   turn: u32                     # 受理されたデルタ数。却下では進まない
 
@@ -27,8 +27,9 @@ StateOp:                        # 内部タグ "op" 付き列挙
   - { op: move,         to: LocationId }
   - { op: request_roll, sides: u32, dc: u32 }   # 結果は書かない。エンジンが振って裁く
   # --- 数値ステータス: LLM は「意図」だけ提案、算術はエンジンが実行 (四則演算) ---
-  - { op: adjust_stat,  key: StatKey, delta: i64 }            # 加減 (+/-): new = clamp(current + delta)
-  - { op: scale_stat,   key: StatKey, num: i64, den: i64 }    # 乗除 (×/÷): new = clamp(current * num / den)。den=0 は却下
+  # entity 省略時は "player"。clamp 境界は CharacterDef.stats の StatDecl(min/max)。
+  - { op: adjust_stat,  entity: EntityId, key: StatKey, delta: i64 }          # 加減 (+/-): clamp(current + delta)
+  - { op: scale_stat,   entity: EntityId, key: StatKey, num: i64, den: i64 }  # 乗除 (×/÷): clamp(current * num / den)。den=0 却下
 
 # --- 裁定の不変条件 (engine::adjudicate / apply が守る掟) --------------------
 adjudication:
@@ -39,10 +40,11 @@ adjudication:
   set_flag:   "未許可キー / flag_rules の gate 未達 (value=true時) → Reject"
   move:       "現在地から to への exit が無い / exit.gate 未達 → Reject"
   request_roll:"LLMは結果を主張できない (op構造上不可能)。面数<1 → Reject"
-  adjust_stat:"scenario.initial_stats に無いキー → Reject (未宣言の stat は作れない)"
+  adjust_stat:"entity が未宣言の stat を持つ → Reject (未宣言の stat は作れない)"
   scale_stat: "未宣言キー → Reject / den=0 (ゼロ除算) → Reject。LLMは /0 でエンジンを壊せない"
-  stat_clamp: "PoC: 全 stat は 0 下限でクランプ (HP=0 は死)。上限・最小は将来 scenario で宣言可能に"
+  stat_clamp: "clamp は CharacterDef.stats の StatDecl(min 既定 0 / max 既定なし)。entity ごと・stat ごと"
   reasons:    "Verdict::Reject は構造化 RejectReason 列 (文字列でなくデータ)。ルールはエンジン不変、文面は提示層"
+  taboo:      "Phase B: CharacterDef.taboos (硬い禁忌=Gate) が true になる delta を却下。柔らかい性向は profile (語り) へ"
 
 # --- 却下理由の構造化と多言語 (reason.rs) -----------------------------------
 # エンジンは「なぜ却下したか」をデータで返し、文面は提示層が言語ごとに生成する。
@@ -57,7 +59,21 @@ Scenario:
   start: LocationId
   allowed_flags: [FlagKey]
   flag_rules: { FlagKey: Gate }     # 記載なければ Always
-  initial_stats: { StatKey: i64 }   # 初期値かつ「宣言済 stat の集合」。ここに無いキーは adjust/scale 不可
+  initial_stats: { StatKey: i64 }   # "player" の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い
+  characters: { EntityId: CharacterDef }  # 登場人物(player以外)。Phase A は scenario inline、外部 characters/*.yaml 分離はローダで注入(次)
+
+# --- キャラクター定義 (characters/*.yaml、不変の authored 定義 = GameDefinitions 相当) ---
+# 数値=正本(エンジン), 設定/背景/性向=語りの素材(→いずれ Memoria), 硬い禁忌=エンジン強制(Phase B)。
+CharacterDef:
+  name: string                      # 表示名
+  profile: string                   # 設定・背景・性格・性向 (柔らかい。語りに供給、可変世界状態は持たない)
+  stats: { StatKey: StatDecl }      # このキャラが持つ stat の宣言。initial が entities の初期値
+  taboos: [Gate]                    # 硬い禁忌。これが true になる delta を却下 (Phase B で強制)
+
+StatDecl:
+  initial: i64                      # 初期値
+  min: i64                          # 下限 (省略時 0)
+  max: i64                          # 上限 (省略時 なし)
   locations: { LocationId: Location }
   goal: Gate                        # 達成でクリア
 

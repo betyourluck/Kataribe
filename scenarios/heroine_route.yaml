@@ -1,0 +1,38 @@
+# PoC シナリオ: 邂逅 (キャラ別ステータスの最小盤面)
+# 数値が「player 1人」から「キャラ別 (entity)」へ広がる最小例。
+# 好感度はアリス (entity=alice) に紐づき、エンジンがキャラ別に握る。
+#
+# 正規の筋:
+#   好感度を 50 まで上げる → goal (alice の好感度 >= 50)
+#
+# キャラ定義 (本来は characters/alice.yaml に分離可能。ここでは inline)。
+#   - profile: 設定・背景・性向 (柔らかい。語りに供給。"豚肉を断つ" は Phase B で硬い禁忌に)
+#   - stats:   好感度 (initial 0, min 0, max 100) — 境界もここで宣言
+#   - taboos:  硬い禁忌 (Phase B でエンジンが強制)
+
+title: 邂逅
+start: parlor
+
+initial_stats: {}        # 主人公は数値を持たない (この盤面では)
+
+characters:
+  alice:
+    name: アリス
+    profile: |
+      宿屋の娘。人見知りだが芯は強い。甘いものに目がない。
+      古い氏族の誓いで、豚肉を決して口にしない。
+    stats:
+      好感度: { initial: 0, min: 0, max: 100 }
+    taboos:
+      - { kind: flag_is, key: alice_ate_pork, value: true }   # Phase B で強制
+
+allowed_flags:
+  - alice_ate_pork
+
+locations:
+  parlor:
+    description: 暖炉のある宿屋の談話室。カウンターの奥にアリスが立っている。
+    items: {}
+    exits: []
+
+goal: { kind: stat_at_least, entity: alice, key: 好感度, value: 50 }

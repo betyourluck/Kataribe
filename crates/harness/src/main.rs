@@ -132,14 +132,21 @@ fn inventory(state: &GameState) -> String {
 }
 
 fn stats_line(state: &GameState) -> String {
-    if state.stats.is_empty() {
+    if state.entities.is_empty() {
         "なし".to_string()
     } else {
         state
-            .stats
+            .entities
             .iter()
-            .map(|(k, v)| format!("{k}={v}"))
+            .map(|(eid, stats)| {
+                let kv = stats
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{eid}({kv})")
+            })
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(" / ")
     }
 }

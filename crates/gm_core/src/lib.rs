@@ -16,5 +16,8 @@ pub mod state;
 
 pub use engine::{adjudicate, apply, is_goal, RollOutcome, Verdict};
 pub use reason::{Lang, RejectReason};
-pub use spine::{Exit, Gate, Location, Scenario};
-pub use state::{FlagKey, GameState, ItemId, LocationId, RngState, StatKey, StateDelta, StateOp};
+pub use spine::{CharacterDef, Exit, Gate, Location, Scenario, StatDecl};
+pub use state::{
+    default_entity, EntityId, FlagKey, GameState, ItemId, LocationId, RngState, StatKey, StateDelta,
+    StateOp, PLAYER,
+};

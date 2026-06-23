@@ -8,6 +8,15 @@ pub type ItemId = String;
 pub type LocationId = String;
 pub type FlagKey = String;
 pub type StatKey = String;
+pub type EntityId = String;
+
+/// 主人公の規約的 EntityId。op/gate が entity を省略した時の既定。
+pub const PLAYER: &str = "player";
+
+/// op/gate の `entity` 省略時に使う既定値 (serde default)。
+pub fn default_entity() -> EntityId {
+    PLAYER.to_string()
+}
 
 /// ゲームの唯一の真実。エンジンだけが [`crate::apply`] 経由で変更できる。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,9 +26,10 @@ pub struct GameState {
     pub inventory: BTreeSet<ItemId>,
     #[serde(default)]
     pub flags: BTreeMap<FlagKey, bool>,
-    /// 数値の真実 (HP/STR/好感度/金 等)。算術はエンジンだけが [`crate::apply`] で行う。
+    /// キャラ別の数値の真実 (HP/STR/好感度 等)。算術はエンジンだけが [`crate::apply`] で行う。
+    /// `"player"` が主人公。各 entity は [`crate::Scenario`] の宣言で初期化される。
     #[serde(default)]
-    pub stats: BTreeMap<StatKey, i64>,
+    pub entities: BTreeMap<EntityId, BTreeMap<StatKey, i64>>,
     pub rng: RngState,
     #[serde(default)]
     pub turn: u32,
@@ -32,7 +42,7 @@ impl GameState {
             location: location.into(),
             inventory: BTreeSet::new(),
             flags: BTreeMap::new(),
-            stats: BTreeMap::new(),
+            entities: BTreeMap::new(),
             rng: RngState { seed, cursor: 0 },
             turn: 0,
         }
@@ -47,9 +57,26 @@ impl GameState {
         self.flags.get(key).copied().unwrap_or(false)
     }
 
-    /// 未設定 stat は 0 扱い。
+    /// 指定キャラの stat。未設定は 0 扱い。
+    pub fn stat_of(&self, entity: &str, key: &str) -> i64 {
+        self.entities
+            .get(entity)
+            .and_then(|s| s.get(key))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// 主人公 (`"player"`) の stat。未設定は 0 扱い。
     pub fn stat(&self, key: &str) -> i64 {
-        self.stats.get(key).copied().unwrap_or(0)
+        self.stat_of(PLAYER, key)
+    }
+
+    /// キャラの stat を設定する (エンジン内部用。entity が無ければ作る)。
+    pub fn set_stat(&mut self, entity: &str, key: &str, value: i64) {
+        self.entities
+            .entry(entity.to_string())
+            .or_default()
+            .insert(key.to_string(), value);
     }
 }
 
@@ -109,9 +136,20 @@ pub enum StateOp {
     /// ダイスを振る要求。**結果は含めない** — エンジンが振って裁く。
     RequestRoll { sides: u32, dc: u32 },
     /// stat への加減 (+/−)。エンジンが `clamp(current + delta)` を計算する。
-    /// LLM は変化量(意図)だけを提案し、結果の値は持てない。
-    AdjustStat { key: StatKey, delta: i64 },
+    /// LLM は変化量(意図)だけを提案し、結果の値は持てない。`entity` 省略時は主人公。
+    AdjustStat {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        key: StatKey,
+        delta: i64,
+    },
     /// stat への乗除 (×/÷)。エンジンが `clamp(current * num / den)` を計算する。
-    /// `den == 0` (ゼロ除算) はエンジンが却下するので、LLM は /0 で壊せない。
-    ScaleStat { key: StatKey, num: i64, den: i64 },
+    /// `den == 0` (ゼロ除算) はエンジンが却下するので、LLM は /0 で壊せない。`entity` 省略時は主人公。
+    ScaleStat {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        key: StatKey,
+        num: i64,
+        den: i64,
+    },
 }

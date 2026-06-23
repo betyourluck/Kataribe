@@ -90,14 +90,14 @@ pub fn adjudicate(state: &GameState, scenario: &Scenario, delta: &StateDelta) ->
                 }
                 // 出目はエンジンが振る。LLM は結果を主張できない (op 構造上不可能)。
             }
-            StateOp::AdjustStat { key, delta: _ } => {
-                if !scenario.knows_stat(key) {
+            StateOp::AdjustStat { entity, key, delta: _ } => {
+                if !scenario.knows_stat(entity, key) {
                     reasons.push(RejectReason::UnknownStat { key: key.clone() });
                 }
-                // 算術 (current + delta) と 0 クランプは apply がエンジンとして行う。
+                // 算術 (current + delta) と境界クランプは apply がエンジンとして行う。
             }
-            StateOp::ScaleStat { key, num: _, den } => {
-                if !scenario.knows_stat(key) {
+            StateOp::ScaleStat { entity, key, num: _, den } => {
+                if !scenario.knows_stat(entity, key) {
                     reasons.push(RejectReason::UnknownStat { key: key.clone() });
                 }
                 if *den == 0 {
@@ -154,19 +154,28 @@ pub fn apply(
                 });
             }
             // --- 算術はエンジンが行う。LLM は意図だけ提案、値は持てない ---
-            StateOp::AdjustStat { key, delta } => {
-                let next = (state.stat(key) + delta).max(0); // 加減 + 0 クランプ
-                state.stats.insert(key.clone(), next);
+            StateOp::AdjustStat { entity, key, delta } => {
+                let next = state.stat_of(entity, key) + delta; // 加減
+                let clamped = clamp_stat(scenario, entity, key, next);
+                state.set_stat(entity, key, clamped);
             }
-            StateOp::ScaleStat { key, num, den } => {
-                // den != 0 は adjudicate が保証済。乗算先行で精度を確保し 0 クランプ。
-                let next = (state.stat(key).saturating_mul(*num) / den).max(0);
-                state.stats.insert(key.clone(), next);
+            StateOp::ScaleStat { entity, key, num, den } => {
+                // den != 0 は adjudicate が保証済。乗算先行で精度を確保。
+                let next = state.stat_of(entity, key).saturating_mul(*num) / den;
+                let clamped = clamp_stat(scenario, entity, key, next);
+                state.set_stat(entity, key, clamped);
             }
         }
     }
     state.turn += 1;
     Ok(rolls)
+}
+
+/// stat を宣言された境界 `[min, max]` に収める。max 未宣言なら上限なし。
+fn clamp_stat(scenario: &Scenario, entity: &str, key: &str, value: i64) -> i64 {
+    let (min, max) = scenario.stat_bounds(entity, key);
+    let v = value.max(min);
+    max.map_or(v, |m| v.min(m))
 }
 
 /// クリア条件を満たしているか。
@@ -182,12 +191,14 @@ pub fn is_goal(state: &GameState, scenario: &Scenario) -> bool {
 mod tests {
     use super::*;
     use crate::reason::RejectReason;
-    use crate::state::{RngState, StateOp};
+    use crate::state::{RngState, StateOp, PLAYER};
 
     // 密室脱出シナリオをコンパイル時に埋め込む (cwd 非依存)。
     const LOCKED_ROOM: &str = include_str!("../../../scenarios/locked_room.yaml");
     // 数値の最小盤面。
     const STRENGTH_TRIAL: &str = include_str!("../../../scenarios/strength_trial.yaml");
+    // キャラ別ステータスの最小盤面。
+    const HEROINE_ROUTE: &str = include_str!("../../../scenarios/heroine_route.yaml");
 
     fn scenario() -> Scenario {
         Scenario::from_yaml(LOCKED_ROOM).expect("locked_room.yaml がパースできること")
@@ -195,6 +206,10 @@ mod tests {
 
     fn trial() -> Scenario {
         Scenario::from_yaml(STRENGTH_TRIAL).expect("strength_trial.yaml がパースできること")
+    }
+
+    fn route() -> Scenario {
+        Scenario::from_yaml(HEROINE_ROUTE).expect("heroine_route.yaml がパースできること")
     }
 
     fn fresh(sc: &Scenario) -> GameState {
@@ -338,10 +353,10 @@ mod tests {
     fn adjust_stat_is_computed_by_engine() {
         let sc = trial();
         let mut s = sc.initial_state(42);
-        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "str".into(), delta: 3 }]))
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "str".into(), delta: 3 }]))
             .expect("宣言済 stat の加算は合法");
         assert_eq!(s.stat("str"), 15, "12 + 3 をエンジンが計算");
-        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "gold".into(), delta: 25 }]))
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "gold".into(), delta: 25 }]))
             .expect("加算");
         assert_eq!(s.stat("gold"), 25);
     }
@@ -352,9 +367,9 @@ mod tests {
         let sc = trial();
         let mut s = sc.initial_state(42);
         // まず脱出に必要な力をつける。
-        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "str".into(), delta: 3 }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "str".into(), delta: 3 }])).unwrap();
         // 致命の一撃。-100 でも 0 でクランプ (負の HP にならない)。
-        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "hp".into(), delta: -100 }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "hp".into(), delta: -100 }])).unwrap();
         assert_eq!(s.stat("hp"), 0, "HP は 0 でクランプ");
         // str は足りるが hp=0 なので脱出 gate (hp>=1) を満たせない = 死んでいては出られない。
         let v = adjudicate(&s, &sc, &d(vec![StateOp::Move { to: "hall".into() }]));
@@ -366,12 +381,12 @@ mod tests {
     fn scale_stat_multiplies_and_divides() {
         let sc = trial();
         let mut s = sc.initial_state(42);
-        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "gold".into(), delta: 10 }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "gold".into(), delta: 10 }])).unwrap();
         // ×2: 報酬を倍に。
-        apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 2, den: 1 }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { entity: PLAYER.into(), key: "gold".into(), num: 2, den: 1 }])).unwrap();
         assert_eq!(s.stat("gold"), 20, "10 × 2 をエンジンが計算");
         // ÷2: 半減。
-        apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 1, den: 2 }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { entity: PLAYER.into(), key: "gold".into(), num: 1, den: 2 }])).unwrap();
         assert_eq!(s.stat("gold"), 10, "20 / 2 をエンジンが計算");
     }
 
@@ -381,14 +396,14 @@ mod tests {
         let sc = trial();
         let mut s = sc.initial_state(42);
         let before = s.stat("gold");
-        let v = adjudicate(&s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 1, den: 0 }]));
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::ScaleStat { entity: PLAYER.into(), key: "gold".into(), num: 1, den: 0 }]));
         match v {
             Verdict::Reject { reasons } => assert!(reasons
                 .iter()
                 .any(|r| matches!(r, RejectReason::DivideByZero { key } if key == "gold"))),
             Verdict::Accept => panic!("ゼロ除算を受理してはならない"),
         }
-        let r = apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { key: "gold".into(), num: 1, den: 0 }]));
+        let r = apply(&mut s, &sc, &d(vec![StateOp::ScaleStat { entity: PLAYER.into(), key: "gold".into(), num: 1, den: 0 }]));
         assert!(r.is_err(), "apply も却下する");
         assert_eq!(s.stat("gold"), before, "却下では state 無傷");
     }
@@ -398,7 +413,7 @@ mod tests {
     fn unknown_stat_is_rejected() {
         let sc = trial();
         let s = sc.initial_state(42);
-        let v = adjudicate(&s, &sc, &d(vec![StateOp::AdjustStat { key: "mana".into(), delta: 9000 }]));
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "mana".into(), delta: 9000 }]));
         match v {
             Verdict::Reject { reasons } => assert!(reasons
                 .iter()
@@ -416,11 +431,100 @@ mod tests {
         // 力 12 のままでは押せない。
         assert!(!adjudicate(&s, &sc, &d(vec![StateOp::Move { to: "hall".into() }])).is_accept());
         // 鍛錬して 12 → 15。
-        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { key: "str".into(), delta: 3 }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "str".into(), delta: 3 }])).unwrap();
         // 今度は押せる。
         apply(&mut s, &sc, &d(vec![StateOp::Move { to: "hall".into() }]))
             .expect("str>=15 かつ hp>=1 なら脱出できる");
         assert!(is_goal(&s, &sc), "goal (hall) 到達");
+    }
+
+    // -------------------------------------------------------------------------
+    // キャラ別ステータス PoC: 数値が entity ごとに紐づく (外部キャラ定義から)
+    // -------------------------------------------------------------------------
+
+    /// キャラ定義ファイルから各 entity の初期 stat が読まれる。
+    #[test]
+    fn character_stats_load_from_scenario() {
+        let sc = route();
+        let s = sc.initial_state(7);
+        assert_eq!(s.stat_of("alice", "好感度"), 0);
+        assert_eq!(s.stat_of("player", "好感度"), 0, "player は alice と別の数値空間");
+    }
+
+    /// 【entity 指定】好感度はアリスに紐づく。player の同名 stat とは別物。
+    #[test]
+    fn adjust_targets_named_entity() {
+        let sc = route();
+        let mut s = sc.initial_state(7);
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: "alice".into(),
+            key: "好感度".into(),
+            delta: 30,
+        }]))
+        .expect("アリスの好感度は宣言済");
+        assert_eq!(s.stat_of("alice", "好感度"), 30);
+        assert_eq!(s.stat_of("player", "好感度"), 0, "player には影響しない");
+    }
+
+    /// 【境界】好感度は宣言された上限 100 でクランプされる。
+    #[test]
+    fn affection_clamps_at_declared_max() {
+        let sc = route();
+        let mut s = sc.initial_state(7);
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: "alice".into(),
+            key: "好感度".into(),
+            delta: 200,
+        }]))
+        .unwrap();
+        assert_eq!(s.stat_of("alice", "好感度"), 100, "max=100 でクランプ");
+    }
+
+    /// 【未宣言の遮断】alice が持たない stat / 未知の entity は却下。
+    #[test]
+    fn unknown_stat_or_entity_is_rejected() {
+        let sc = route();
+        let s = sc.initial_state(7);
+        // alice は mana を宣言していない。
+        assert!(!adjudicate(&s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: "alice".into(),
+            key: "mana".into(),
+            delta: 1,
+        }]))
+        .is_accept());
+        // ghost という entity は存在しない (何も宣言していない)。
+        assert!(!adjudicate(&s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: "ghost".into(),
+            key: "好感度".into(),
+            delta: 1,
+        }]))
+        .is_accept());
+    }
+
+    /// 【キャラ別数値 gate】アリスの好感度 50 で goal 到達。
+    #[test]
+    fn affection_gate_reaches_goal() {
+        let sc = route();
+        let mut s = sc.initial_state(7);
+        assert!(!is_goal(&s, &sc));
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: "alice".into(),
+            key: "好感度".into(),
+            delta: 50,
+        }]))
+        .unwrap();
+        assert!(is_goal(&s, &sc), "alice の好感度 >= 50 で goal");
+    }
+
+    /// 【既定 entity】entity 省略のデルタ (LLM/YAML) は "player" に解決される。
+    #[test]
+    fn omitted_entity_defaults_to_player() {
+        // entity を書かない (LLM/YAML が省略した) op は "player" に解決される。
+        let op: StateOp = serde_yaml::from_str("op: adjust_stat\nkey: hp\ndelta: -1").unwrap();
+        match op {
+            StateOp::AdjustStat { entity, .. } => assert_eq!(entity, PLAYER),
+            other => panic!("adjust_stat であるべき: {other:?}"),
+        }
     }
 
     /// 【原子性 × stat】不正 op を含むデルタは全体却下、stat も無傷。
@@ -429,8 +533,8 @@ mod tests {
         let sc = trial();
         let mut s = sc.initial_state(42);
         let delta = d(vec![
-            StateOp::AdjustStat { key: "str".into(), delta: 3 },   // 単体なら合法
-            StateOp::ScaleStat { key: "gold".into(), num: 1, den: 0 }, // ゼロ除算で不正
+            StateOp::AdjustStat { entity: PLAYER.into(), key: "str".into(), delta: 3 },   // 単体なら合法
+            StateOp::ScaleStat { entity: PLAYER.into(), key: "gold".into(), num: 1, den: 0 }, // ゼロ除算で不正
         ]);
         assert!(apply(&mut s, &sc, &delta).is_err());
         assert_eq!(s.stat("str"), 12, "却下されたデルタは stat を変えない");
