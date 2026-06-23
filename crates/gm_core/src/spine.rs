@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{
-    default_entity, EntityId, FlagKey, GameState, ItemId, LocationId, StateOp, StatKey, TriggerId,
-    PLAYER,
+    default_entity, EntityId, FlagKey, GameState, ItemId, LocationId, SkillId, StateOp, StatKey,
+    TriggerId, PLAYER,
 };
 
 /// state に対して評価される条件。
@@ -31,6 +31,12 @@ pub enum Gate {
         key: StatKey,
         value: i64,
     },
+    /// 指定キャラが能力を獲得済みである (能力条件)。閉世界: 宣言/開花した能力のみ true。`entity` 省略時は主人公。
+    HasSkill {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        skill: SkillId,
+    },
     /// すべての子条件が通る (AND)。
     All { of: Vec<Gate> },
     /// いずれかの子条件が通る (OR)。
@@ -45,6 +51,7 @@ impl Gate {
             Gate::FlagIs { key, value } => s.flag(key) == *value,
             Gate::LocationIs { at } => &s.location == at,
             Gate::StatAtLeast { entity, key, value } => s.stat_of(entity, key) >= *value,
+            Gate::HasSkill { entity, skill } => s.has_skill(entity, skill),
             Gate::All { of } => of.iter().all(|g| g.eval(s)),
             Gate::Any { of } => of.iter().any(|g| g.eval(s)),
         }
@@ -98,6 +105,10 @@ pub struct CharacterDef {
     /// このキャラが持つ stat の宣言。`initial` が [`Scenario::initial_state`] の初期値。
     #[serde(default)]
     pub stats: BTreeMap<StatKey, StatDecl>,
+    /// 宣言された閉じた能力集合 (催眠/予知 等)。初期スキル。未宣言の能力は存在しない
+    /// (メアリー・スー遮断)。開花は authored トリガーの grant_skill 効果のみ。
+    #[serde(default)]
+    pub skills: BTreeSet<SkillId>,
     /// 硬い禁忌: これが true になる delta を却下する (Phase B でエンジン強制)。
     #[serde(default)]
     pub taboos: Vec<Gate>,
@@ -143,6 +154,9 @@ pub struct Scenario {
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
     pub initial_stats: BTreeMap<StatKey, i64>,
+    /// `"player"` の初期スキル糖衣 (閉世界宣言)。NPC は [`CharacterDef::skills`]。
+    #[serde(default)]
+    pub initial_skills: BTreeSet<SkillId>,
     /// 登場人物 (player 以外)。外部 `characters/*.yaml` を読み込んで注入する。
     #[serde(default)]
     pub characters: BTreeMap<EntityId, CharacterDef>,
@@ -195,10 +209,16 @@ impl Scenario {
         for (k, v) in &self.initial_stats {
             s.set_stat(PLAYER, k, *v);
         }
+        for skill in &self.initial_skills {
+            s.grant_skill(PLAYER, skill);
+        }
         // 登場人物の宣言。
         for (eid, def) in &self.characters {
             for (k, decl) in &def.stats {
                 s.set_stat(eid, k, decl.initial);
+            }
+            for skill in &def.skills {
+                s.grant_skill(eid, skill);
             }
         }
         s

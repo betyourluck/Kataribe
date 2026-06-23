@@ -40,6 +40,8 @@ struct StatView {
 struct EntityView {
     id: String,
     stats: Vec<StatView>,
+    /// 獲得済みの能力 (閉世界 capability)。ここに無い能力は存在しない。
+    skills: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -134,15 +136,28 @@ fn normalize(s: &str) -> String {
 }
 
 fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
-    let entities = state
-        .entities
-        .iter()
-        .map(|(id, stats)| EntityView {
+    // stat を持つ entity と skill を持つ entity の和集合 (どちらか一方しか持たない場合がある)。
+    let ids: std::collections::BTreeSet<&String> =
+        state.entities.keys().chain(state.skills.keys()).collect();
+    let entities = ids
+        .into_iter()
+        .map(|id| EntityView {
             id: id.clone(),
-            stats: stats
-                .iter()
-                .map(|(k, v)| StatView { key: k.clone(), value: *v })
-                .collect(),
+            stats: state
+                .entities
+                .get(id)
+                .map(|stats| {
+                    stats
+                        .iter()
+                        .map(|(k, v)| StatView { key: k.clone(), value: *v })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            skills: state
+                .skills
+                .get(id)
+                .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default(),
         })
         .collect();
     StateView {

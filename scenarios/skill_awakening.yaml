@@ -1,0 +1,52 @@
+# PoC シナリオ: 力の覚醒 (閉世界 capability / メアリー・スー遮断の最小盤面)
+#
+# 原理: 能力は正本に宣言された閉じた集合。未宣言の能力は存在せず、その場で開花しない。
+# 開花は authored トリガー (grant_skill 効果) のみ — LLM が grant_skill を提案すると却下される。
+#
+# 正規の筋:
+#   儀式を行う (awakening_rite=true) → トリガー awaken_foresight が「予知」を開花
+#   → 予知 gate の扉を越えて beyond へ → goal
+#
+# 反メアリー・スー: 儀式を経ずに「予知を思い出した」ことにはできない (扉の HasSkill gate が遮断)。
+# LLM が grant_skill op で予知を生やそうとしても adjudicate が SkillGrantNotAllowed で却下。
+
+title: 力の覚醒
+start: chamber
+
+initial_stats: {}
+initial_skills: [剣術]        # player は剣術だけ宣言済み (閉世界)
+
+characters:
+  alice:
+    name: アリス
+    profile: |
+      石室まで同行した治療師。
+    stats: {}
+    skills: [癒し]            # NPC の宣言済み能力
+
+allowed_flags:
+  - awakening_rite
+
+flag_rules: {}               # awakening_rite は Always (儀式自体は行える)
+
+triggers:
+  # 儀式を経て初めて予知が目覚める (開花=authored トリガー。LLM の気まぐれでは開花しない)。
+  - id: awaken_foresight
+    when: { kind: flag_is, key: awakening_rite, value: true }
+    effects:
+      - { op: grant_skill, entity: player, skill: 予知 }
+    narration: 石室の古い紋様が淡く光り、あなたの内に眠っていた予知の力が目を覚ます。
+
+locations:
+  chamber:
+    description: 紋様の刻まれた石室。奥に閉ざされた扉がある。
+    items: {}
+    exits:
+      - to: beyond
+        gate: { kind: has_skill, entity: player, skill: 予知 }   # 予知が無ければ越えられない
+  beyond:
+    description: 時の歪んだ回廊。
+    items: {}
+    exits: []
+
+goal: { kind: location_is, at: beyond }

@@ -219,3 +219,24 @@ narration だけ**で贈与を成立させた。エンジンは弾く対象 (op)
 モデル化し (NPC inventory + give op)、状態に関わる行為は narration でなく op 経由を強制する方向、
 (b) narration 監査パス (op に無い状態主張を後段で検出) — ただし narration を解釈する以上 LLM 依存に
 なり決定論を失う。usage-over-extension で当面は prompt 層硬化に留める。
+
+## crates/gm_core (2026-06-24 閉世界 capability — メアリー・スー遮断)
+
+### 24. 能力も閉世界で宣言する — 「思い出したように開花する力」を構造で断つ (#23 の一般化)
+#23 (所持物) と同クラス: 未宣言の **能力** を narration で開花させると、その場の都合で催眠/予知を
+発揮する万能キャラ (メアリー・スー) になる。一般化した原理 = **capability は正本に宣言された閉じた
+集合。未宣言は存在しない**。Kataribe は既に「未宣言 stat は却下」を持っていた → これを能力に拡張。
+【実装 (option: 宣言+gate+開花トリガー)】CharacterDef.skills / Scenario.initial_skills で閉じた能力集合を
+宣言 (初期=GameState.skills{entity})。Gate::HasSkill で能力を op/移動/取得/trigger の前提条件にできる。
+**開花は authored トリガーの grant_skill 効果のみ**: LLM が grant_skill op を提案すると adjudicate が
+RejectReason::SkillGrantNotAllowed で却下、trigger effects は apply_ops 直行なので付与できる
+(= 禁忌/トリガー双対の三例目。「開花は許される、ただし作者が書いた gated 発火としてのみ」)。
+【二層】engine 層 = 未宣言/未開花スキルを参照する op gate が false で遮断 + LLM grant_skill 却下。
+prompt 層 = state_brief が各 entity の「使える能力」を提示し、GM_SYSTEM が「列挙された能力しか使えない/
+勝手に開花しない/未宣言の力で局面打開を書くな」を接地 (narration 側の唯一の防衛線, #23 同型)。
+【実 LLM 検証 (2026-06-24, claude-opus-4-8)】「眠っていた予知能力を思い出して発揮する」行動 →
+GM は「何も来ない。予知能力なんてものは最初から自分の中になかった」と接地、状態変化ゼロ。
+PoC: skills_load_from_declaration / has_skill_gate_blocks_without_skill / llm_proposed_grant_skill_is_rejected
+/ trigger_awakens_skill_then_gate_passes (儀式→開花→予知 gate 通過→goal の正面)。gm_core 33→37。
+【副次】schemars が GrantSkill を tool schema に自動露出するので LLM は提案できてしまうが、adjudicate が
+常に却下するので幻アイテム (master_key) と同じく無害。プロンプト変更ゼロで schema 追従 (#17 の利点)。

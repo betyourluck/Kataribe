@@ -148,6 +148,14 @@ fn validate_ops(
                     reasons.push(RejectReason::DivideByZero { key: key.clone() });
                 }
             }
+            StateOp::GrantSkill { entity, skill } => {
+                // 能力の開花は authored トリガーの専権。LLM 提案は常に却下 (メアリー・スー遮断)。
+                // trigger effects は apply_ops 直行なのでこの検証を通らず付与できる。
+                reasons.push(RejectReason::SkillGrantNotAllowed {
+                    entity: entity.clone(),
+                    skill: skill.clone(),
+                });
+            }
         }
     }
 }
@@ -272,6 +280,10 @@ fn apply_ops(state: &mut GameState, scenario: &Scenario, delta: &StateDelta) -> 
                 let clamped = clamp_stat(scenario, entity, key, next);
                 state.set_stat(entity, key, clamped);
             }
+            StateOp::GrantSkill { entity, skill } => {
+                // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
+                state.grant_skill(entity, skill);
+            }
         }
     }
     rolls
@@ -307,6 +319,8 @@ mod tests {
     const HEROINE_ROUTE: &str = include_str!("../../../scenarios/heroine_route.yaml");
     // 反応ビート (Phase C) の最小盤面。
     const TRIGGER_RECALL: &str = include_str!("../../../scenarios/trigger_recall.yaml");
+    // 閉世界 capability (スキル覚醒) の最小盤面。
+    const SKILL_AWAKENING: &str = include_str!("../../../scenarios/skill_awakening.yaml");
 
     fn scenario() -> Scenario {
         Scenario::from_yaml(LOCKED_ROOM).expect("locked_room.yaml がパースできること")
@@ -322,6 +336,10 @@ mod tests {
 
     fn recall() -> Scenario {
         Scenario::from_yaml(TRIGGER_RECALL).expect("trigger_recall.yaml がパースできること")
+    }
+
+    fn awakening() -> Scenario {
+        Scenario::from_yaml(SKILL_AWAKENING).expect("skill_awakening.yaml がパースできること")
     }
 
     /// アリスの好感度を増やす delta (発火条件を跨ぐための糖衣)。
@@ -791,6 +809,69 @@ mod tests {
         assert!(v.is_accept(), "好感度上昇自体は受理される");
         assert!(!s.flag("promise_remembered"), "adjudicate は発火させない (純粋)");
         assert!(s.fired.is_empty(), "adjudicate は fired を変えない");
+    }
+
+    // -------------------------------------------------------------------------
+    // 閉世界 capability PoC: 能力は宣言された閉じた集合。開花は authored トリガーのみ。
+    // = メアリー・スー (その場で能力開花) の構造遮断。未宣言の力は存在しない。
+    // -------------------------------------------------------------------------
+
+    /// 【宣言】スキルはシナリオ宣言から読まれる (player=initial_skills, NPC=CharacterDef.skills)。
+    #[test]
+    fn skills_load_from_declaration() {
+        let sc = awakening();
+        let s = sc.initial_state(7);
+        assert!(s.has_skill(PLAYER, "剣術"), "player の宣言済みスキル");
+        assert!(s.has_skill("alice", "癒し"), "NPC の宣言済みスキル");
+        assert!(!s.has_skill(PLAYER, "予知"), "未宣言/未開花の能力は存在しない");
+    }
+
+    /// 【能力 gate】予知を持たないうちは、予知 gate の扉を越えられない。
+    #[test]
+    fn has_skill_gate_blocks_without_skill() {
+        let sc = awakening();
+        let s = sc.initial_state(7);
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::Move { to: "beyond".into() }]));
+        assert!(!v.is_accept(), "予知が無ければ beyond へ出られない");
+    }
+
+    /// 【メアリー・スー遮断】LLM が grant_skill で能力をその場で生やそうとしても却下される。
+    #[test]
+    fn llm_proposed_grant_skill_is_rejected() {
+        let sc = awakening();
+        let mut s = sc.initial_state(7);
+        let delta = d(vec![StateOp::GrantSkill { entity: PLAYER.into(), skill: "予知".into() }]);
+        match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => assert!(reasons.iter().any(|r| matches!(
+                r,
+                RejectReason::SkillGrantNotAllowed { skill, .. } if skill == "予知"
+            ))),
+            Verdict::Accept => panic!("LLM の能力開花を受理してはならない (メアリー・スー)"),
+        }
+        // apply も却下し、state は無傷 (予知は生えない)。
+        assert!(apply(&mut s, &sc, &delta).is_err());
+        assert!(!s.has_skill(PLAYER, "予知"));
+        assert_eq!(s.turn, 0);
+    }
+
+    /// 【正規の開花】儀式 (フラグ) → トリガー grant_skill が予知を開花 → 予知 gate を越えて goal。
+    /// 開花は authored トリガーの専権であり、その後の能力 gate が正しく通る (双対の正面)。
+    #[test]
+    fn trigger_awakens_skill_then_gate_passes() {
+        let sc = awakening();
+        let mut s = sc.initial_state(7);
+        assert!(!is_goal(&s, &sc));
+
+        // 儀式を行う → トリガー awaken_foresight が発火し予知を開花。
+        let out = apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "awakening_rite".into(), value: true }]))
+            .expect("儀式は行える");
+        assert!(out.fired.iter().any(|f| f.id == "awaken_foresight"), "トリガーが開花を起こす");
+        assert!(s.has_skill(PLAYER, "予知"), "authored トリガーは能力を付与できる");
+
+        // 今度は予知 gate の扉を越えられる。
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "beyond".into() }]))
+            .expect("予知を得たので beyond へ出られる");
+        assert!(is_goal(&s, &sc), "goal (beyond) 到達");
     }
 
     /// 【却下時は不発】不正 op を含むデルタは却下され、trigger も発火しない (原子性)。

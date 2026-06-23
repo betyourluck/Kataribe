@@ -36,11 +36,14 @@ const game = useGameStore();
       </div>
 
       <div v-if="game.state.entities.length" class="mb-3">
-        <div class="text-parchment/40 mb-1">能力値</div>
+        <div class="text-parchment/40 mb-1">登場人物</div>
         <div v-for="e in game.state.entities" :key="e.id" class="mb-1">
           <div class="text-ember/70">{{ e.id }}</div>
-          <div class="text-parchment pl-2">
+          <div v-if="e.stats.length" class="text-parchment pl-2">
             <span v-for="s in e.stats" :key="s.key" class="mr-2">{{ s.key }}={{ s.value }}</span>
+          </div>
+          <div v-if="e.skills.length" class="text-glow/70 pl-2 text-xs">
+            能力: {{ e.skills.join("、") }}
           </div>
         </div>
       </div>

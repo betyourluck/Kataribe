@@ -9,6 +9,7 @@ export interface StatView {
 export interface EntityView {
   id: string;
   stats: StatView[];
+  skills: string[];
 }
 
 export interface StateView {

@@ -33,6 +33,8 @@ pub enum RejectReason {
     DivideByZero { key: String },
     /// このデルタは `entity` の硬い禁忌 (taboo) を破る (Phase B)。
     TabooViolated { entity: String },
+    /// 能力の付与 (grant_skill) は LLM が提案できない (authored トリガーの専権)。メアリー・スー遮断。
+    SkillGrantNotAllowed { entity: String, skill: String },
 }
 
 impl RejectReason {
@@ -67,6 +69,9 @@ impl RejectReason {
             RejectReason::TabooViolated { entity } => {
                 format!("その行動は {entity} の禁忌に反する")
             }
+            RejectReason::SkillGrantNotAllowed { entity, skill } => {
+                format!("{entity} は能力 '{skill}' をその場で開花できない (能力は筋書きの出来事でのみ目覚める)")
+            }
         }
     }
 
@@ -94,6 +99,9 @@ impl RejectReason {
             RejectReason::DivideByZero { key } => format!("cannot divide stat '{key}' by zero"),
             RejectReason::TabooViolated { entity } => {
                 format!("that action violates {entity}'s taboo")
+            }
+            RejectReason::SkillGrantNotAllowed { entity, skill } => {
+                format!("{entity} cannot awaken the skill '{skill}' on a whim (skills awaken only through authored events)")
             }
         }
     }

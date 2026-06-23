@@ -23,6 +23,10 @@ pub const GM_SYSTEM: &str = "\
 持っている・使う・渡す・見せると述べても、それは存在しない。盤面や所持品に無い事物を前提にした \
 行動は、その前提を成り立たせてはならない。代わりに narration で「それは手元に無い」と物語の中で \
 接地せよ (例: 鞄を探っても、そんな品は入っていない)。既成事実として書いてはならない。\n\
+- **登場人物は『使える能力』に列挙された能力しか使えない。** そこに無い能力 (催眠・予知・隠された力 \
+など) を、その場で思い出したように発揮させてはならない。能力は物語の都合で勝手に開花しない \
+(開花するのは筋書きが定めた出来事のときだけで、それはエンジンが起こす)。未宣言の力で局面を \
+打開する展開を narration に書くな = キャラを万能のメアリー・スーにしない。\n\
 - 世界状態の変更 (アイテム取得・フラグ・移動・ダイス) は必ず ops に構造化して書くこと。\n\
 - 存在しないアイテムの取得や、条件を満たさない移動を ops に書いても**エンジンに却下される**。\n\
   嘘の状態変更で物語を進めることはできない。今ある盤面の事実に忠実であること。\n\
@@ -39,6 +43,7 @@ fn gate_brief(gate: &Gate) -> String {
         Gate::StatAtLeast { entity, key, value } => {
             format!("{entity} の能力「{key}」が {value} 以上であること")
         }
+        Gate::HasSkill { entity, skill } => format!("{entity} が能力「{skill}」を持っていること"),
         Gate::All { of } => {
             let parts: Vec<String> = of.iter().map(gate_brief).collect();
             format!("すべて満たす({})", parts.join(" / "))
@@ -118,9 +123,21 @@ pub fn state_brief(state: &GameState) -> String {
             .collect::<Vec<_>>()
             .join(" / ")
     };
+    // 各キャラが使える能力 (閉世界。ここに無い能力は存在しない)。
+    let skills = if state.skills.values().all(|s| s.is_empty()) {
+        "なし".to_string()
+    } else {
+        state
+            .skills
+            .iter()
+            .filter(|(_, s)| !s.is_empty())
+            .map(|(eid, s)| format!("{eid}: {}", s.iter().cloned().collect::<Vec<_>>().join(", ")))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
     format!(
-        "# 現在の状態 (turn {})\n- 現在地: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}",
-        state.turn, state.location, inv, flags, entities,
+        "# 現在の状態 (turn {})\n- 現在地: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}\n- 使える能力: {}",
+        state.turn, state.location, inv, flags, entities, skills,
     )
 }
 

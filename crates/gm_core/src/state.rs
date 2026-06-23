@@ -11,6 +11,8 @@ pub type StatKey = String;
 pub type EntityId = String;
 /// トリガーの識別子 (発火済み集合 `GameState.fired` のキー)。
 pub type TriggerId = String;
+/// 能力 (スキル) の識別子。閉世界 — 宣言された SkillId だけが存在する。
+pub type SkillId = String;
 
 /// 主人公の規約的 EntityId。op/gate が entity を省略した時の既定。
 pub const PLAYER: &str = "player";
@@ -39,6 +41,10 @@ pub struct GameState {
     /// 一度発火した反応ビートは二度と発火しない (`when` が真のままでも latch で抑止)。
     #[serde(default)]
     pub fired: BTreeSet<TriggerId>,
+    /// キャラ別の獲得済み能力 (閉世界 capability)。初期=宣言集合、開花は authored トリガーのみ。
+    /// 未宣言の能力は存在しない (メアリー・スー遮断)。**セーブ対象**。
+    #[serde(default)]
+    pub skills: BTreeMap<EntityId, BTreeSet<SkillId>>,
 }
 
 impl GameState {
@@ -52,7 +58,21 @@ impl GameState {
             rng: RngState { seed, cursor: 0 },
             turn: 0,
             fired: BTreeSet::new(),
+            skills: BTreeMap::new(),
         }
+    }
+
+    /// 指定キャラが能力を獲得済みか (閉世界: 宣言/開花した能力のみ true)。
+    pub fn has_skill(&self, entity: &str, skill: &str) -> bool {
+        self.skills.get(entity).is_some_and(|s| s.contains(skill))
+    }
+
+    /// 能力を付与する (エンジン内部用。authored トリガーの grant_skill 効果からのみ呼ばれる)。
+    pub fn grant_skill(&mut self, entity: &str, skill: &str) {
+        self.skills
+            .entry(entity.to_string())
+            .or_default()
+            .insert(skill.to_string());
     }
 
     pub fn has_item(&self, item: &str) -> bool {
@@ -158,5 +178,12 @@ pub enum StateOp {
         key: StatKey,
         num: i64,
         den: i64,
+    },
+    /// 能力の付与 (開花)。**authored トリガーの専権** — LLM が提案すると `adjudicate` が却下する
+    /// (メアリー・スー遮断)。trigger effects は `apply_ops` 直行なので付与できる。`entity` 省略時は主人公。
+    GrantSkill {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        skill: SkillId,
     },
 }
