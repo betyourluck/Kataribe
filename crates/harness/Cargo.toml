@@ -11,6 +11,12 @@ gm_core.workspace = true
 llm_client = { path = "../llm_client" }
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+# 実クラウド通しプレイ用の bin (ネットワーク必須、テスト対象外)。
+[[bin]]
+name = "play"
+path = "src/main.rs"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

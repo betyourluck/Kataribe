@@ -99,8 +99,12 @@ GmTurn:
 DeltaProposer:                    # 提案者の抽象 (依存性逆転の境界)
   propose: "async fn propose(&self, messages: &[ChatMessage]) -> Result<StateDelta, HarnessError>"
 
-# --- まだ繋がない脚 (ループ Green 後に接続) ----------------------------------
+GmPlay:                           # 実クラウド通しプレイ CLI (harness bin "play")
+  wiring:  "LlmClient を DeltaProposer として run_turn に配線。stdin から行動、scenarios/*.yaml ロード"
+  status:  "bin 着地・設定エラーパス確認済。実キーでの通しプレイ (ネットワーク経路) は未実施"
+  metrics: "計測すべき核心的未知: 却下→再生成の収束回数(attempts) / 幻アイテム・未達移動の発生率 / narration 品質"
+
+# --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
-  playthrough: "実クラウド LLM での密室脱出 通しプレイ (harness bin)。核心的未知=制約内で構造化出力を出し続けられるか"
-  memoria:     "episodic/伏線/キャラ性格の semantic recall。可変世界状態は絶対に置かない"
-  ui:          "LocalAI prompt(Tauri+Vue) 殻の移植"
+  memoria: "episodic/伏線/キャラ性格の semantic recall。可変世界状態は絶対に置かない"
+  ui:      "LocalAI prompt(Tauri+Vue) 殻の移植"

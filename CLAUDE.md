@@ -45,7 +45,8 @@ cargo clippy --workspace --all-targets  # lint
 - ✅ `crates/llm_client` ナレーター脚: LocalAI `llm_client.py` を Rust 移植。OpenAI 互換 + tool-use 強制 + schemars 機械生成 schema + フェンス JSON フォールバック + 指数 backoff。PoC 9/9 green。罠 6 件は `failures.md`。
 - ✅ `crates/harness` GM ターンループ: 提案 → 裁定 → 却下なら理由を戻して再生成（`_self_repair_loop` 同型）→ 受理なら原子適用。`DeltaProposer` trait で依存性逆転し、`ScriptedProposer` で「却下→再生成」を実 API なしで実証。PoC 6/6 green（一発合格・再生成・理由還流・最大試行で state 無傷・ダイス経路・prompt 健全性）。罠 4 件（#7-10）は `failures.md`。
 - 合計 **24/24 green**、clippy clean。
-- ⬜ 次: 実クラウド LLM での密室脱出 **通しプレイ**（`harness` bin）。`LlmClient` を `DeltaProposer` として配線し、`.env` の実キーで「制約内で構造化出力を出し続けられるか」を測る（勝ち筋の分水嶺）。`failures.md #3`（provider schema サブセット差）がここで初検証。
+- ✅ `harness` bin `play`: 実クラウド通しプレイ CLI。`LlmClient` を `DeltaProposer` に配線、`.env` 実キーで密室脱出を回す（`cargo run -p harness --bin play`、stdin 対話 or 台本流し込み）。鍵なし起動の設定エラーパスは確認済（ネットワーク経路は実キー待ち）。
+- ⬜ 次（**勝ち筋の分水嶺**）: 実キーで `play` を通しプレイし「LLM がエンジンの制約内で構造化出力を出し続けられるか」を測る。観測指標 = 却下→再生成の収束回数（`attempts`）・幻アイテム/未達移動の発生率・narration 品質。`failures.md #3`（provider schema サブセット差）がここで初検証。
 - ⬜ その後: Memoria 脚の接続、Tauri+Vue UI 殻の移植。
 
 ## ルーツ

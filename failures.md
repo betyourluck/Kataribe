@@ -66,3 +66,11 @@ run_turn は `adjudicate == Accept` を確認してから `apply(...).expect("ad
 `DeltaProposer::propose` を native async fn in trait にすると `async_fn_in_trait` 警告
 (auto-trait 漏れ / dyn 化困難の注意)。本 trait は harness 内でしか実装/消費せず generic で受ける
 ので dyn 不要 → `#[allow(async_fn_in_trait)]` で抑制。外部公開 API になるなら要再検討。
+
+### 11. `Box<dyn Error>` 返り値は最初の具体 Box 構築に推論固定される
+bin `play` の `main() -> Result<(), Box<dyn Error>>` で、`return Err(Box::new(io_err))` と
+書いたら戻り値エラー型が `Box<io::Error>` に**推論固定**され、他の `?` (String / serde_yaml::Error
+→ Box<dyn Error>) の From 変換が全滅 (E0277 連鎖 5 件)。
+→ 具体エラーは `Box::new(e)` でなく `e.into()` で返す。`From<E> for Box<dyn Error>` が効いて
+dyn に widening される。戻り値が dyn なら**全ての error 構築を .into() に統一**するのが安全。
+症状(5件のFrom未実装)は派手だが根は1行。mandate_logical_friction_processing の実例。
