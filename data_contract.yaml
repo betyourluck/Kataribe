@@ -28,7 +28,8 @@ StateOp:                        # 内部タグ "op" 付き列挙
   - { op: give_item,    from: EntityId, to: EntityId, item: ItemId }  # 譲渡。from が所持してなければ却下=ネックレス遮断。from 既定 player
   - { op: set_flag,     key: FlagKey, value: bool }
   - { op: move,         to: LocationId }
-  - { op: request_roll, sides: u32, dc: u32 }   # 結果は書かない。エンジンが振って裁く
+  - { op: request_roll, sides: u32, dc: u32 }   # 生のダイス。結果は書かない。エンジンが振って裁く
+  - { op: check, entity: EntityId, stat: StatKey, sides: u32, dc: u32 }  # 技能判定。engine が 1d{sides}+stat修正 vs dc を裁定。stat 未宣言→却下。結果(CheckOutcome)は次ターンの語りに還流
   # --- 数値ステータス: LLM は「意図」だけ提案、算術はエンジンが実行 (四則演算) ---
   # entity 省略時は "player"。clamp 境界は CharacterDef.stats の StatDecl(min/max)。
   - { op: adjust_stat,  entity: EntityId, key: StatKey, delta: i64 }          # 加減 (+/-): clamp(current + delta)
@@ -46,6 +47,7 @@ adjudication:
   set_flag:   "未許可キー / flag_rules の gate 未達 (value=true時) → Reject"
   move:       "現在地から to への exit が無い / exit.gate 未達 → Reject"
   request_roll:"LLMは結果を主張できない (op構造上不可能)。面数<1 → Reject"
+  check:      "技能判定。stat 未宣言→Reject(UnknownStat) / 面数<1→Reject。engine が 1d{sides}+stat修正 を振り total>=dc で成否判定。LLMは出目も合計も詐称できない (CheckOutcome を返す)"
   adjust_stat:"entity が未宣言の stat を持つ → Reject (未宣言の stat は作れない)"
   scale_stat: "未宣言キー → Reject / den=0 (ゼロ除算) → Reject。LLMは /0 でエンジンを壊せない"
   stat_clamp: "clamp は CharacterDef.stats の StatDecl(min 既定 0 / max 既定なし)。entity ごと・stat ごと"
@@ -131,9 +133,10 @@ LlmConfig:                        # 環境変数からの設定 (LocalAI config.
 # --- GM ターンループ (crate harness。三権を 1 ターンに結線) ------------------
 # LLM が提案し (llm_client)、エンジンが裁く (gm_core)。LocalAI _self_repair_loop 同型。
 GmTurn:
-  signature:  "run_turn(proposer, &mut state, scenario, player_action, max_attempts, lang, recalled_lore) -> TurnOutcome"
+  signature:  "run_turn(proposer, &mut state, scenario, player_action, max_attempts, lang, recalled_lore, recent_checks) -> TurnOutcome"
   loop:       "propose → adjudicate → Accept なら apply(原子適用) / Reject なら reasons を messages に積んで再生成、max_attempts まで"
-  outcome:    "Accepted{narration, rolls, fired, attempts} | Rejected{last_reasons, attempts}。Rejected 時 state は無傷"
+  outcome:    "Accepted{narration, rolls, fired, checks, attempts} | Rejected{last_reasons, attempts}。Rejected 時 state は無傷"
+  check_feedback: "技能判定の結果(CheckOutcome)は同一ターンの narration に間に合わない(出目は apply 後)。bin は recent_checks に持ち越し、次ターンの prompt に『直前の判定結果』として注入 → GM が結果に沿って語る(memoria_bridge と同じ還流パターン)。CheckOutcome{entity,stat,sides,roll,modifier,total,dc,success}"
   inversion:  "ループは DeltaProposer trait に対して書く。本番=LlmClient, テスト=ScriptedProposer。却下→再生成を実APIなしで決定論検証"
   messages:   "毎ターン state から新規構築 (GM persona + scenario_brief + state_brief + player_action)。state が唯一の真実なので履歴に古い状態を溜めない"
   feedback:   "却下時は LLM の提案(JSON)を assistant 発話、却下理由+修正指示を user 発話として積む (self_repair の核)"

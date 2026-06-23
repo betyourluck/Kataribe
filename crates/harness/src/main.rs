@@ -92,6 +92,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut lines = stdin.lock().lines();
     // 直前ターンの発火で recall された伏線。次ターンの語りに織り込ませる (memoria_bridge, 輪の閉じ)。
     let mut pending_lore: Vec<harness::MemoryFragment> = Vec::new();
+    // 直前ターンの技能判定の結果。次ターンの語りに還流する (出目は apply 後確定)。
+    let mut pending_checks: Vec<gm_core::CheckOutcome> = Vec::new();
     loop {
         print!("> ");
         io::stdout().flush().ok();
@@ -110,17 +112,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
             action.trim(),
             MAX_ATTEMPTS,
             lang,
-            &pending_lore, // 前ターンの伏線を注入
+            &pending_lore,   // 前ターンの伏線を注入
+            &pending_checks, // 前ターンの判定結果を注入
         )
         .await;
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
+        pending_checks = Vec::new();
         match outcome {
-            Ok(TurnOutcome::Accepted { narration, rolls, fired, attempts }) => {
+            Ok(TurnOutcome::Accepted { narration, rolls, checks, fired, attempts }) => {
                 println!("\n{narration}");
                 for r in &rolls {
                     let mark = if r.success { "成功" } else { "失敗" };
                     println!("  🎲 1d{} = {} (DC {}) → {mark}", r.sides, r.result, r.dc);
                 }
+                // 技能判定の結果 (出目+修正 vs DC)。次ターンの語りに還流する。
+                for c in &checks {
+                    let mark = if c.success { "成功" } else { "失敗" };
+                    println!(
+                        "  🎯 {} {} 判定: 1d{}({}){:+} = {} (DC {}) → {mark}",
+                        c.entity, c.stat, c.sides, c.roll, c.modifier, c.total, c.dc
+                    );
+                }
+                pending_checks = checks; // 次ターンへ持ち越し
                 // 反応ビート (Phase C) + memoria_bridge: 発火点で伏線を recall して語りに注入。
                 for beat in resolve_recall(&lore, &fired) {
                     println!("  ✦ {}", beat.narration);

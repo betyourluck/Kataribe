@@ -29,6 +29,19 @@ pub struct RollOutcome {
     pub success: bool,
 }
 
+/// 技能判定の結果。`1d{sides} + modifier` を振り `total >= dc` で成否。LLM は出目も合計も持てない。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckOutcome {
+    pub entity: String,
+    pub stat: String,
+    pub sides: u32,
+    pub roll: u32,
+    pub modifier: i64,
+    pub total: i64,
+    pub dc: u32,
+    pub success: bool,
+}
+
 /// 発火したトリガー (Phase C)。`narration` は語りへ注入する指示。
 ///
 /// `recall` は Memoria 橋渡しの cue を**そのまま passthrough** したもの (engine は解釈しない)。
@@ -45,6 +58,8 @@ pub struct FiredTrigger {
 pub struct ApplyOutcome {
     /// `request_roll` とトリガー効果が振ったダイスの出目 (適用順)。
     pub rolls: Vec<RollOutcome>,
+    /// この適用で行われた技能判定の結果。次ターンの語りに還流する。
+    pub checks: Vec<CheckOutcome>,
     /// この適用で発火した反応ビート (authored 順・連鎖含む)。語りに注入する。
     pub fired: Vec<FiredTrigger>,
 }
@@ -144,6 +159,15 @@ fn validate_ops(
                 }
                 // 出目はエンジンが振る。LLM は結果を主張できない (op 構造上不可能)。
             }
+            StateOp::Check { entity, stat, sides, dc: _ } => {
+                if *sides < 1 {
+                    reasons.push(RejectReason::DiceSidesInvalid);
+                }
+                // 修正に使う stat は宣言済みでなければならない (幻ステータスで判定を盛れない)。
+                if !scenario.knows_stat(entity, stat) {
+                    reasons.push(RejectReason::UnknownStat { key: stat.clone() });
+                }
+            }
             StateOp::AdjustStat { entity, key, delta: _ } => {
                 if !scenario.knows_stat(entity, key) {
                     reasons.push(RejectReason::UnknownStat { key: key.clone() });
@@ -183,7 +207,8 @@ fn check_taboos(
         return;
     }
     let mut projected = state.clone();
-    let _ = apply_ops(&mut projected, scenario, delta); // clone への射影 (dice は捨て)
+    // clone への射影 (dice/jud定 は捨て、taboo 評価のためだけに state を進める)。
+    apply_ops(&mut projected, scenario, delta, &mut Vec::new(), &mut Vec::new());
     for (eid, def) in &scenario.characters {
         for taboo in &def.taboos {
             if !taboo.eval(state) && taboo.eval(&projected) {
@@ -209,11 +234,13 @@ pub fn apply(
         Verdict::Accept => {}
     }
 
-    let mut rolls = apply_ops(state, scenario, delta);
+    let mut rolls = Vec::new();
+    let mut checks = Vec::new();
+    apply_ops(state, scenario, delta, &mut rolls, &mut checks);
     state.turn += 1;
     // 反応ビート (禁忌の双対)。受理・適用済みの実 state に対して発火判定する。
-    let fired = fire_triggers(state, scenario, &mut rolls);
-    Ok(ApplyOutcome { rolls, fired })
+    let fired = fire_triggers(state, scenario, &mut rolls, &mut checks);
+    Ok(ApplyOutcome { rolls, checks, fired })
 }
 
 /// 受理・適用後の `state` に対し、発火条件 `when` が真でまだ発火していないトリガーを発火させる。
@@ -227,6 +254,7 @@ fn fire_triggers(
     state: &mut GameState,
     scenario: &Scenario,
     rolls: &mut Vec<RollOutcome>,
+    checks: &mut Vec<CheckOutcome>,
 ) -> Vec<FiredTrigger> {
     let mut fired = Vec::new();
     loop {
@@ -239,7 +267,7 @@ fn fire_triggers(
 
         // 効果は authored・信頼済なので validate せず原子適用する。
         let effect_delta = StateDelta::new(String::new(), t.effects.clone());
-        rolls.extend(apply_ops(state, scenario, &effect_delta));
+        apply_ops(state, scenario, &effect_delta, rolls, checks);
 
         state.fired.insert(t.id.clone());
         fired.push(FiredTrigger {
@@ -252,9 +280,14 @@ fn fire_triggers(
 }
 
 /// delta の各 op を state に適用する (検証なし)。`apply` と taboo 射影が共有する。
-/// [`StateOp::RequestRoll`] はここで決定論的に振られ、結果を返す。
-fn apply_ops(state: &mut GameState, scenario: &Scenario, delta: &StateDelta) -> Vec<RollOutcome> {
-    let mut rolls = Vec::new();
+/// [`StateOp::RequestRoll`]/[`StateOp::Check`] はここで決定論的に振られ、`rolls`/`checks` に積まれる。
+fn apply_ops(
+    state: &mut GameState,
+    scenario: &Scenario,
+    delta: &StateDelta,
+    rolls: &mut Vec<RollOutcome>,
+    checks: &mut Vec<CheckOutcome>,
+) {
     for op in &delta.ops {
         match op {
             StateOp::AddItem { item } => {
@@ -283,6 +316,22 @@ fn apply_ops(state: &mut GameState, scenario: &Scenario, delta: &StateDelta) -> 
                     success: result >= *dc,
                 });
             }
+            StateOp::Check { entity, stat, sides, dc } => {
+                // 技能判定: 1d{sides} + stat修正 vs dc。出目も合計もエンジンが決める。
+                let roll = state.rng.roll(*sides);
+                let modifier = state.stat_of(entity, stat);
+                let total = roll as i64 + modifier;
+                checks.push(CheckOutcome {
+                    entity: entity.clone(),
+                    stat: stat.clone(),
+                    sides: *sides,
+                    roll,
+                    modifier,
+                    total,
+                    dc: *dc,
+                    success: total >= *dc as i64,
+                });
+            }
             // --- 算術はエンジンが行う。LLM は意図だけ提案、値は持てない ---
             StateOp::AdjustStat { entity, key, delta } => {
                 let next = state.stat_of(entity, key) + delta; // 加減
@@ -301,7 +350,6 @@ fn apply_ops(state: &mut GameState, scenario: &Scenario, delta: &StateDelta) -> 
             }
         }
     }
-    rolls
 }
 
 /// stat を宣言された境界 `[min, max]` に収める。max 未宣言なら上限なし。
@@ -491,6 +539,69 @@ mod tests {
         assert!((1..=20).contains(&outcome.result));
         assert_eq!(outcome.success, outcome.result >= 10);
         assert_eq!(s.rng.cursor, 1, "1回振ったので cursor が進む");
+    }
+
+    // -------------------------------------------------------------------------
+    // 技能判定 PoC: 1d{sides} + stat修正 vs dc。出目も合計もエンジンが裁く (LLM は持てない)。
+    // -------------------------------------------------------------------------
+
+    /// 【技能判定】判定は 1d{sides} に宣言済み stat を修正として足し、dc と比べる。
+    #[test]
+    fn check_resolves_with_stat_modifier() {
+        let sc = trial(); // str=12
+        let mut s = sc.initial_state(42);
+        let out = apply(&mut s, &sc, &d(vec![StateOp::Check {
+            entity: PLAYER.into(),
+            stat: "str".into(),
+            sides: 20,
+            dc: 15,
+        }]))
+        .expect("宣言済み stat の判定は合法");
+        assert_eq!(out.checks.len(), 1);
+        let c = &out.checks[0];
+        assert_eq!(c.modifier, 12, "str=12 が修正に乗る");
+        assert!((1..=20).contains(&c.roll), "1d20 の出目");
+        assert_eq!(c.total, c.roll as i64 + 12, "合計 = 出目 + 修正");
+        assert_eq!(c.success, c.total >= 15, "total>=dc で成功");
+        assert_eq!(s.rng.cursor, 1, "1回振ったので cursor が進む");
+    }
+
+    /// 【幻ステータス遮断】未宣言の stat を修正に使う判定は却下 (判定を盛れない)。
+    #[test]
+    fn check_with_unknown_stat_is_rejected() {
+        let sc = trial();
+        let s = sc.initial_state(42);
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::Check {
+            entity: PLAYER.into(),
+            stat: "mana".into(), // 未宣言
+            sides: 20,
+            dc: 10,
+        }]));
+        match v {
+            Verdict::Reject { reasons } => assert!(reasons
+                .iter()
+                .any(|r| matches!(r, RejectReason::UnknownStat { key } if key == "mana"))),
+            Verdict::Accept => panic!("未宣言 stat の判定を受理してはならない"),
+        }
+    }
+
+    /// 【決定論】同じ seed なら同じ判定結果 (監査可能)。
+    #[test]
+    fn check_is_deterministic() {
+        let sc = trial();
+        let mut a = sc.initial_state(7);
+        let mut b = sc.initial_state(7);
+        let chk = |st: &mut GameState| {
+            apply(st, &sc, &d(vec![StateOp::Check {
+                entity: PLAYER.into(),
+                stat: "str".into(),
+                sides: 20,
+                dc: 10,
+            }]))
+            .unwrap()
+            .checks
+        };
+        assert_eq!(chk(&mut a), chk(&mut b), "同じ seed なら同じ判定結果");
     }
 
     // =========================================================================

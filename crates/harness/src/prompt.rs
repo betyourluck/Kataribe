@@ -4,7 +4,7 @@
 //! それでも gate/出口/アイテムを明示して見せることで、却下→再生成の回数を減らす。
 
 use gm_core::spine::Gate;
-use gm_core::{GameState, Lang, RejectReason, Scenario};
+use gm_core::{CheckOutcome, GameState, Lang, RejectReason, Scenario};
 
 use crate::memoria::MemoryFragment;
 
@@ -28,6 +28,9 @@ pub const GM_SYSTEM: &str = "\
 (開花するのは筋書きが定めた出来事のときだけで、それはエンジンが起こす)。未宣言の力で局面を \
 打開する展開を narration に書くな = キャラを万能のメアリー・スーにしない。\n\
 - 世界状態の変更 (アイテム取得・フラグ・移動・ダイス) は必ず ops に構造化して書くこと。\n\
+- 成否が不確実な行動 (力ずくの突破・隠れる・見破る・説得など) は結果を決めつけず、check op \
+(entity / 修正に使う stat / sides / dc) でエンジンに判定させること。判定の出目と成否はエンジンが \
+確定し**次のターンに返る**ので、それを見てから帰結を語る (この turn の narration では「試みる」までに留める)。\n\
 - 存在しないアイテムの取得や、条件を満たさない移動を ops に書いても**エンジンに却下される**。\n\
   嘘の状態変更で物語を進めることはできない。今ある盤面の事実に忠実であること。\n\
 - 何も状態が変わらない描写だけのターンなら ops は空でよい。\n\
@@ -165,6 +168,27 @@ pub fn recalled_lore_note(fragments: &[MemoryFragment]) -> String {
         // 改行は潰して 1 行の箇条書きにする (split_whitespace が前後空白も処理)。
         let text = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
         s.push_str(&format!("- {text}\n"));
+    }
+    s
+}
+
+/// 直前ターンの技能判定の結果を、今回の語りに反映させる指示にする (空なら空文字)。
+///
+/// 出目・修正・合計・成否はエンジンが確定した**動かせない事実**。GM はこの結果に沿って
+/// narration せよ (成功なら成功の、失敗なら失敗の帰結を描く)。出目を覆してはならない。
+pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
+    if checks.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "\n\n# 直前の判定結果（この結果に沿って語ること。出目はエンジンが確定済で覆せない）\n",
+    );
+    for c in checks {
+        let mark = if c.success { "成功" } else { "失敗" };
+        s.push_str(&format!(
+            "- {} の「{}」判定: 1d{}({}) + 修正{:+} = {} (DC {}) → {mark}\n",
+            c.entity, c.stat, c.sides, c.roll, c.modifier, c.total, c.dc
+        ));
     }
     s
 }

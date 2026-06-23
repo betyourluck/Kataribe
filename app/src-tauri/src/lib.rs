@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use gm_core::{is_goal, GameState, Lang, Scenario, PLAYER};
+use gm_core::{is_goal, CheckOutcome, GameState, Lang, Scenario, PLAYER};
 use harness::{
     inject_cast, load_lore, resolve_recall, run_turn, LoreStore, MemoryFragment, TurnOutcome,
 };
@@ -64,6 +64,19 @@ struct RollView {
     success: bool,
 }
 
+/// 技能判定の結果 view。
+#[derive(Serialize)]
+struct CheckView {
+    entity: String,
+    stat: String,
+    sides: u32,
+    roll: u32,
+    modifier: i64,
+    total: i64,
+    dc: u32,
+    success: bool,
+}
+
 /// 発火した反応ビート + recall された伏線 (語りに織り込む素材)。
 #[derive(Serialize)]
 struct BeatView {
@@ -87,6 +100,7 @@ struct TurnView {
     accepted: bool,
     narration: String,
     rolls: Vec<RollView>,
+    checks: Vec<CheckView>,
     beats: Vec<BeatView>,
     attempts: u32,
     /// 却下時の理由 (session.lang で localize 済み)。
@@ -106,6 +120,8 @@ struct GameSession {
     client: LlmClient,
     /// 直前ターンの発火で recall された伏線。次ターンの語りに注入する (memoria_bridge)。
     pending_lore: Vec<MemoryFragment>,
+    /// 直前ターンの技能判定の結果。次ターンの語りに還流する。
+    pending_checks: Vec<CheckOutcome>,
     lang: Lang,
 }
 
@@ -238,6 +254,7 @@ async fn new_game(
         lore,
         client,
         pending_lore: Vec::new(),
+        pending_checks: Vec::new(),
         lang: lang_from_env(),
     });
     Ok(view)
@@ -253,8 +270,9 @@ async fn play_turn(
         .as_mut()
         .ok_or("ゲームが開始されていません (先に new_game を呼んでください)")?;
 
-    // 前ターンの伏線を取り出して注入し、pending を空にする。
+    // 前ターンの伏線・判定結果を取り出して注入し、pending を空にする。
     let pending = std::mem::take(&mut sess.pending_lore);
+    let pending_checks = std::mem::take(&mut sess.pending_checks);
     let outcome = run_turn(
         &sess.client,
         &mut sess.state,
@@ -263,12 +281,13 @@ async fn play_turn(
         MAX_ATTEMPTS,
         sess.lang,
         &pending,
+        &pending_checks,
     )
     .await
     .map_err(|e| e.to_string())?;
 
     let view = match outcome {
-        TurnOutcome::Accepted { narration, rolls, fired, attempts } => {
+        TurnOutcome::Accepted { narration, rolls, checks, fired, attempts } => {
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
             let beats = resolved
@@ -280,6 +299,22 @@ async fn play_turn(
                 .collect();
             // 次ターンの語りに織り込ませる伏線を持ち越す。
             sess.pending_lore = resolved.into_iter().flat_map(|b| b.recalled).collect();
+
+            let check_views: Vec<CheckView> = checks
+                .iter()
+                .map(|c| CheckView {
+                    entity: c.entity.clone(),
+                    stat: c.stat.clone(),
+                    sides: c.sides,
+                    roll: c.roll,
+                    modifier: c.modifier,
+                    total: c.total,
+                    dc: c.dc,
+                    success: c.success,
+                })
+                .collect();
+            // 次ターンの語りに還流する判定結果を持ち越す。
+            sess.pending_checks = checks;
 
             TurnView {
                 accepted: true,
@@ -293,6 +328,7 @@ async fn play_turn(
                         success: r.success,
                     })
                     .collect(),
+                checks: check_views,
                 beats,
                 attempts,
                 reasons: Vec::new(),
@@ -304,6 +340,7 @@ async fn play_turn(
             accepted: false,
             narration: String::new(),
             rolls: Vec::new(),
+            checks: Vec::new(),
             beats: Vec::new(),
             attempts,
             reasons: last_reasons.iter().map(|r| r.localize(sess.lang)).collect(),

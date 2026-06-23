@@ -29,6 +29,17 @@ export interface RollView {
   success: boolean;
 }
 
+export interface CheckView {
+  entity: string;
+  stat: string;
+  sides: number;
+  roll: number;
+  modifier: number;
+  total: number;
+  dc: number;
+  success: boolean;
+}
+
 export interface BeatView {
   narration: string;
   recalled: string[];
@@ -45,6 +56,7 @@ export interface TurnView {
   accepted: boolean;
   narration: string;
   rolls: RollView[];
+  checks: CheckView[];
   beats: BeatView[];
   attempts: number;
   reasons: string[];
@@ -59,5 +71,6 @@ export type LogEntry =
   | { kind: "narration"; text: string }
   | { kind: "beat"; narration: string; recalled: string[] }
   | { kind: "rolls"; rolls: RollView[] }
+  | { kind: "checks"; checks: CheckView[] }
   | { kind: "reject"; reasons: string[]; attempts: number }
   | { kind: "system"; text: string };

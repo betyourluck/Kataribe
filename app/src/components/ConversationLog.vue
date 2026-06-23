@@ -44,6 +44,14 @@ const game = useGameStore();
         </p>
       </div>
 
+      <!-- 技能判定 (出目 + 能力修正 vs DC) -->
+      <div v-else-if="entry.kind === 'checks'" class="space-y-0.5">
+        <p v-for="(c, j) in entry.checks" :key="j" class="text-sm text-parchment/70">
+          🎯 {{ c.entity }} の{{ c.stat }}判定: 1d{{ c.sides }}({{ c.roll }}){{ c.modifier >= 0 ? "+" + c.modifier : c.modifier }} = {{ c.total }} (DC {{ c.dc }}) →
+          <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ c.success ? "成功" : "失敗" }}</span>
+        </p>
+      </div>
+
       <!-- 却下 (正本が嘘を弾いた) -->
       <div v-else-if="entry.kind === 'reject'" class="rounded-lg bg-ash/30 px-4 py-2 text-sm">
         <p class="text-ember/80">（GM は {{ entry.attempts }} 回試みたが、筋の通る一手を出せなかった）</p>

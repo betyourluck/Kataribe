@@ -189,6 +189,15 @@ pub enum StateOp {
     Move { to: LocationId },
     /// ダイスを振る要求。**結果は含めない** — エンジンが振って裁く。
     RequestRoll { sides: u32, dc: u32 },
+    /// 技能判定。エンジンが `1d{sides} + entity の stat 修正` を振り、`total >= dc` で成否を裁く。
+    /// LLM は出目も合計も主張できない (op 構造上不可能)。`stat` 未宣言は却下。`entity` 省略時は主人公。
+    Check {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        stat: StatKey,
+        sides: u32,
+        dc: u32,
+    },
     /// stat への加減 (+/−)。エンジンが `clamp(current + delta)` を計算する。
     /// LLM は変化量(意図)だけを提案し、結果の値は持てない。`entity` 省略時は主人公。
     AdjustStat {

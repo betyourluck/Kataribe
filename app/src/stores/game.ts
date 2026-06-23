@@ -66,6 +66,7 @@ export const useGameStore = defineStore("game", {
         if (turn.accepted) {
           if (turn.narration) this.log.push({ kind: "narration", text: turn.narration });
           if (turn.rolls.length) this.log.push({ kind: "rolls", rolls: turn.rolls });
+          if (turn.checks.length) this.log.push({ kind: "checks", checks: turn.checks });
           for (const b of turn.beats) {
             this.log.push({ kind: "beat", narration: b.narration, recalled: b.recalled });
           }

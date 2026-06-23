@@ -14,7 +14,9 @@ pub mod reason;
 pub mod spine;
 pub mod state;
 
-pub use engine::{adjudicate, apply, is_goal, ApplyOutcome, FiredTrigger, RollOutcome, Verdict};
+pub use engine::{
+    adjudicate, apply, is_goal, ApplyOutcome, CheckOutcome, FiredTrigger, RollOutcome, Verdict,
+};
 pub use reason::{Lang, RejectReason};
 pub use spine::{CharacterDef, Exit, Gate, Location, Scenario, StatDecl, Trigger};
 pub use state::{

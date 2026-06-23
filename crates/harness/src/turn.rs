@@ -4,8 +4,8 @@
 //! 正本 (gm_core) が真実を握り、LLM の流暢な嘘はここで構造的に弾かれる。
 
 use gm_core::{
-    adjudicate, apply, FiredTrigger, GameState, Lang, RejectReason, RollOutcome, Scenario,
-    StateDelta, Verdict,
+    adjudicate, apply, CheckOutcome, FiredTrigger, GameState, Lang, RejectReason, RollOutcome,
+    Scenario, StateDelta, Verdict,
 };
 
 use crate::memoria::MemoryFragment;
@@ -22,6 +22,8 @@ pub enum TurnOutcome {
     Accepted {
         narration: String,
         rolls: Vec<RollOutcome>,
+        /// この適用で行われた技能判定の結果。次ターンの語りに還流される。
+        checks: Vec<CheckOutcome>,
         /// この適用で発火した反応ビート (Phase C)。`narration` を語りに注入する。
         fired: Vec<FiredTrigger>,
         /// 受理までに要した試行回数 (1 = 一発合格)。
@@ -48,6 +50,8 @@ impl TurnOutcome {
 ///
 /// `recalled_lore` は memoria_bridge: 直前ターンの発火で Memoria から recall された伏線。
 /// 今回の語りに「思い出す様子」として織り込ませるため prompt に注入する (空なら注入しない)。
+/// `recent_checks` は直前ターンの技能判定の結果。出目は apply 後に確定するので同一ターンの
+/// narration に間に合わない → 次ターンの prompt に還流し、GM に結果へ沿って語らせる。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn<P: DeltaProposer>(
     proposer: &P,
@@ -57,9 +61,10 @@ pub async fn run_turn<P: DeltaProposer>(
     max_attempts: u32,
     lang: Lang,
     recalled_lore: &[MemoryFragment],
+    recent_checks: &[CheckOutcome],
 ) -> Result<TurnOutcome, HarnessError> {
     // 盤面と現在状態を毎ターン新規に提示する (state は正本の唯一の真実)。
-    // recalled_lore があれば「いま思い出された記憶」として語りに織り込ませる (memoria_bridge)。
+    // recalled_lore=思い出された伏線、recent_checks=直前判定の結果を語りに還流する。
     let mut messages = vec![
         ChatMessage::system(format!(
             "{}\n\n{}",
@@ -67,8 +72,9 @@ pub async fn run_turn<P: DeltaProposer>(
             prompt::scenario_brief(scenario)
         )),
         ChatMessage::user(format!(
-            "{}{}\n\n# プレイヤーの行動\n{}",
+            "{}{}{}\n\n# プレイヤーの行動\n{}",
             prompt::state_brief(state),
+            prompt::check_outcome_note(recent_checks),
             prompt::recalled_lore_note(recalled_lore),
             player_action
         )),
@@ -88,6 +94,7 @@ pub async fn run_turn<P: DeltaProposer>(
                 return Ok(TurnOutcome::Accepted {
                     narration: delta.narration,
                     rolls: out.rolls,
+                    checks: out.checks,
                     fired: out.fired,
                     attempts: attempt,
                 });

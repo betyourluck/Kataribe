@@ -90,7 +90,7 @@ mod tests {
             value: true,
         }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 1),
             other => panic!("受理されるべき: {other:?}"),
@@ -111,7 +111,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 2, "2回目で受理"),
             other => panic!("最終的に受理されるべき: {other:?}"),
@@ -131,7 +131,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[]).await.unwrap();
 
         let second = p.seen_text(2);
         assert!(second.contains("却下"), "再生成プロンプトに却下の文脈があるはず");
@@ -152,7 +152,7 @@ mod tests {
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]), // 引き出し前で却下
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Rejected { attempts, last_reasons } => {
                 assert_eq!(attempts, 3);
@@ -172,7 +172,7 @@ mod tests {
         let mut s = fresh(&sc); // seed=42, cursor=0
         let p = ScriptedProposer::new(vec![delta(vec![StateOp::RequestRoll { sides: 20, dc: 10 }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { rolls, .. } => {
                 assert_eq!(rolls.len(), 1);
@@ -244,7 +244,7 @@ mod tests {
             text: "丘の上の古い樫の木の下で、二人は小指を絡めて誓った。".into(),
         }];
 
-        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore).await.unwrap();
+        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("思い出された記憶"), "想起の見出しが prompt に載る");
@@ -262,8 +262,37 @@ mod tests {
             value: true,
         }])]);
 
-        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("思い出された記憶"), "伏線無しなら注入しない");
+    }
+
+    /// 【技能判定の還流】直前ターンの判定結果が次ターンの提案プロンプトに「直前の判定結果」
+    /// として載る (出目は apply 後確定なので同一ターンに間に合わず、次ターンの語りに反映)。
+    #[tokio::test]
+    async fn check_result_is_fed_into_next_prompt() {
+        use gm_core::CheckOutcome;
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = ScriptedProposer::new(vec![delta(vec![StateOp::SetFlag {
+            key: "drawer_opened".into(),
+            value: true,
+        }])]);
+        let checks = vec![CheckOutcome {
+            entity: "player".into(),
+            stat: "str".into(),
+            sides: 20,
+            roll: 14,
+            modifier: 3,
+            total: 17,
+            dc: 15,
+            success: true,
+        }];
+
+        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks).await.unwrap();
+        let prompt_text = p.seen_text(1);
+        assert!(prompt_text.contains("直前の判定結果"), "判定結果の見出しが載る");
+        assert!(prompt_text.contains("成功"), "成否が載る");
+        assert!(prompt_text.contains("DC 15"), "DC が prompt に載る");
     }
 
     /// 【プロンプト健全性】盤面要約にシナリオ要素が、状態要約に現在地が含まれる。
