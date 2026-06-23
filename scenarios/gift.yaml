@@ -1,0 +1,33 @@
+# PoC シナリオ: 贈り物 (NPC inventory + 譲渡 give_item の最小盤面)
+#
+# 原理: 所持物は閉世界。持っていない物は渡せない (#23 の engine 側バックストップ)。
+# player は世界から拾い (AddItem)、NPC へ渡せる (GiveItem)。NPC は譲渡でのみ受け取る。
+#
+# 正規の筋:
+#   花を摘む (AddItem flower) → アリスに渡す (GiveItem player→alice flower)
+#   → goal (alice が flower を所持)
+#
+# 反・行商ネックレス: 摘む前に「渡す」と言っても、player が花を所持していないので却下される。
+
+title: 贈り物
+start: garden
+
+initial_stats: {}
+
+characters:
+  alice:
+    name: アリス
+    profile: |
+      庭で待つ少女。
+    stats: {}
+
+allowed_flags: []
+
+locations:
+  garden:
+    description: 花の咲く庭。アリスが微笑んで待っている。
+    items:
+      flower: { kind: always }   # いつでも摘める
+    exits: []
+
+goal: { kind: has_item, entity: alice, item: flower }

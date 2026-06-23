@@ -18,8 +18,12 @@ use crate::state::{
 pub enum Gate {
     /// 常に通る。
     Always,
-    /// 指定アイテムを所持している。
-    HasItem { item: ItemId },
+    /// 指定キャラが指定アイテムを所持している。`entity` 省略時は主人公。
+    HasItem {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        item: ItemId,
+    },
     /// 指定フラグが指定値である。
     FlagIs { key: FlagKey, value: bool },
     /// 指定の場所にいる。
@@ -47,7 +51,7 @@ impl Gate {
     pub fn eval(&self, s: &GameState) -> bool {
         match self {
             Gate::Always => true,
-            Gate::HasItem { item } => s.has_item(item),
+            Gate::HasItem { entity, item } => s.has_item(entity, item),
             Gate::FlagIs { key, value } => s.flag(key) == *value,
             Gate::LocationIs { at } => &s.location == at,
             Gate::StatAtLeast { entity, key, value } => s.stat_of(entity, key) >= *value,
@@ -185,6 +189,11 @@ impl Scenario {
     /// フラグを true にするための gate。未登録なら [`Gate::Always`]。
     pub fn flag_gate(&self, key: &str) -> Gate {
         self.flag_rules.get(key).cloned().unwrap_or(Gate::Always)
+    }
+
+    /// 指定 entity がこのシナリオに存在するか (主人公 or 登場人物)。譲渡先の検証に使う。
+    pub fn knows_entity(&self, entity: &str) -> bool {
+        entity == PLAYER || self.characters.contains_key(entity)
     }
 
     /// 指定キャラの stat が宣言済か (adjust/scale の対象になれるか)。

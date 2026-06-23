@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::reason::RejectReason;
 use crate::spine::Scenario;
-use crate::state::{GameState, StateDelta, StateOp, TriggerId};
+use crate::state::{GameState, StateDelta, StateOp, TriggerId, PLAYER};
 
 /// 裁定結果。`Reject` は**構造化された**理由を含む (文面は提示層が言語ごとに生成)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,7 +93,7 @@ fn validate_ops(
     for op in &delta.ops {
         match op {
             StateOp::AddItem { item } => {
-                if state.has_item(item) {
+                if state.has_item(PLAYER, item) {
                     reasons.push(RejectReason::ItemAlreadyHeld { item: item.clone() });
                     continue;
                 }
@@ -107,8 +107,18 @@ fn validate_ops(
                 }
             }
             StateOp::RemoveItem { item } => {
-                if !state.has_item(item) {
+                if !state.has_item(PLAYER, item) {
                     reasons.push(RejectReason::ItemNotHeld { item: item.clone() });
+                }
+            }
+            StateOp::GiveItem { from, to, item } => {
+                // 持っていない物は渡せない (#23 の engine 側バックストップ)。
+                if !state.has_item(from, item) {
+                    reasons.push(RejectReason::ItemNotHeld { item: item.clone() });
+                }
+                // 幻のキャラには渡せない (閉世界)。
+                if !scenario.knows_entity(to) {
+                    reasons.push(RejectReason::UnknownEntity { entity: to.clone() });
                 }
             }
             StateOp::SetFlag { key, value } => {
@@ -248,10 +258,15 @@ fn apply_ops(state: &mut GameState, scenario: &Scenario, delta: &StateDelta) -> 
     for op in &delta.ops {
         match op {
             StateOp::AddItem { item } => {
-                state.inventory.insert(item.clone());
+                state.add_to_inventory(PLAYER, item);
             }
             StateOp::RemoveItem { item } => {
-                state.inventory.remove(item);
+                state.remove_from_inventory(PLAYER, item);
+            }
+            StateOp::GiveItem { from, to, item } => {
+                // adjudicate が from 所持・to 既知を保証済。原子的に移す。
+                state.remove_from_inventory(from, item);
+                state.add_to_inventory(to, item);
             }
             StateOp::SetFlag { key, value } => {
                 state.flags.insert(key.clone(), *value);
@@ -321,6 +336,8 @@ mod tests {
     const TRIGGER_RECALL: &str = include_str!("../../../scenarios/trigger_recall.yaml");
     // 閉世界 capability (スキル覚醒) の最小盤面。
     const SKILL_AWAKENING: &str = include_str!("../../../scenarios/skill_awakening.yaml");
+    // NPC inventory + 譲渡 (give_item) の最小盤面。
+    const GIFT: &str = include_str!("../../../scenarios/gift.yaml");
 
     fn scenario() -> Scenario {
         Scenario::from_yaml(LOCKED_ROOM).expect("locked_room.yaml がパースできること")
@@ -340,6 +357,10 @@ mod tests {
 
     fn awakening() -> Scenario {
         Scenario::from_yaml(SKILL_AWAKENING).expect("skill_awakening.yaml がパースできること")
+    }
+
+    fn gift() -> Scenario {
+        Scenario::from_yaml(GIFT).expect("gift.yaml がパースできること")
     }
 
     /// アリスの好感度を増やす delta (発火条件を跨ぐための糖衣)。
@@ -809,6 +830,70 @@ mod tests {
         assert!(v.is_accept(), "好感度上昇自体は受理される");
         assert!(!s.flag("promise_remembered"), "adjudicate は発火させない (純粋)");
         assert!(s.fired.is_empty(), "adjudicate は fired を変えない");
+    }
+
+    // -------------------------------------------------------------------------
+    // NPC inventory + 譲渡 PoC: 持っていない物は渡せない (#23 の engine 側バックストップ)。
+    // 所持物は閉世界・キャラ別。player は拾い、NPC は譲渡でのみ受け取る。
+    // -------------------------------------------------------------------------
+
+    /// 【正規の譲渡】花を摘んでアリスに渡すと、アリスの所持物に移り goal 到達。
+    #[test]
+    fn give_transfers_held_item() {
+        let sc = gift();
+        let mut s = sc.initial_state(7);
+        apply(&mut s, &sc, &d(vec![StateOp::AddItem { item: "flower".into() }]))
+            .expect("花は摘める");
+        assert!(s.has_item(PLAYER, "flower"));
+        apply(&mut s, &sc, &d(vec![StateOp::GiveItem {
+            from: PLAYER.into(),
+            to: "alice".into(),
+            item: "flower".into(),
+        }]))
+        .expect("所持している花は渡せる");
+        assert!(s.has_item("alice", "flower"), "アリスの所持物に移る");
+        assert!(!s.has_item(PLAYER, "flower"), "player の手からは離れる");
+        assert!(is_goal(&s, &sc), "goal (alice が flower を所持) 到達");
+    }
+
+    /// 【行商ネックレス遮断】所持していない物は渡せない (engine バックストップ)。
+    #[test]
+    fn cannot_give_unheld_item() {
+        let sc = gift();
+        let mut s = sc.initial_state(7);
+        // 摘む前に渡そうとする。
+        let delta = d(vec![StateOp::GiveItem {
+            from: PLAYER.into(),
+            to: "alice".into(),
+            item: "flower".into(),
+        }]);
+        match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => assert!(reasons
+                .iter()
+                .any(|r| matches!(r, RejectReason::ItemNotHeld { item } if item == "flower"))),
+            Verdict::Accept => panic!("持っていない物の譲渡を受理してはならない"),
+        }
+        assert!(apply(&mut s, &sc, &delta).is_err());
+        assert!(!s.has_item("alice", "flower"), "却下なら誰の手にも渡らない");
+    }
+
+    /// 【幻のキャラ遮断】存在しない entity には渡せない (閉世界)。
+    #[test]
+    fn cannot_give_to_unknown_entity() {
+        let sc = gift();
+        let mut s = sc.initial_state(7);
+        apply(&mut s, &sc, &d(vec![StateOp::AddItem { item: "flower".into() }])).unwrap();
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::GiveItem {
+            from: PLAYER.into(),
+            to: "ghost".into(),
+            item: "flower".into(),
+        }]));
+        match v {
+            Verdict::Reject { reasons } => assert!(reasons
+                .iter()
+                .any(|r| matches!(r, RejectReason::UnknownEntity { entity } if entity == "ghost"))),
+            Verdict::Accept => panic!("幻のキャラへの譲渡を受理してはならない"),
+        }
     }
 
     // -------------------------------------------------------------------------

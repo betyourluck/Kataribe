@@ -166,10 +166,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn inventory(state: &GameState) -> String {
-    if state.inventory.is_empty() {
+    if state.inventory.values().all(|s| s.is_empty()) {
         "なし".to_string()
     } else {
-        state.inventory.iter().cloned().collect::<Vec<_>>().join(", ")
+        state
+            .inventory
+            .iter()
+            .filter(|(_, s)| !s.is_empty())
+            .map(|(eid, s)| format!("{eid}: {}", s.iter().cloned().collect::<Vec<_>>().join(", ")))
+            .collect::<Vec<_>>()
+            .join(" / ")
     }
 }
 

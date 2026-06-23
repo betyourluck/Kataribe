@@ -37,7 +37,7 @@ pub const GM_SYSTEM: &str = "\
 fn gate_brief(gate: &Gate) -> String {
     match gate {
         Gate::Always => "条件なし".to_string(),
-        Gate::HasItem { item } => format!("「{item}」を所持していること"),
+        Gate::HasItem { entity, item } => format!("{entity} が「{item}」を所持していること"),
         Gate::FlagIs { key, value } => format!("状態「{key}」が {value} であること"),
         Gate::LocationIs { at } => format!("「{at}」にいること"),
         Gate::StatAtLeast { entity, key, value } => {
@@ -93,10 +93,17 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
 
 /// 現在の正本状態を要約する。LLM が見てよい唯一の真実のスナップショット。
 pub fn state_brief(state: &GameState) -> String {
-    let inv = if state.inventory.is_empty() {
+    // 所持物はキャラ別 (誰が何を持つかを LLM に見せる = 譲渡の前提)。
+    let inv = if state.inventory.values().all(|s| s.is_empty()) {
         "なし".to_string()
     } else {
-        state.inventory.iter().cloned().collect::<Vec<_>>().join(", ")
+        state
+            .inventory
+            .iter()
+            .filter(|(_, s)| !s.is_empty())
+            .map(|(eid, s)| format!("{eid}: {}", s.iter().cloned().collect::<Vec<_>>().join(", ")))
+            .collect::<Vec<_>>()
+            .join(" / ")
     };
     let flags: Vec<String> = state
         .flags

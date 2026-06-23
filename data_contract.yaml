@@ -9,7 +9,7 @@
 # --- 正本 (Rust gm_core が所有する唯一の真実) -------------------------------
 GameState:
   location: LocationId          # 現在地。Move は Scenario の exit がある時のみ変わる
-  inventory: [ItemId]           # 集合。AddItem は「現在地に在り、取得gate達成」時のみ
+  inventory: { EntityId: [ItemId] }  # キャラ別の所持物 (閉世界)。player は世界から拾い(AddItem)、NPC へ渡せる(GiveItem)
   flags: { FlagKey: bool }      # 許可フラグのみ。SetFlag(true) は flag_rules の gate 達成時のみ
   entities: { EntityId: { StatKey: i64 } }  # キャラ別の数値の真実。算術はエンジン、LLMは値を持てない。"player" は主人公
   rng: { seed: u64, cursor: u64 }  # ダイスは決定論・監査可能。LLMは結果を持たない
@@ -23,8 +23,9 @@ StateDelta:
   ops: [StateOp]                # 構造化された状態変更要求。エンジンが全件検証
 
 StateOp:                        # 内部タグ "op" 付き列挙
-  - { op: add_item,     item: ItemId }
-  - { op: remove_item,  item: ItemId }
+  - { op: add_item,     item: ItemId }   # player が現在地から拾う (世界→player)
+  - { op: remove_item,  item: ItemId }   # player が手放す
+  - { op: give_item,    from: EntityId, to: EntityId, item: ItemId }  # 譲渡。from が所持してなければ却下=ネックレス遮断。from 既定 player
   - { op: set_flag,     key: FlagKey, value: bool }
   - { op: move,         to: LocationId }
   - { op: request_roll, sides: u32, dc: u32 }   # 結果は書かない。エンジンが振って裁く
@@ -39,8 +40,9 @@ StateOp:                        # 内部タグ "op" 付き列挙
 adjudication:
   purity:     "adjudicate は state を一切変更しない純粋関数"
   atomicity:  "1つでも不正な op があればデルタ全体を却下し、state は無傷"
-  add_item:   "現在地 items に無い / 取得gate未達 / 既所持 → Reject"
-  remove_item:"未所持の物は手放せない → Reject"
+  add_item:   "現在地 items に無い / 取得gate未達 / player 既所持 → Reject (拾得は player のみ)"
+  remove_item:"player が未所持の物は手放せない → Reject"
+  give_item:  "from が item を所持していない → Reject (ItemNotHeld)。to が未知 entity → Reject (UnknownEntity)。= 持っていない物は渡せない (#23 の engine 側バックストップ)"
   set_flag:   "未許可キー / flag_rules の gate 未達 (value=true時) → Reject"
   move:       "現在地から to への exit が無い / exit.gate 未達 → Reject"
   request_roll:"LLMは結果を主張できない (op構造上不可能)。面数<1 → Reject"
@@ -96,7 +98,7 @@ Exit:
 
 Gate:                               # 内部タグ "kind" 付き列挙。エンジンが state に対して評価
   - { kind: always }
-  - { kind: has_item, item: ItemId }
+  - { kind: has_item, entity: EntityId, item: ItemId }   # entity 省略時 player
   - { kind: flag_is, key: FlagKey, value: bool }
   - { kind: location_is, at: LocationId }
   - { kind: stat_at_least, key: StatKey, value: i64 }   # 数値条件 (STR>=15 / HP>=1 等)

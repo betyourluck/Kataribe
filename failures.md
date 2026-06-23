@@ -240,3 +240,22 @@ PoC: skills_load_from_declaration / has_skill_gate_blocks_without_skill / llm_pr
 / trigger_awakens_skill_then_gate_passes (儀式→開花→予知 gate 通過→goal の正面)。gm_core 33→37。
 【副次】schemars が GrantSkill を tool schema に自動露出するので LLM は提案できてしまうが、adjudicate が
 常に却下するので幻アイテム (master_key) と同じく無害。プロンプト変更ゼロで schema 追従 (#17 の利点)。
+
+## crates/gm_core (2026-06-24 NPC inventory + 譲渡 — #23 の engine 側バックストップ)
+
+### 25. 所持物も閉世界・キャラ別にし、「渡す」を検証可能な op にする (#23 の engine 化)
+#23 (行商ネックレス) の prompt 層対策に加え、構造対策を実装。所持物を**キャラ別の閉世界**
+(`GameState.inventory{entity:[ItemId]}`) にし、譲渡を検証可能な op にした: `StateOp::GiveItem
+{from,to,item}` は `from` が item を所持していなければ却下 (ItemNotHeld)、`to` が未知 entity なら
+却下 (UnknownEntity)。= **持っていない物は渡せない** を engine が保証 (narration でなく op 経由なら)。
+【設計判断: 波及最小化】`AddItem`/`RemoveItem` は player 専用のまま (リテラル ~10 箇所の破壊回避、
+「拾得は世界→player」という素直なモデル)。per-entity 化が要るのは `Gate::HasItem{entity,item}` と
+GiveItem のみ。Gate::HasItem は entity 既定 player なので YAML/既存テストは serde default で無傷。
+【二層の完成 (#23)】narration 経路は prompt 接地 (#23)、op 経路は GiveItem の engine 却下。両輪。
+ただし依然 narration 捏造そのものは prompt しか catch できない (narration に backstop は無い、#23 の本質)。
+【実 LLM 検証 (2026-06-24)】gift シナリオで「花を摘む」→AddItem flower (所持: player)、「アリスに渡す」
+→GiveItem player→alice (所持: alice) → goal。LLM がプロンプト変更ゼロで AddItem→GiveItem を駆動
+(schemars 露出 + state_brief のキャラ別所持表示)。PoC: give_transfers_held_item / cannot_give_unheld_item
+(ネックレス遮断) / cannot_give_to_unknown_entity。gm_core 37→40。
+【未対応 (将来)】NPC の所在 (location) を持たないので「同じ場所のキャラにしか渡せない」制約は未実装。
+NPC が世界からアイテムを拾う経路も無い (AddItem は player 専用)。必要になってから。

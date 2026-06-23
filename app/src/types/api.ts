@@ -10,6 +10,7 @@ export interface EntityView {
   id: string;
   stats: StatView[];
   skills: string[];
+  items: string[];
 }
 
 export interface StateView {

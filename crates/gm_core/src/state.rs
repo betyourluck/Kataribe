@@ -26,8 +26,9 @@ pub fn default_entity() -> EntityId {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameState {
     pub location: LocationId,
+    /// キャラ別の所持物 (閉世界)。`"player"` は世界から拾い (AddItem)、NPC へ渡せる (GiveItem)。
     #[serde(default)]
-    pub inventory: BTreeSet<ItemId>,
+    pub inventory: BTreeMap<EntityId, BTreeSet<ItemId>>,
     #[serde(default)]
     pub flags: BTreeMap<FlagKey, bool>,
     /// キャラ別の数値の真実 (HP/STR/好感度 等)。算術はエンジンだけが [`crate::apply`] で行う。
@@ -52,7 +53,7 @@ impl GameState {
     pub fn new(location: impl Into<LocationId>, seed: u64) -> Self {
         Self {
             location: location.into(),
-            inventory: BTreeSet::new(),
+            inventory: BTreeMap::new(),
             flags: BTreeMap::new(),
             entities: BTreeMap::new(),
             rng: RngState { seed, cursor: 0 },
@@ -75,8 +76,24 @@ impl GameState {
             .insert(skill.to_string());
     }
 
-    pub fn has_item(&self, item: &str) -> bool {
-        self.inventory.contains(item)
+    /// 指定キャラが item を所持しているか。`entity` 省略経路 (Gate/op) は既定で `"player"`。
+    pub fn has_item(&self, entity: &str, item: &str) -> bool {
+        self.inventory.get(entity).is_some_and(|s| s.contains(item))
+    }
+
+    /// item を entity の所持物に加える (エンジン内部用)。
+    pub fn add_to_inventory(&mut self, entity: &str, item: &str) {
+        self.inventory
+            .entry(entity.to_string())
+            .or_default()
+            .insert(item.to_string());
+    }
+
+    /// item を entity の所持物から外す (エンジン内部用)。
+    pub fn remove_from_inventory(&mut self, entity: &str, item: &str) {
+        if let Some(items) = self.inventory.get_mut(entity) {
+            items.remove(item);
+        }
     }
 
     /// 未設定フラグは false 扱い。
@@ -156,8 +173,18 @@ impl StateDelta {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum StateOp {
+    /// player が現在地からアイテムを拾う (世界 → player)。
     AddItem { item: ItemId },
+    /// player がアイテムを手放す。
     RemoveItem { item: ItemId },
+    /// アイテムを譲渡する。`from` が所持していなければ却下 (持っていない物は渡せない)。
+    /// `to` は既知の entity でなければ却下。`from` 省略時は主人公。
+    GiveItem {
+        #[serde(default = "default_entity")]
+        from: EntityId,
+        to: EntityId,
+        item: ItemId,
+    },
     SetFlag { key: FlagKey, value: bool },
     Move { to: LocationId },
     /// ダイスを振る要求。**結果は含めない** — エンジンが振って裁く。

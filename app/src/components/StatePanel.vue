@@ -45,6 +45,10 @@ const game = useGameStore();
           <div v-if="e.skills.length" class="text-glow/70 pl-2 text-xs">
             能力: {{ e.skills.join("、") }}
           </div>
+          <!-- NPC の所持物 (player の物は上段「所持品」に出るので重複させない)。 -->
+          <div v-if="e.id !== 'player' && e.items.length" class="text-parchment/70 pl-2 text-xs">
+            所持: {{ e.items.join("、") }}
+          </div>
         </div>
       </div>
 

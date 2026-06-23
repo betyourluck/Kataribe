@@ -35,6 +35,8 @@ pub enum RejectReason {
     TabooViolated { entity: String },
     /// 能力の付与 (grant_skill) は LLM が提案できない (authored トリガーの専権)。メアリー・スー遮断。
     SkillGrantNotAllowed { entity: String, skill: String },
+    /// 譲渡先がこのシナリオに存在しない entity (幻のキャラには渡せない)。
+    UnknownEntity { entity: String },
 }
 
 impl RejectReason {
@@ -72,6 +74,9 @@ impl RejectReason {
             RejectReason::SkillGrantNotAllowed { entity, skill } => {
                 format!("{entity} は能力 '{skill}' をその場で開花できない (能力は筋書きの出来事でのみ目覚める)")
             }
+            RejectReason::UnknownEntity { entity } => {
+                format!("'{entity}' はこのシナリオに存在しないので渡せない")
+            }
         }
     }
 
@@ -102,6 +107,9 @@ impl RejectReason {
             }
             RejectReason::SkillGrantNotAllowed { entity, skill } => {
                 format!("{entity} cannot awaken the skill '{skill}' on a whim (skills awaken only through authored events)")
+            }
+            RejectReason::UnknownEntity { entity } => {
+                format!("cannot give to '{entity}' because it does not exist in this scenario")
             }
         }
     }

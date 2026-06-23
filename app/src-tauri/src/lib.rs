@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use gm_core::{is_goal, GameState, Lang, Scenario};
+use gm_core::{is_goal, GameState, Lang, Scenario, PLAYER};
 use harness::{
     inject_cast, load_lore, resolve_recall, run_turn, LoreStore, MemoryFragment, TurnOutcome,
 };
@@ -42,6 +42,8 @@ struct EntityView {
     stats: Vec<StatView>,
     /// 獲得済みの能力 (閉世界 capability)。ここに無い能力は存在しない。
     skills: Vec<String>,
+    /// 所持物 (閉世界)。NPC は譲渡 (GiveItem) でのみ受け取る。
+    items: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -136,9 +138,13 @@ fn normalize(s: &str) -> String {
 }
 
 fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
-    // stat を持つ entity と skill を持つ entity の和集合 (どちらか一方しか持たない場合がある)。
-    let ids: std::collections::BTreeSet<&String> =
-        state.entities.keys().chain(state.skills.keys()).collect();
+    // stat / skill / 所持物 のいずれかを持つ entity の和集合。
+    let ids: std::collections::BTreeSet<&String> = state
+        .entities
+        .keys()
+        .chain(state.skills.keys())
+        .chain(state.inventory.keys())
+        .collect();
     let entities = ids
         .into_iter()
         .map(|id| EntityView {
@@ -158,12 +164,22 @@ fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
                 .get(id)
                 .map(|s| s.iter().cloned().collect())
                 .unwrap_or_default(),
+            items: state
+                .inventory
+                .get(id)
+                .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default(),
         })
         .collect();
     StateView {
         turn: state.turn,
         location: state.location.clone(),
-        inventory: state.inventory.iter().cloned().collect(),
+        // 上段の「所持品」は主人公の物 (NPC の所持物は登場人物ブロックに出る)。
+        inventory: state
+            .inventory
+            .get(PLAYER)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default(),
         flags: state
             .flags
             .iter()
