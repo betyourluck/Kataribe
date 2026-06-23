@@ -66,7 +66,8 @@ Scenario:
   flag_rules: { FlagKey: Gate }     # 記載なければ Always
   initial_stats: { StatKey: i64 }   # "player" の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い
   initial_skills: [SkillId]         # "player" の初期スキル糖衣 (閉世界宣言)。NPC は CharacterDef.skills
-  characters: { EntityId: CharacterDef }  # 登場人物(player以外)。Phase A は scenario inline、外部 characters/*.yaml 分離はローダで注入(次)
+  cast: [EntityId]                  # このシナリオに登場する外部キャラの宣言。**空なら外部注入なし** (全シナリオ共有の混入を防ぐ)。harness::inject_cast が characters/{id}.yaml から cast 分だけ注入 (inline 優先)
+  characters: { EntityId: CharacterDef }  # 登場人物(player以外)。inline 宣言 + cast 指定の外部 characters/*.yaml 注入
 
 # --- キャラクター定義 (characters/*.yaml、不変の authored 定義 = GameDefinitions 相当) ---
 # 数値=正本(エンジン), 設定/背景/性向=語りの素材(→いずれ Memoria), 硬い禁忌=エンジン強制(Phase B)。

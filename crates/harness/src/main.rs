@@ -18,7 +18,7 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 use gm_core::{is_goal, GameState, Lang, Scenario};
-use harness::{load_characters, load_lore, resolve_recall, run_turn, TurnOutcome};
+use harness::{inject_cast, load_lore, resolve_recall, run_turn, TurnOutcome};
 use llm_client::{LlmClient, LlmConfig};
 
 /// 既定シナリオ (cwd 非依存: crate からの相対で解決)。
@@ -60,15 +60,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|e| format!("シナリオを読めません ({scenario_path}): {e}"))?;
     let mut scenario = Scenario::from_yaml(&yaml)?;
 
-    // 外部キャラ定義 (scenarios/ の隣の characters/) を読み、inline に無い entity を補う。
+    // シナリオが cast 宣言した外部キャラ (scenarios/ の隣の characters/) だけを注入する。
     let chars_dir = Path::new(&scenario_path)
         .parent()
         .and_then(|p| p.parent())
         .map(|root| root.join("characters"))
         .unwrap_or_else(|| Path::new("characters").to_path_buf());
-    for (id, def) in load_characters(&chars_dir)? {
-        scenario.characters.entry(id).or_insert(def); // inline 優先、無ければ外部ファイル
-    }
+    inject_cast(&mut scenario, &chars_dir)?;
 
     // 伏線 lore (scenarios/ の隣の memoria/) をロード。トリガー発火点で recall する (memoria_bridge)。
     let lore_dir = Path::new(&scenario_path)

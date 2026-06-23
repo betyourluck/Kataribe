@@ -15,7 +15,7 @@ mod proposer;
 mod turn;
 
 pub use error::HarnessError;
-pub use loader::load_characters;
+pub use loader::{inject_cast, load_characters};
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use proposer::DeltaProposer;
 pub use turn::{run_turn, TurnOutcome};

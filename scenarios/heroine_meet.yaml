@@ -1,6 +1,6 @@
 # PoC シナリオ: 宿屋の出会い (外部キャラファイルを使う最小盤面)
 # heroine_route.yaml と違い、キャラを inline で書かない。
-# アリスは characters/alice.yaml から読み込まれて注入される (bin が load_characters で合流)。
+# アリスは cast 宣言により characters/alice.yaml から注入される (harness::inject_cast)。
 #
 # 正規の筋: アリスと会話を重ね、好感度を 50 まで上げる → goal
 
@@ -9,7 +9,8 @@ start: parlor
 
 initial_stats: {}
 
-# characters: なし → 外部 characters/*.yaml から注入される (alice)
+# inline characters は書かず、cast で外部 characters/alice.yaml を宣言注入する。
+cast: [alice]
 
 allowed_flags:
   - alice_ate_pork

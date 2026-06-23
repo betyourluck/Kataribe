@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use gm_core::{CharacterDef, EntityId};
+use gm_core::{CharacterDef, EntityId, Scenario};
 
 use crate::error::HarnessError;
 
@@ -49,6 +49,31 @@ pub fn load_characters(dir: &Path) -> Result<BTreeMap<EntityId, CharacterDef>, H
     Ok(out)
 }
 
+/// `scenario.cast` で宣言された外部キャラを `dir/{id}.yaml` から注入する。
+///
+/// **`cast` に挙げられた entity だけ**を注入する (全シナリオへの無差別注入を防ぐ = alice が密室脱出に
+/// 混入する問題の修正)。inline `characters` に在る entity はそちらが優先。`cast` が空なら何もしない。
+/// cast に挙げたのに定義ファイルが無ければエラー (宣言と実体の乖離を黙認しない)。
+pub fn inject_cast(scenario: &mut Scenario, dir: &Path) -> Result<(), HarnessError> {
+    if scenario.cast.is_empty() {
+        return Ok(());
+    }
+    let available = load_characters(dir)?;
+    // cast を先に clone して scenario への可変借用と衝突させない。
+    let cast: Vec<EntityId> = scenario.cast.iter().cloned().collect();
+    for id in cast {
+        if scenario.characters.contains_key(&id) {
+            continue; // inline 優先
+        }
+        let def = available.get(&id).ok_or_else(|| HarnessError::CharacterLoad {
+            path: dir.join(format!("{id}.yaml")).display().to_string(),
+            detail: format!("cast '{id}' の定義ファイルが見つからない"),
+        })?;
+        scenario.characters.insert(id.clone(), def.clone());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +94,42 @@ mod tests {
     fn missing_dir_is_empty() {
         let chars = load_characters(Path::new("/no/such/dir/xyz")).unwrap();
         assert!(chars.is_empty());
+    }
+
+    fn repo_chars_dir() -> std::path::PathBuf {
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../characters")).to_path_buf()
+    }
+
+    /// 【cast 宣言】cast に挙げた entity だけが外部ファイルから注入される。
+    #[test]
+    fn inject_cast_loads_declared_only() {
+        // 邂逅シナリオ (inline キャラ無し、cast: [alice])。
+        const HEROINE_MEET: &str = include_str!("../../../scenarios/heroine_meet.yaml");
+        let mut sc = Scenario::from_yaml(HEROINE_MEET).unwrap();
+        assert!(sc.characters.is_empty(), "注入前は登場人物が居ない");
+        inject_cast(&mut sc, &repo_chars_dir()).expect("cast の注入が成功する");
+        assert!(sc.characters.contains_key("alice"), "cast の alice が注入される");
+    }
+
+    /// 【混入しない】cast を宣言しないシナリオには、外部キャラが一切注入されない
+    /// (alice が密室脱出に混入する問題の回帰防止)。
+    #[test]
+    fn no_cast_means_no_injection() {
+        const LOCKED_ROOM: &str = include_str!("../../../scenarios/locked_room.yaml");
+        let mut sc = Scenario::from_yaml(LOCKED_ROOM).unwrap();
+        inject_cast(&mut sc, &repo_chars_dir()).expect("cast 空でも成功する");
+        assert!(sc.characters.is_empty(), "cast 未宣言なら alice は混入しない");
+    }
+
+    /// cast に挙げたのに定義ファイルが無ければエラー (宣言と実体の乖離を黙認しない)。
+    #[test]
+    fn inject_cast_missing_definition_errors() {
+        let mut sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: a\ncast: [ghost]\n",
+            "locations:\n  a:\n    description: d\n    exits: []\n",
+            "goal: { kind: location_is, at: a }\n"
+        ))
+        .unwrap();
+        assert!(inject_cast(&mut sc, &repo_chars_dir()).is_err());
     }
 }

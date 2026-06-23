@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use gm_core::{is_goal, GameState, Lang, Scenario};
 use harness::{
-    load_characters, load_lore, resolve_recall, run_turn, LoreStore, MemoryFragment, TurnOutcome,
+    inject_cast, load_lore, resolve_recall, run_turn, LoreStore, MemoryFragment, TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
 use serde::Serialize;
@@ -196,10 +196,8 @@ async fn new_game(
         .map_err(|e| format!("シナリオを読めません ({}): {e}", scen_path.display()))?;
     let mut scenario = Scenario::from_yaml(&yaml).map_err(|e| format!("シナリオの解析失敗: {e}"))?;
 
-    // 外部キャラ定義 (characters/) を inline に無い entity に注入 (CLI と同経路)。
-    for (id, def) in load_characters(&root.join("characters")).map_err(|e| e.to_string())? {
-        scenario.characters.entry(id).or_insert(def);
-    }
+    // シナリオが cast 宣言した外部キャラだけを注入 (CLI と同経路、無差別注入しない)。
+    inject_cast(&mut scenario, &root.join("characters")).map_err(|e| e.to_string())?;
     // 伏線 (memoria/) をロード。
     let lore = load_lore(&root.join("memoria")).map_err(|e| e.to_string())?;
 

@@ -157,7 +157,12 @@ pub struct Scenario {
     /// `"player"` の初期スキル糖衣 (閉世界宣言)。NPC は [`CharacterDef::skills`]。
     #[serde(default)]
     pub initial_skills: BTreeSet<SkillId>,
-    /// 登場人物 (player 以外)。外部 `characters/*.yaml` を読み込んで注入する。
+    /// このシナリオに登場する外部キャラの宣言 (`characters/{id}.yaml` から注入する entity)。
+    /// **空なら外部注入しない** — シナリオが宣言した登場人物だけが現れる (全シナリオ共有の混入を防ぐ)。
+    /// inline `characters` に在る entity はそちらが優先。
+    #[serde(default)]
+    pub cast: BTreeSet<EntityId>,
+    /// 登場人物 (player 以外)。inline 宣言 + `cast` で指定した外部 `characters/*.yaml` の注入。
     #[serde(default)]
     pub characters: BTreeMap<EntityId, CharacterDef>,
     /// 反応ビート (Phase C)。`when` 成立で `effects` を原子適用し `narration` を注入する。
