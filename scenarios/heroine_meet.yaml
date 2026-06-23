@@ -1,0 +1,23 @@
+# PoC シナリオ: 宿屋の出会い (外部キャラファイルを使う最小盤面)
+# heroine_route.yaml と違い、キャラを inline で書かない。
+# アリスは characters/alice.yaml から読み込まれて注入される (bin が load_characters で合流)。
+#
+# 正規の筋: アリスと会話を重ね、好感度を 50 まで上げる → goal
+
+title: 宿屋の出会い
+start: parlor
+
+initial_stats: {}
+
+# characters: なし → 外部 characters/*.yaml から注入される (alice)
+
+allowed_flags:
+  - alice_ate_pork
+
+locations:
+  parlor:
+    description: 暖炉のある宿屋の談話室。カウンターの奥に、宿屋の娘アリスが立っている。
+    items: {}
+    exits: []
+
+goal: { kind: stat_at_least, entity: alice, key: 好感度, value: 50 }

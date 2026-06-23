@@ -11,4 +11,8 @@ pub enum HarnessError {
     /// テスト用 scripted 提案者の台本が尽きた等。
     #[error("提案が得られない: {0}")]
     NoProposal(String),
+
+    /// 外部キャラ定義ファイルの読み込み/パース失敗。
+    #[error("キャラ定義の読み込み失敗 ({path}): {detail}")]
+    CharacterLoad { path: String, detail: String },
 }

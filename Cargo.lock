@@ -175,6 +175,7 @@ dependencies = [
  "gm_core",
  "llm_client",
  "serde_json",
+ "serde_yaml",
  "thiserror",
  "tokio",
 ]

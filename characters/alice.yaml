@@ -1,0 +1,14 @@
+# キャラクター定義 (1 キャラ 1 ファイル)。ファイル名 "alice" が EntityId になる。
+# 数値=正本(エンジン) / profile=語りの素材(柔らかい性向, いずれ Memoria) / taboos=硬い禁忌(Phase B 強制)。
+
+name: アリス
+
+profile: |
+  宿屋の娘。人見知りだが芯は強い。甘いものに目がない。
+  古い氏族の誓いで、豚肉を決して口にしない。
+
+stats:
+  好感度: { initial: 0, min: 0, max: 100 }
+
+taboos:
+  - { kind: flag_is, key: alice_ate_pork, value: true }   # Phase B でエンジン強制

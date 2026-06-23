@@ -8,11 +8,13 @@
 //! テスト用 scripted fake を差し替えられる。これで「却下→再生成」の正しさを実 API 無しで実証する。
 
 mod error;
+mod loader;
 pub mod prompt;
 mod proposer;
 mod turn;
 
 pub use error::HarnessError;
+pub use loader::load_characters;
 pub use proposer::DeltaProposer;
 pub use turn::{run_turn, TurnOutcome};
 

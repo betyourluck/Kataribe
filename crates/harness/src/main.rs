@@ -15,8 +15,10 @@
 use std::error::Error;
 use std::io::{self, BufRead, Write};
 
+use std::path::Path;
+
 use gm_core::{is_goal, GameState, Lang, Scenario};
-use harness::{run_turn, TurnOutcome};
+use harness::{load_characters, run_turn, TurnOutcome};
 use llm_client::{LlmClient, LlmConfig};
 
 /// 既定シナリオ (cwd 非依存: crate からの相対で解決)。
@@ -56,7 +58,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let scenario_path = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_SCENARIO.to_string());
     let yaml = std::fs::read_to_string(&scenario_path)
         .map_err(|e| format!("シナリオを読めません ({scenario_path}): {e}"))?;
-    let scenario = Scenario::from_yaml(&yaml)?;
+    let mut scenario = Scenario::from_yaml(&yaml)?;
+
+    // 外部キャラ定義 (scenarios/ の隣の characters/) を読み、inline に無い entity を補う。
+    let chars_dir = Path::new(&scenario_path)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|root| root.join("characters"))
+        .unwrap_or_else(|| Path::new("characters").to_path_buf());
+    for (id, def) in load_characters(&chars_dir)? {
+        scenario.characters.entry(id).or_insert(def); // inline 優先、無ければ外部ファイル
+    }
 
     // 初期 stat (HP/STR 等) をシナリオから読んで状態を作る。
     let mut state = scenario.initial_state(SEED);
@@ -101,7 +113,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 );
 
                 if is_goal(&state, &scenario) {
-                    println!("\n🎉 脱出成功。goal 到達 (turn {}).", state.turn);
+                    println!("\n🎉 クリア。goal 到達 (turn {}).", state.turn);
                     break;
                 }
             }
