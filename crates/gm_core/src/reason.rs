@@ -31,6 +31,8 @@ pub enum RejectReason {
     DiceSidesInvalid,
     UnknownStat { key: String },
     DivideByZero { key: String },
+    /// このデルタは `entity` の硬い禁忌 (taboo) を破る (Phase B)。
+    TabooViolated { entity: String },
 }
 
 impl RejectReason {
@@ -62,6 +64,9 @@ impl RejectReason {
                 format!("stat '{key}' はこのシナリオに宣言されていない")
             }
             RejectReason::DivideByZero { key } => format!("stat '{key}' をゼロで割ることはできない"),
+            RejectReason::TabooViolated { entity } => {
+                format!("その行動は {entity} の禁忌に反する")
+            }
         }
     }
 
@@ -87,6 +92,9 @@ impl RejectReason {
                 format!("stat '{key}' is not declared in this scenario")
             }
             RejectReason::DivideByZero { key } => format!("cannot divide stat '{key}' by zero"),
+            RejectReason::TabooViolated { entity } => {
+                format!("that action violates {entity}'s taboo")
+            }
         }
     }
 }

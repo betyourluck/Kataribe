@@ -44,7 +44,7 @@ adjudication:
   scale_stat: "未宣言キー → Reject / den=0 (ゼロ除算) → Reject。LLMは /0 でエンジンを壊せない"
   stat_clamp: "clamp は CharacterDef.stats の StatDecl(min 既定 0 / max 既定なし)。entity ごと・stat ごと"
   reasons:    "Verdict::Reject は構造化 RejectReason 列 (文字列でなくデータ)。ルールはエンジン不変、文面は提示層"
-  taboo:      "Phase B: CharacterDef.taboos (硬い禁忌=Gate) が true になる delta を却下。柔らかい性向は profile (語り) へ"
+  taboo:      "✅Phase B: CharacterDef.taboos(Gate) が delta 射影後に false→true 真化するなら却下 (check_taboos)。純粋: state の clone に apply_ops 射影して評価。柔らかい性向は profile(語り)"
 
 # --- 却下理由の構造化と多言語 (reason.rs) -----------------------------------
 # エンジンは「なぜ却下したか」をデータで返し、文面は提示層が言語ごとに生成する。
@@ -142,8 +142,9 @@ GmPlay:                           # 実クラウド通しプレイ CLI (harness 
 # --- 反応機構: 禁忌(Phase B) と トリガー(Phase C) は双対 ---------------------
 # 両者とも「delta 適用後に Gate を評価する」同じ機構を使う。Phase B が機構を作り、
 # Phase C が再利用する。禁忌=Gate 真化を却下(負)、トリガー=Gate 真化で発火(正)。
-Taboo:                            # Phase B (CharacterDef.taboos): 硬い禁忌
-  semantics: "delta 適用後に taboo(Gate) が真化するなら却下。キャラが自分の禁忌を破れない"
+Taboo:                            # ✅Phase B (CharacterDef.taboos): 硬い禁忌 (実装済)
+  semantics: "delta 適用後に taboo(Gate) が false→true 真化するなら却下。キャラが自分の禁忌を破れない"
+  mechanism: "check_taboos: state の clone に apply_ops で射影し edge(false→true)判定。Trigger と同機構"
 Trigger:                          # Phase C (未実装、設計凍結): エンジンが保証する反応ビート
   when: Gate                      # 発火条件 (好感度>=50 等)
   effects: "[StateOp] 機械的効果 (フラグ・stat・解放) をエンジンが原子適用"

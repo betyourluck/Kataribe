@@ -46,6 +46,30 @@ pub fn adjudicate(state: &GameState, scenario: &Scenario, delta: &StateDelta) ->
 
     let mut reasons = Vec::new();
 
+    // op 単体の力学 (所持/移動/gate/stat 宣言) を検証。
+    validate_ops(&mut reasons, state, scenario, loc, delta);
+
+    // 硬い禁忌 (Phase B): op 単体が合法なら、delta 適用後に taboo(Gate) が真化しないか検査。
+    // adjudicate は純粋なので state の clone へ射影 (project) して評価する。
+    if reasons.is_empty() {
+        check_taboos(&mut reasons, state, scenario, delta);
+    }
+
+    if reasons.is_empty() {
+        Verdict::Accept
+    } else {
+        Verdict::Reject { reasons }
+    }
+}
+
+/// op 単体の力学を検証して reasons に積む (taboo は別。state を変えない)。
+fn validate_ops(
+    reasons: &mut Vec<RejectReason>,
+    state: &GameState,
+    scenario: &Scenario,
+    loc: &crate::spine::Location,
+    delta: &StateDelta,
+) {
     for op in &delta.ops {
         match op {
             StateOp::AddItem { item } => {
@@ -106,11 +130,28 @@ pub fn adjudicate(state: &GameState, scenario: &Scenario, delta: &StateDelta) ->
             }
         }
     }
+}
 
-    if reasons.is_empty() {
-        Verdict::Accept
-    } else {
-        Verdict::Reject { reasons }
+/// delta を `state` の clone に射影し、各キャラの taboo(Gate) が **false→true** に
+/// 真化するなら却下理由を積む (硬い禁忌の強制)。射影は純粋 (元 state は不変)。
+fn check_taboos(
+    reasons: &mut Vec<RejectReason>,
+    state: &GameState,
+    scenario: &Scenario,
+    delta: &StateDelta,
+) {
+    // taboo を持つキャラが居なければ射影コストを払わない。
+    if scenario.characters.values().all(|c| c.taboos.is_empty()) {
+        return;
+    }
+    let mut projected = state.clone();
+    let _ = apply_ops(&mut projected, scenario, delta); // clone への射影 (dice は捨て)
+    for (eid, def) in &scenario.characters {
+        for taboo in &def.taboos {
+            if !taboo.eval(state) && taboo.eval(&projected) {
+                reasons.push(RejectReason::TabooViolated { entity: eid.clone() });
+            }
+        }
     }
 }
 
@@ -129,6 +170,14 @@ pub fn apply(
         Verdict::Accept => {}
     }
 
+    let rolls = apply_ops(state, scenario, delta);
+    state.turn += 1;
+    Ok(rolls)
+}
+
+/// delta の各 op を state に適用する (検証なし)。`apply` と taboo 射影が共有する。
+/// [`StateOp::RequestRoll`] はここで決定論的に振られ、結果を返す。
+fn apply_ops(state: &mut GameState, scenario: &Scenario, delta: &StateDelta) -> Vec<RollOutcome> {
     let mut rolls = Vec::new();
     for op in &delta.ops {
         match op {
@@ -167,8 +216,7 @@ pub fn apply(
             }
         }
     }
-    state.turn += 1;
-    Ok(rolls)
+    rolls
 }
 
 /// stat を宣言された境界 `[min, max]` に収める。max 未宣言なら上限なし。
@@ -514,6 +562,58 @@ mod tests {
         }]))
         .unwrap();
         assert!(is_goal(&s, &sc), "alice の好感度 >= 50 で goal");
+    }
+
+    // -------------------------------------------------------------------------
+    // 硬い禁忌 PoC (Phase B): キャラは自分の禁忌を破れない (正本 > 文章力 のキャラ版)
+    // -------------------------------------------------------------------------
+
+    /// 【禁忌の強制】アリスの禁忌 (豚肉を断つ=flag alice_ate_pork) を立てる delta は却下。
+    #[test]
+    fn taboo_blocks_violating_delta() {
+        let sc = route();
+        let s = sc.initial_state(7);
+        // op 単体は合法 (allowed_flags に在り gate も Always) だが、taboo が真化するので却下。
+        let v = adjudicate(
+            &s,
+            &sc,
+            &d(vec![StateOp::SetFlag { key: "alice_ate_pork".into(), value: true }]),
+        );
+        match v {
+            Verdict::Reject { reasons } => assert!(reasons
+                .iter()
+                .any(|r| matches!(r, RejectReason::TabooViolated { entity } if entity == "alice"))),
+            Verdict::Accept => panic!("禁忌を破る delta を受理してはならない"),
+        }
+    }
+
+    /// 【禁忌の原子性】禁忌を破る op を含むデルタは全体却下、合法 op の効果も適用されない。
+    #[test]
+    fn taboo_violation_is_atomic() {
+        let sc = route();
+        let mut s = sc.initial_state(7);
+        let delta = d(vec![
+            StateOp::AdjustStat { entity: "alice".into(), key: "好感度".into(), delta: 10 }, // 合法
+            StateOp::SetFlag { key: "alice_ate_pork".into(), value: true },                  // 禁忌
+        ]);
+        assert!(apply(&mut s, &sc, &delta).is_err());
+        assert_eq!(s.stat_of("alice", "好感度"), 0, "却下なら好感度も動かない");
+        assert!(!s.flag("alice_ate_pork"));
+        assert_eq!(s.turn, 0);
+    }
+
+    /// 禁忌に無関係な合法 delta は通る (禁忌は無関係な行動を妨げない)。
+    #[test]
+    fn taboo_does_not_block_unrelated() {
+        let sc = route();
+        let mut s = sc.initial_state(7);
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: "alice".into(),
+            key: "好感度".into(),
+            delta: 10,
+        }]))
+        .expect("禁忌と無関係な好感度上昇は通る");
+        assert_eq!(s.stat_of("alice", "好感度"), 10);
     }
 
     /// 【既定 entity】entity 省略のデルタ (LLM/YAML) は "player" に解決される。
