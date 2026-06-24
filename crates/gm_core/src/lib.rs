@@ -18,8 +18,11 @@ pub use engine::{
     adjudicate, apply, is_goal, ApplyOutcome, CheckOutcome, FiredTrigger, RollOutcome, Verdict,
 };
 pub use reason::{Lang, RejectReason};
-pub use spine::{CharacterDef, Exit, Gate, Location, Scenario, StatDecl, Trigger};
+pub use spine::{
+    ChallengeDef, CharacterDef, Exit, Gate, Location, Natural, Scenario, ScenarioError, StatDecl,
+    TierDef, Trigger,
+};
 pub use state::{
-    default_entity, EntityId, FlagKey, GameState, ItemId, LocationId, RngState, SkillId, StatKey,
-    StateDelta, StateOp, TriggerId, PLAYER,
+    default_entity, ChallengeId, EntityId, FlagKey, GameState, ItemId, LocationId, RngState,
+    SkillId, StatKey, StateDelta, StateOp, TriggerId, PLAYER,
 };

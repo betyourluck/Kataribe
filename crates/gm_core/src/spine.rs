@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{
-    default_entity, EntityId, FlagKey, GameState, ItemId, LocationId, SkillId, StateOp, StatKey,
-    TriggerId, PLAYER,
+    default_entity, ChallengeId, EntityId, FlagKey, GameState, ItemId, LocationId, SkillId,
+    StateOp, StatKey, TriggerId, PLAYER,
 };
 
 /// state に対して評価される条件。
@@ -144,6 +144,53 @@ pub struct Trigger {
     pub recall: Option<String>,
 }
 
+/// tier がどの**自然出目** (修正前の素の `1d{sides}`) で発火するか。
+/// `sides` 相対なので die サイズに依存しない (`max` は d6→6, d20→20)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Natural {
+    /// 最小目 (`roll == 1`)。大失敗 (fumble) の定番条件。
+    Min,
+    /// 最大目 (`roll == sides`)。大成功 (crit) の定番条件。
+    Max,
+}
+
+/// 判定結果の極 (tier)。**作者が定義する** — どの自然出目で発火し、何を帰結フラグに立てるか。
+/// `flag` は任意: tier を認識だけして帰結フラグを持たない極も書ける (例: 大成功で語りだけ変える)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TierDef {
+    /// この tier が発火する自然出目の極。
+    pub natural: Natural,
+    /// 該当時に engine が直書きする帰結フラグ (任意)。`allowed_flags` 宣言必須 ([`Scenario::validate`])。
+    #[serde(default)]
+    pub flag: Option<FlagKey>,
+}
+
+/// authored challenge。**判定の素性と帰結を作者が握る閉じた定義**。
+/// LLM は [`StateOp::AttemptChallenge`] で challenge を**選ぶ**だけで、ここを author できない。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChallengeDef {
+    /// 修正に使う stat (挑戦する entity が宣言済みであること)。
+    pub stat: StatKey,
+    pub sides: u32,
+    pub dc: u32,
+    /// 極 (tier) の定義。キー = tier 名 (`crit_fail` 等)。`CheckOutcome.tier` に surface する。
+    #[serde(default)]
+    pub tiers: BTreeMap<String, TierDef>,
+}
+
+/// シナリオの**静的整合性**の破れ。`scenarios/*.yaml` を load した直後に検査する
+/// (apply 中の panic でなく load 時の構造化エラーで弾く=幻参照を実行経路に乗せない)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScenarioError {
+    /// challenge の tier が立てる帰結フラグが `allowed_flags` に宣言されていない (幻フラグ)。
+    ChallengeFlagUndeclared {
+        challenge: ChallengeId,
+        tier: String,
+        flag: FlagKey,
+    },
+}
+
 /// シナリオ全体。`scenarios/*.yaml` から読み込まれる。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scenario {
@@ -172,6 +219,9 @@ pub struct Scenario {
     /// 反応ビート (Phase C)。`when` 成立で `effects` を原子適用し `narration` を注入する。
     #[serde(default)]
     pub triggers: Vec<Trigger>,
+    /// authored challenge (技能判定の素性と帰結)。LLM は `AttemptChallenge` で選ぶだけ。
+    #[serde(default)]
+    pub challenges: BTreeMap<ChallengeId, ChallengeDef>,
     pub locations: BTreeMap<LocationId, Location>,
     /// 達成でクリアとなる条件。
     pub goal: Gate,
@@ -194,6 +244,34 @@ impl Scenario {
     /// 指定 entity がこのシナリオに存在するか (主人公 or 登場人物)。譲渡先の検証に使う。
     pub fn knows_entity(&self, entity: &str) -> bool {
         entity == PLAYER || self.characters.contains_key(entity)
+    }
+
+    /// authored challenge を引く (未宣言なら `None`)。
+    pub fn challenge(&self, id: &str) -> Option<&ChallengeDef> {
+        self.challenges.get(id)
+    }
+
+    /// **静的整合性**を検査する (load 時に呼ぶ)。空 Vec なら健全。
+    ///
+    /// PoC-1: 各 challenge の tier が立てる帰結フラグが `allowed_flags` に宣言済みかを見る。
+    /// engine は tier 該当時にこのフラグを (flag_rules gate を迂回して) 直書きするので、
+    /// 未宣言フラグを許すと閉世界が破れる。apply 中の panic でなく load 時に弾く。
+    pub fn validate(&self) -> Vec<ScenarioError> {
+        let mut errs = Vec::new();
+        for (cid, def) in &self.challenges {
+            for (tname, tier) in &def.tiers {
+                if let Some(flag) = &tier.flag {
+                    if !self.allowed_flags.contains(flag) {
+                        errs.push(ScenarioError::ChallengeFlagUndeclared {
+                            challenge: cid.clone(),
+                            tier: tname.clone(),
+                            flag: flag.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        errs
     }
 
     /// 指定キャラの stat が宣言済か (adjust/scale の対象になれるか)。

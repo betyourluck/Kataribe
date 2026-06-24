@@ -40,6 +40,9 @@ pub struct CheckOutcome {
     pub total: i64,
     pub dc: u32,
     pub success: bool,
+    /// 該当した極 (tier) 名 (authored challenge の大失敗/大成功)。素の判定や非クリティカルでは `None`。
+    #[serde(default)]
+    pub tier: Option<String>,
 }
 
 /// 発火したトリガー (Phase C)。`narration` は語りへ注入する指示。
@@ -166,6 +169,23 @@ fn validate_ops(
                 // 修正に使う stat は宣言済みでなければならない (幻ステータスで判定を盛れない)。
                 if !scenario.knows_stat(entity, stat) {
                     reasons.push(RejectReason::UnknownStat { key: stat.clone() });
+                }
+            }
+            StateOp::AttemptChallenge { entity, challenge } => {
+                // 閉世界: 宣言された challenge にしか挑めない (幻チャレンジ遮断)。
+                match scenario.challenge(challenge) {
+                    None => reasons.push(RejectReason::UnknownChallenge {
+                        challenge: challenge.clone(),
+                    }),
+                    Some(def) => {
+                        // 判定の素性は authored だが、挑戦する entity がその stat を宣言してなければ判定できない。
+                        if !scenario.knows_stat(entity, &def.stat) {
+                            reasons.push(RejectReason::UnknownStat { key: def.stat.clone() });
+                        }
+                        if def.sides < 1 {
+                            reasons.push(RejectReason::DiceSidesInvalid);
+                        }
+                    }
                 }
             }
             StateOp::AdjustStat { entity, key, delta: _ } => {
@@ -330,7 +350,40 @@ fn apply_ops(
                     total,
                     dc: *dc,
                     success: total >= *dc as i64,
+                    tier: None, // 素の判定は極を持たない (tier は authored challenge の専権)。
                 });
+            }
+            StateOp::AttemptChallenge { entity, challenge } => {
+                // adjudicate が challenge 既知・stat 宣言済を保証済。authored 定義から判定を組む。
+                // ここに到達する challenge は必ず存在する (adjudicate 通過後)。
+                if let Some(def) = scenario.challenge(challenge) {
+                    let roll = state.rng.roll(def.sides);
+                    let modifier = state.stat_of(entity, &def.stat);
+                    let total = roll as i64 + modifier;
+                    // 極 (tier): 自然出目が min(=1)/max(=sides) に該当する authored tier を引く。
+                    // 該当 tier に flag があれば engine が直書きする (allowed_flags 宣言済を validate が保証)。
+                    let hit = def.tiers.iter().find(|(_, t)| match t.natural {
+                        crate::spine::Natural::Min => roll == 1,
+                        crate::spine::Natural::Max => roll == def.sides,
+                    });
+                    let tier = hit.map(|(name, _)| name.clone());
+                    if let Some((_, t)) = hit {
+                        if let Some(flag) = &t.flag {
+                            state.flags.insert(flag.clone(), true);
+                        }
+                    }
+                    checks.push(CheckOutcome {
+                        entity: entity.clone(),
+                        stat: def.stat.clone(),
+                        sides: def.sides,
+                        roll,
+                        modifier,
+                        total,
+                        dc: def.dc,
+                        success: total >= def.dc as i64,
+                        tier,
+                    });
+                }
             }
             // --- 算術はエンジンが行う。LLM は意図だけ提案、値は持てない ---
             StateOp::AdjustStat { entity, key, delta } => {
@@ -386,6 +439,8 @@ mod tests {
     const SKILL_AWAKENING: &str = include_str!("../../../scenarios/skill_awakening.yaml");
     // NPC inventory + 譲渡 (give_item) の最小盤面。
     const GIFT: &str = include_str!("../../../scenarios/gift.yaml");
+    // 技能判定の大失敗が世界を変える (fumble-as-trigger, PoC-1) の最小盤面。
+    const FUMBLE_CHECK: &str = include_str!("../../../scenarios/fumble_check.yaml");
 
     fn scenario() -> Scenario {
         Scenario::from_yaml(LOCKED_ROOM).expect("locked_room.yaml がパースできること")
@@ -409,6 +464,10 @@ mod tests {
 
     fn gift() -> Scenario {
         Scenario::from_yaml(GIFT).expect("gift.yaml がパースできること")
+    }
+
+    fn fumble() -> Scenario {
+        Scenario::from_yaml(FUMBLE_CHECK).expect("fumble_check.yaml がパースできること")
     }
 
     /// アリスの好感度を増やす delta (発火条件を跨ぐための糖衣)。
@@ -602,6 +661,125 @@ mod tests {
             .checks
         };
         assert_eq!(chk(&mut a), chk(&mut b), "同じ seed なら同じ判定結果");
+    }
+
+    // -------------------------------------------------------------------------
+    // fumble-as-trigger PoC-1: authored challenge の大失敗(natural 1)が宣言済フラグを
+    // 直書きし、それを gate にした既存トリガーが同じ適用内で発火する。
+    // tier/flag は authored、LLM は challenge を「選ぶ」だけ (帰結を持てない=閉世界)。
+    // -------------------------------------------------------------------------
+
+    /// 【fumble-as-trigger】大失敗(natural 1) → engine が authored flag 直書き → trigger 発火 → goal。
+    #[test]
+    fn attempt_challenge_crit_fail_sets_flag_and_fires_trigger() {
+        let sc = fumble();
+        assert!(sc.validate().is_empty(), "正しいシナリオは validate を通る");
+        let mut s = sc.initial_state(19); // seed 19 → 1d6 初回が natural 1
+        assert!(!is_goal(&s, &sc));
+
+        let out = apply(
+            &mut s,
+            &sc,
+            &d(vec![StateOp::AttemptChallenge {
+                entity: PLAYER.into(),
+                challenge: "drawer_pick".into(),
+            }]),
+        )
+        .expect("authored challenge への挑戦は合法");
+
+        // 出目と tier (engine が裁く)。
+        assert_eq!(out.checks.len(), 1);
+        let c = &out.checks[0];
+        assert_eq!(c.roll, 1, "seed 19 で 1d6 は natural 1");
+        assert_eq!(c.tier.as_deref(), Some("crit_fail"), "natural min → crit_fail tier");
+        assert!(!c.success, "1+2=3 < dc5 なので判定自体は失敗");
+
+        // 帰結: authored flag が engine 直書きで立ち、それを gate にした trigger が同一適用で発火。
+        assert_eq!(
+            s.flags.get("fumble_drawer"),
+            Some(&true),
+            "engine が authored 定義から fumble_drawer を直書き (LLM 経路でない)"
+        );
+        assert!(
+            out.fired.iter().any(|f| f.id == "drawer_jam"),
+            "fumble_drawer を gate にした既存トリガーが発火する"
+        );
+        assert!(is_goal(&s, &sc), "trigger が drawer_jammed を立て goal 到達 (失敗が分岐になった)");
+    }
+
+    /// 【閉世界】宣言されていない challenge には挑めない (幻チャレンジ遮断)。
+    #[test]
+    fn attempt_unknown_challenge_is_rejected() {
+        let sc = fumble();
+        let s = sc.initial_state(19);
+        let v = adjudicate(
+            &s,
+            &sc,
+            &d(vec![StateOp::AttemptChallenge {
+                entity: PLAYER.into(),
+                challenge: "teleport".into(), // 未宣言
+            }]),
+        );
+        match v {
+            Verdict::Reject { reasons } => assert!(reasons.iter().any(
+                |r| matches!(r, RejectReason::UnknownChallenge { challenge } if challenge == "teleport")
+            )),
+            Verdict::Accept => panic!("未宣言 challenge への挑戦を受理してはならない"),
+        }
+    }
+
+    /// 【非クリティカル】natural min/max でなければ tier は付かず、帰結フラグも立たない。
+    #[test]
+    fn attempt_challenge_non_crit_sets_no_flag() {
+        let sc = fumble();
+        let mut s = sc.initial_state(42); // seed 42 → 1d6 は 1 でも 6 でもない
+        let out = apply(
+            &mut s,
+            &sc,
+            &d(vec![StateOp::AttemptChallenge {
+                entity: PLAYER.into(),
+                challenge: "drawer_pick".into(),
+            }]),
+        )
+        .unwrap();
+        let c = &out.checks[0];
+        assert!(c.roll != 1 && c.roll != 6, "natural でない出目 (seed 42)");
+        assert_eq!(c.tier, None, "natural でなければ tier 無し");
+        assert_eq!(s.flags.get("fumble_drawer"), None, "帰結フラグは立たない");
+        assert!(out.fired.is_empty(), "トリガー発火なし");
+    }
+
+    /// 【load 時参照整合】challenge の tier flag が allowed_flags に無ければ validate が弾く
+    /// (engine が幻参照のフラグを立てる経路を作らせない)。
+    #[test]
+    fn validate_rejects_undeclared_tier_flag() {
+        let yaml = r#"
+title: bad
+start: room
+allowed_flags: []
+challenges:
+  bad_check:
+    stat: str
+    sides: 6
+    dc: 5
+    tiers:
+      crit_fail: { natural: min, flag: ghost_flag }
+locations:
+  room:
+    description: x
+    items: {}
+    exits: []
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).expect("パースは通る (整合性検査は別工程)");
+        let errs = sc.validate();
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                crate::spine::ScenarioError::ChallengeFlagUndeclared { flag, .. } if flag == "ghost_flag"
+            )),
+            "未宣言の tier flag は validate で検出されるべき"
+        );
     }
 
     // =========================================================================

@@ -1,0 +1,48 @@
+# PoC シナリオ: 技能判定の大失敗が世界を変える (fumble-as-trigger, PoC-1)
+#
+# 「失敗を罰でなく分岐に」: 判定の大失敗 (natural 1) を engine が tier 化し、authored な
+# 帰結フラグを直書きする。それを gate にした既存トリガーが同じ適用内で発火する。
+#
+#   drawer_pick に挑戦 → 1d6 + str(2) vs dc5
+#     → natural 1 (大失敗) → engine が fumble_drawer=true を直書き (authored 定義から)
+#     → trigger drawer_jam 発火: 引き出しが詰まる語り + drawer_jammed=true
+#     → goal (drawer_jammed) 到達
+#
+# 閉世界: challenge は authored。LLM は AttemptChallenge で「選ぶ」だけで、
+# tier も flag も author の専権。出目も engine。LLM は帰結を一切持てない (#23/#24 の双対)。
+
+title: 引き出しの罠
+start: study
+
+initial_stats:
+  str: 2
+
+allowed_flags:
+  - fumble_drawer
+  - drawer_jammed
+
+# authored challenge: tier 定義 (大失敗/大成功) と帰結フラグは作者が握る。
+challenges:
+  drawer_pick:
+    stat: str
+    sides: 6
+    dc: 5
+    tiers:
+      crit_fail: { natural: min, flag: fumble_drawer }   # roll == 1 → fumble_drawer
+      crit_success: { natural: max }                      # roll == 6 → tier だけ (flag は任意)
+
+triggers:
+  # fumble_drawer を gate にした反応ビート。判定の大失敗が世界を変える。
+  - id: drawer_jam
+    when: { kind: flag_is, key: fumble_drawer, value: true }
+    effects:
+      - { op: set_flag, key: drawer_jammed, value: true }
+    narration: 鍵穴の中で工具が折れ、引き出しは完全に固まってしまった。
+
+locations:
+  study:
+    description: 古い書斎。鍵のかかった引き出しのある机が一つ。
+    items: {}
+    exits: []
+
+goal: { kind: flag_is, key: drawer_jammed, value: true }

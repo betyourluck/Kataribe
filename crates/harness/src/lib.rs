@@ -286,6 +286,7 @@ mod tests {
             total: 17,
             dc: 15,
             success: true,
+            tier: None,
         }];
 
         run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks).await.unwrap();

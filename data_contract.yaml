@@ -30,6 +30,7 @@ StateOp:                        # 内部タグ "op" 付き列挙
   - { op: move,         to: LocationId }
   - { op: request_roll, sides: u32, dc: u32 }   # 生のダイス。結果は書かない。エンジンが振って裁く
   - { op: check, entity: EntityId, stat: StatKey, sides: u32, dc: u32 }  # 技能判定。engine が 1d{sides}+stat修正 vs dc を裁定。stat 未宣言→却下。結果(CheckOutcome)は次ターンの語りに還流
+  - { op: attempt_challenge, entity: EntityId, challenge: ChallengeId }  # authored challenge への挑戦。LLM は challenge を「選ぶ」だけ(stat/sides/dc/tier/帰結flag は Scenario.challenges 側=author の専権)。大失敗/大成功(natural)で engine が帰結フラグを直書き→trigger 発火。未宣言 challenge→却下。fumble-as-trigger の核 (PoC-1)
   # --- 数値ステータス: LLM は「意図」だけ提案、算術はエンジンが実行 (四則演算) ---
   # entity 省略時は "player"。clamp 境界は CharacterDef.stats の StatDecl(min/max)。
   - { op: adjust_stat,  entity: EntityId, key: StatKey, delta: i64 }          # 加減 (+/-): clamp(current + delta)
@@ -48,6 +49,7 @@ adjudication:
   move:       "現在地から to への exit が無い / exit.gate 未達 → Reject"
   request_roll:"LLMは結果を主張できない (op構造上不可能)。面数<1 → Reject"
   check:      "技能判定。stat 未宣言→Reject(UnknownStat) / 面数<1→Reject。engine が 1d{sides}+stat修正 を振り total>=dc で成否判定。LLMは出目も合計も詐称できない (CheckOutcome を返す)"
+  attempt_challenge: "未宣言 challenge→Reject(UnknownChallenge=幻チャレンジ遮断) / challenge.stat を挑戦 entity が未宣言→Reject(UnknownStat)。apply 時に engine が authored 定義から 1d{sides}+stat を振り、natural が tier(min/max)該当なら帰結 flag を**直書き**(flag_rules gate 迂回=authored 効果, trigger effects と同型)。tier も flag も LLM 経路に無い=帰結を LLM が持てない (#23/#24 の双対)"
   adjust_stat:"entity が未宣言の stat を持つ → Reject (未宣言の stat は作れない)"
   scale_stat: "未宣言キー → Reject / den=0 (ゼロ除算) → Reject。LLMは /0 でエンジンを壊せない"
   stat_clamp: "clamp は CharacterDef.stats の StatDecl(min 既定 0 / max 既定なし)。entity ごと・stat ごと"
@@ -72,6 +74,24 @@ Scenario:
   initial_skills: [SkillId]         # "player" の初期スキル糖衣 (閉世界宣言)。NPC は CharacterDef.skills
   cast: [EntityId]                  # このシナリオに登場する外部キャラの宣言。**空なら外部注入なし** (全シナリオ共有の混入を防ぐ)。harness::inject_cast が characters/{id}.yaml から cast 分だけ注入 (inline 優先)
   characters: { EntityId: CharacterDef }  # 登場人物(player以外)。inline 宣言 + cast 指定の外部 characters/*.yaml 注入
+  triggers: [Trigger]               # 反応ビート (Phase C)。when 成立で effects 原子適用 + narration 注入
+  challenges: { ChallengeId: ChallengeDef }  # authored challenge (技能判定の素性と帰結)。LLM は AttemptChallenge で選ぶだけ
+
+# --- authored challenge (技能判定の素性と帰結は作者が握る閉世界) ----------------
+# fumble-as-trigger の土台。判定の大失敗/大成功(tier)とその帰結フラグを **作者が定義**し、
+# LLM は AttemptChallenge で challenge を**選ぶ**だけ(tier/flag を author できない)。
+# 出目も tier 判定も帰結フラグの直書きも engine。= 「帰結は engine、LLM は意図だけ」の判定版。
+ChallengeDef:
+  stat:   "修正に使う stat (挑戦 entity が宣言済みであること)"
+  sides:  "u32。ダイス面数"
+  dc:     "u32。total>=dc で成功"
+  tiers:  "{ tier名: TierDef }。極(大失敗/大成功)の定義。tier名は CheckOutcome.tier に surface"
+TierDef:
+  natural: "Min|Max。発火する自然出目(修正前の素の roll)の極。sides 相対(Max は d6→6/d20→20)=die サイズ非依存。リテラル(20等)で端を焼かない"
+  flag:    "任意。該当時に engine が直書きする帰結フラグ。allowed_flags 宣言必須(Scenario::validate が load 時に弾く)。flag 無しの tier は認識だけ(語り用)"
+ScenarioError:                    # 静的整合性の破れ (load 時検査。apply 中 panic でなく構造化エラー)
+  validate: "Scenario::validate()->Vec<ScenarioError>。空なら健全。harness loader が from_yaml 直後に呼ぶ"
+  ChallengeFlagUndeclared: "challenge の tier flag が allowed_flags 未宣言(幻フラグを engine 直書き経路に乗せない)"
 
 # --- キャラクター定義 (characters/*.yaml、不変の authored 定義 = GameDefinitions 相当) ---
 # 数値=正本(エンジン), 設定/背景/性向=語りの素材(→いずれ Memoria), 硬い禁忌=エンジン強制(Phase B)。
@@ -136,7 +156,7 @@ GmTurn:
   signature:  "run_turn(proposer, &mut state, scenario, player_action, max_attempts, lang, recalled_lore, recent_checks) -> TurnOutcome"
   loop:       "propose → adjudicate → Accept なら apply(原子適用) / Reject なら reasons を messages に積んで再生成、max_attempts まで"
   outcome:    "Accepted{narration, rolls, fired, checks, attempts} | Rejected{last_reasons, attempts}。Rejected 時 state は無傷"
-  check_feedback: "技能判定の結果(CheckOutcome)は同一ターンの narration に間に合わない(出目は apply 後)。bin は recent_checks に持ち越し、次ターンの prompt に『直前の判定結果』として注入 → GM が結果に沿って語る(memoria_bridge と同じ還流パターン)。CheckOutcome{entity,stat,sides,roll,modifier,total,dc,success}"
+  check_feedback: "技能判定の結果(CheckOutcome)は同一ターンの narration に間に合わない(出目は apply 後)。bin は recent_checks に持ち越し、次ターンの prompt に『直前の判定結果』として注入 → GM が結果に沿って語る(memoria_bridge と同じ還流パターン)。CheckOutcome{entity,stat,sides,roll,modifier,total,dc,success,tier}。tier=authored challenge の極名(crit_fail 等)、素の check は None"
   inversion:  "ループは DeltaProposer trait に対して書く。本番=LlmClient, テスト=ScriptedProposer。却下→再生成を実APIなしで決定論検証"
   messages:   "毎ターン state から新規構築 (GM persona + scenario_brief + state_brief + player_action)。state が唯一の真実なので履歴に古い状態を溜めない"
   feedback:   "却下時は LLM の提案(JSON)を assistant 発話、却下理由+修正指示を user 発話として積む (self_repair の核)"
@@ -224,8 +244,29 @@ DesktopUi:
   narration_norm: "view 返却前に narration の literal \\n を実改行へ正規化 (#16)。提示層の責務、正本は触らない"
   i18n:     "却下理由は session.lang で localize 済み文字列にして返す (frontend は素の文字列を描画)。KATARIBE_LANG で切替"
   frontend: "✅app/src (Vue3+Pinia)。store game.ts が invoke(new_game/play_turn) を叩き、会話ログ(opening/player/narration/✦beat/┊recalled/rolls/reject/system) + 行動入力 + 状態パネル(turn/所在/所持/フラグ/能力値/goal) を描画。暖炉テーマ(Tailwind)。vue-tsc + vite build green"
-  verify:   "✅backend cargo check green (harness 結線が型検査通過) / ✅frontend vue-tsc+vite build green。GUI 実機起動 (npm run tauri dev, WebView2 必須) は user の Windows 機で確認"
+  verify:   "✅backend cargo check green (harness 結線が型検査通過) / ✅frontend vue-tsc+vite build green / ✅GUI 実機起動 (npm run tauri dev, WebView2 必須) を user の Windows 機で確認 (2026-06-24)"
   icons:    "現状 app/src-tauri/icons は LocalAI 由来の Tauri デフォルト (プレースホルダ)。配布時に差し替え (npm run tauri icon)"
+
+# --- キャンペーン: 密室脱出からフィールドTRPGへ (2026-06-24 設計収束・未実装) ----
+# 単一シナリオ(1 goal + 内部場所グラフ)を、状態を持ち越したまま authored モジュールを
+# 繋ぐキャンペーンに一般化する。北極星「忘れない GM」を場所移動に適用。場所グラフは既に
+# モジュール内に在る(密室⇄廊下⇄広間) → transition がその辺をモジュール跨ぎに昇格させ
+# 状態を糸通しする = フィールドTRPG は同じ場所グラフを一段上の高度で見たもの。
+# 原則: チェックポイント(flag/gate/goal/trigger)は authored = エンジンが正本である対象。
+# 間は GM が narration で即興。LLM にシナリオ/フラグを生成させる案は棄却(拘束が流動したら
+# 一貫性保証が崩れる → validate_scenario も不要)。二エンジン同期(SomniumTextor 等)も棄却
+# (正本が2つ = split-brain = 矛盾する GM)。
+Campaign:
+  self_contained_file: "語り部 = 自己完結 file の純粋実行器。1 file = {scenario 骨格 + GameState + RngState}。GameState/RngState は既に Serialize 派生(save-state 化が型レベルで可能・出目まで再現)。生きた可変コピーが2つ無い → split-brain が構造的に不可能。ホストは『次の骨格を渡す+演出』だけに縮み、HP の対抗コピーを持たない"
+  transition: "transition(state, 次の骨格)->Session: state を持ち越し(リセットしない=initial_state を呼ばない)、骨格(locations/goal/triggers)だけ差し替える純粋関数。これが『密室脱出→森へ、HP/所持品/好感度を保ったまま』の本体。file の state 部はエンジンが運び、骨格部のみ authored/生成 = LLM は値を持てない不変条件をシーン跨ぎでも維持"
+  flag_persistence: "フラグの持続性は per-flag の authored 属性(捨てる / 世界に持つ / その場所に持つ)。global vs 局所の二値でハードコードすると再訪で詰む(『宝箱はもう開けた』は局所だが捨てられない = 復活すると矛盾する GM)。密室脱出は一方向で戻りが無いので二値で済んでいた = フィールドが暴く穴"
+  named_goals: "goal: Gate → goals: {GoalId: Gate}。reached(state)->Option<GoalId> (authored 順で最初の一致 = 決定論)。条件付き勝利(flag 立てば A 無ければ B)は既存合成 Gate(All/Any/FlagIs{bool})で表現可だが、どのエンディングかを知るには named goals が要る"
+  branch: "発火した GoalId が次モジュールの分岐セレクタ(A エンド→森, B エンド→地下、どちらも global 状態は持ち越し)。単一 goal では出ない枝 = 自由度の出所"
+  memoria_scale: "フィールド規模で初めて Memoria が働く(密室は小さすぎた)。NPC/伏線/土地 lore が積もる = 大規模 lore の on-demand recall(memoria_bridge の固有価値, #22)が効く高度"
+  landing_order: "最小着地順: transition(状態の器・per-flag 持続性込み) → reached()(分岐の出口)。依存的に transition が先(状態の器)、reached() が後(分岐の出口)。PoC = 『状態を持ったまま骨格 swap → HP/所持品/好感度が保たれる』を Red→Green"
+  poc1_done: "✅fumble-as-trigger 前半 (2026-06-24): AttemptChallenge(authored challenge を LLM が選ぶだけ) → 大失敗(natural min)→ engine が帰結 flag 直書き → 既存 trigger 発火 → goal。scenarios/fumble_check.yaml + gm_core 47/47。spine `Check→tier(宣言済)→trigger` が実体化。後半 →reached()→transition は PoC-2(campaign keystone 依存)"
+  rejected_check_tiers_on_op: "却下した代替: tier/flag を Check op に畳む案。Check は LLM 提案 op なので op に tier を乗せると LLM が帰結(fumble→flag)を author できる=#23/#24 の穴。tier/flag は Scenario.challenges(authored)に置き、AttemptChallenge は challenge 名の参照のみ(LLM は選ぶだけ)。閉世界の三例目"
+  rejected: "LLM シナリオ/フラグ生成・validate_scenario・二エンジン同期・オーサリング editor は棄却(2026-06-24 設計対話で収束)。将来リプレイ性で生成を入れる時も、生成部は load-bearing な gate の外側(goal を gate しない flavor のみ)に閉じ込め、骨格は authored のまま"
 
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:

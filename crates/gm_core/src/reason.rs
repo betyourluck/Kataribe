@@ -37,6 +37,8 @@ pub enum RejectReason {
     SkillGrantNotAllowed { entity: String, skill: String },
     /// 譲渡先がこのシナリオに存在しない entity (幻のキャラには渡せない)。
     UnknownEntity { entity: String },
+    /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
+    UnknownChallenge { challenge: String },
 }
 
 impl RejectReason {
@@ -77,6 +79,9 @@ impl RejectReason {
             RejectReason::UnknownEntity { entity } => {
                 format!("'{entity}' はこのシナリオに存在しないので渡せない")
             }
+            RejectReason::UnknownChallenge { challenge } => {
+                format!("'{challenge}' という挑戦はこのシナリオに存在しない")
+            }
         }
     }
 
@@ -110,6 +115,9 @@ impl RejectReason {
             }
             RejectReason::UnknownEntity { entity } => {
                 format!("cannot give to '{entity}' because it does not exist in this scenario")
+            }
+            RejectReason::UnknownChallenge { challenge } => {
+                format!("there is no challenge '{challenge}' in this scenario")
             }
         }
     }

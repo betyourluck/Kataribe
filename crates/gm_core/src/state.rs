@@ -13,6 +13,8 @@ pub type EntityId = String;
 pub type TriggerId = String;
 /// 能力 (スキル) の識別子。閉世界 — 宣言された SkillId だけが存在する。
 pub type SkillId = String;
+/// authored challenge の識別子。閉世界 — 宣言された ChallengeId にしか挑めない。
+pub type ChallengeId = String;
 
 /// 主人公の規約的 EntityId。op/gate が entity を省略した時の既定。
 pub const PLAYER: &str = "player";
@@ -197,6 +199,15 @@ pub enum StateOp {
         stat: StatKey,
         sides: u32,
         dc: u32,
+    },
+    /// authored challenge への挑戦。**LLM は challenge を「選ぶ」だけ** — 判定の stat/sides/dc も、
+    /// 大失敗/大成功(tier)とその帰結フラグも、すべて [`crate::Scenario`] の authored 定義側にある
+    /// (LLM は帰結を持てない＝閉世界)。engine が `1d{sides} + stat修正 vs dc` を振り、natural 値が
+    /// tier に該当すれば authored な帰結フラグを直書きする。未宣言 challenge は却下。`entity` 省略時は主人公。
+    AttemptChallenge {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        challenge: ChallengeId,
     },
     /// stat への加減 (+/−)。エンジンが `clamp(current + delta)` を計算する。
     /// LLM は変化量(意図)だけを提案し、結果の値は持てない。`entity` 省略時は主人公。
