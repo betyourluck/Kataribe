@@ -1,0 +1,22 @@
+# Campaign モジュール B (jammed 分岐): 地下蔵
+#
+# 書斎で引き出しを壊した(jammed_ending)末に落ちる先。前モジュールから hp/所持品/能力/
+# 世界フラグ(searched_study)を transition で持ち越す。hp の宣言(12)は持ち越し値(8)に
+# 上書きされる = 「忘れない GM」。局所フラグ(lamp_lit)と fired はここには来ない。
+
+title: 地下蔵
+start: cellar
+
+initial_stats:
+  hp: 12              # 持ち越し hp(8) が上書きする。新規宣言の初期値より持ち越しが優先
+
+allowed_flags:
+  - torch_found
+
+locations:
+  cellar:
+    description: 引き出しの奥が崩れ、黴と冷気のたちこめる地下蔵へ落ちた。
+    items: {}
+    exits: []
+
+goal: { kind: always }
