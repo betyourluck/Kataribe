@@ -1,0 +1,22 @@
+# Campaign: 書斎からの脱出 (orchestration の正本 = authored モジュールグラフ)
+#
+# 独立 file にモジュール接続トポロジだけを書く。各 scenario は自己完結のまま
+# (別キャンペーンで再利用可)。発火 GoalId が辺を選び、harness の advance_campaign が
+# 次モジュールを load + transition する。状態(hp/所持品/能力/世界フラグ)はモジュールを
+# 跨いで糸通しされ、骨格(場所グラフ/challenge/trigger/goal)だけが差し替わる。
+
+title: 書斎からの脱出
+
+start: study
+
+# モジュール id → scenario file path (repo root 相対)。
+modules:
+  study:  scenarios/study_branch.yaml
+  cellar: scenarios/cellar.yaml
+  forest: scenarios/forest.yaml
+
+# (from, on_goal) → to の分岐表。authored 順で最初に一致した辺を引く。
+# 辺の無い (module, goal) は終端エンディング = キャンペーン完了。
+edges:
+  - { from: study, on_goal: jammed_ending, to: cellar }   # 大失敗 → 地下へ落ちる
+  - { from: study, on_goal: opened_ending, to: forest }   # 成功 → 森へ抜ける

@@ -7,6 +7,7 @@
 //! ループは [`DeltaProposer`] trait に対して書かれており、実 LLM ([`llm_client::LlmClient`]) と
 //! テスト用 scripted fake を差し替えられる。これで「却下→再生成」の正しさを実 API 無しで実証する。
 
+mod campaign;
 mod error;
 mod loader;
 mod memoria;
@@ -14,6 +15,9 @@ pub mod prompt;
 mod proposer;
 mod turn;
 
+pub use campaign::{
+    advance_campaign, load_campaign, load_module, Advance, Campaign, CampaignEdge, ModuleId,
+};
 pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
@@ -90,7 +94,7 @@ mod tests {
             value: true,
         }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "").await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 1),
             other => panic!("受理されるべき: {other:?}"),
@@ -111,7 +115,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "").await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 2, "2回目で受理"),
             other => panic!("最終的に受理されるべき: {other:?}"),
@@ -131,7 +135,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "").await.unwrap();
 
         let second = p.seen_text(2);
         assert!(second.contains("却下"), "再生成プロンプトに却下の文脈があるはず");
@@ -152,7 +156,7 @@ mod tests {
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]), // 引き出し前で却下
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "").await.unwrap();
         match outcome {
             TurnOutcome::Rejected { attempts, last_reasons } => {
                 assert_eq!(attempts, 3);
@@ -172,7 +176,7 @@ mod tests {
         let mut s = fresh(&sc); // seed=42, cursor=0
         let p = ScriptedProposer::new(vec![delta(vec![StateOp::RequestRoll { sides: 20, dc: 10 }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "").await.unwrap();
         match outcome {
             TurnOutcome::Accepted { rolls, .. } => {
                 assert_eq!(rolls.len(), 1);
@@ -244,12 +248,45 @@ mod tests {
             text: "丘の上の古い樫の木の下で、二人は小指を絡めて誓った。".into(),
         }];
 
-        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "").await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("思い出された記憶"), "想起の見出しが prompt に載る");
         assert!(prompt_text.contains("樫の木"), "伏線の本文が prompt に注入される");
         assert!(prompt_text.contains("ops には書かない"), "状態変更でない旨の境界指示が載る");
+    }
+
+    /// 【継続性の注入】直前の語りが次ターンの prompt に「続く情景」として載り、既出描写の
+    /// 繰り返し禁止が指示される (情景がくどく二度出る問題の対策)。空なら注入しない。
+    #[tokio::test]
+    async fn recent_narration_is_woven_into_prompt_for_continuity() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = ScriptedProposer::new(vec![delta(vec![StateOp::SetFlag {
+            key: "drawer_opened".into(),
+            value: true,
+        }])]);
+        let prev = "夕日が差し込む教室。モカが振り向いて微笑んだ。";
+
+        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev).await.unwrap();
+
+        let prompt_text = p.seen_text(1);
+        assert!(prompt_text.contains("直前までの語り"), "継続の見出しが prompt に載る");
+        assert!(prompt_text.contains("モカが振り向いて微笑んだ"), "直前の語り本文が注入される");
+        assert!(prompt_text.contains("繰り返さない") || prompt_text.contains("再び描写しない"), "繰り返し禁止を指示する");
+    }
+
+    /// 直前の語りが無い (初回ターン等) なら継続ブロックを注入しない。
+    #[tokio::test]
+    async fn no_recent_narration_means_no_continuity_block() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = ScriptedProposer::new(vec![delta(vec![StateOp::SetFlag {
+            key: "drawer_opened".into(),
+            value: true,
+        }])]);
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "").await.unwrap();
+        assert!(!p.seen_text(1).contains("直前までの語り"), "直前の語り無しなら注入しない");
     }
 
     /// 伏線が無いターンでは想起ブロックを注入しない (ノイズを足さない)。
@@ -262,7 +299,7 @@ mod tests {
             value: true,
         }])]);
 
-        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "").await.unwrap();
         assert!(!p.seen_text(1).contains("思い出された記憶"), "伏線無しなら注入しない");
     }
 
@@ -289,11 +326,44 @@ mod tests {
             tier: None,
         }];
 
-        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks).await.unwrap();
+        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "").await.unwrap();
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前の判定結果"), "判定結果の見出しが載る");
         assert!(prompt_text.contains("成功"), "成否が載る");
         assert!(prompt_text.contains("DC 15"), "DC が prompt に載る");
+    }
+
+    /// 【判定の後付け接地】判定結果の note は「なぜ成功/失敗したか」の物語内原因の後付けを要求し、
+    /// 後付けの強さを接地する原料 (DC との差=margin、極=tier) を surface する (failures #26 の精密化)。
+    #[test]
+    fn check_note_demands_causal_reason_and_surfaces_margin_and_tier() {
+        use gm_core::CheckOutcome;
+        // 成功 (margin +6)。
+        let win = vec![CheckOutcome {
+            entity: "player".into(), stat: "話術".into(), sides: 20,
+            roll: 18, modifier: 3, total: 21, dc: 15, success: true, tier: None,
+        }];
+        let note = prompt::check_outcome_note(&win);
+        assert!(note.contains("なぜ"), "なぜその結果になったかの後付けを要求する");
+        assert!(note.contains("原因"), "物語内の『原因』として語らせる");
+        assert!(note.contains("DC を 6 上回った"), "成功 margin (+6) を surface する");
+
+        // 失敗 (margin -3) + 極 (大失敗)。
+        let fumble = vec![CheckOutcome {
+            entity: "player".into(), stat: "str".into(), sides: 20,
+            roll: 1, modifier: 2, total: 3, dc: 6, success: false, tier: Some("crit_fail".into()),
+        }];
+        let note2 = prompt::check_outcome_note(&fumble);
+        assert!(note2.contains("DC に 3 届かなかった"), "失敗 margin (-3) を surface する");
+        assert!(note2.contains("crit_fail"), "極 (tier) を surface して劇的な後付けを促す");
+    }
+
+    /// GM_SYSTEM が「判定結果の後付け（なぜ成功/失敗したか）」を刷り込む。
+    #[test]
+    fn gm_system_demands_post_hoc_reason_for_checks() {
+        let s = prompt::GM_SYSTEM;
+        assert!(s.contains("後付け"), "判定結果に理由を後付けする旨を刷り込む");
+        assert!(s.contains("なぜ") && s.contains("原因"), "なぜ成功/失敗したかを物語内の原因として語らせる");
     }
 
     /// 【プロンプト健全性】盤面要約にシナリオ要素が、状態要約に現在地が含まれる。

@@ -19,4 +19,8 @@ pub enum HarnessError {
     /// 伏線 lore ファイル (`memoria/*.yaml`) の読み込み/パース失敗。
     #[error("伏線の読み込み失敗 ({path}): {detail}")]
     LoreLoad { path: String, detail: String },
+
+    /// Campaign file / モジュール scenario の読み込み・パース・整合性エラー (orchestration 層)。
+    #[error("campaign の読み込み失敗 ({path}): {detail}")]
+    CampaignLoad { path: String, detail: String },
 }

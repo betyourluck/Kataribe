@@ -122,6 +122,8 @@ struct GameSession {
     pending_lore: Vec<MemoryFragment>,
     /// 直前ターンの技能判定の結果。次ターンの語りに還流する。
     pending_checks: Vec<CheckOutcome>,
+    /// 直前ターンの語り。次ターンに「続く情景」として渡し、既出描写の繰り返しを防ぐ (継続性)。
+    last_narration: String,
     lang: Lang,
 }
 
@@ -255,6 +257,7 @@ async fn new_game(
         client,
         pending_lore: Vec::new(),
         pending_checks: Vec::new(),
+        last_narration: String::new(),
         lang: lang_from_env(),
     });
     Ok(view)
@@ -270,9 +273,10 @@ async fn play_turn(
         .as_mut()
         .ok_or("ゲームが開始されていません (先に new_game を呼んでください)")?;
 
-    // 前ターンの伏線・判定結果を取り出して注入し、pending を空にする。
+    // 前ターンの伏線・判定結果・語りを取り出して注入し、pending を空にする。
     let pending = std::mem::take(&mut sess.pending_lore);
     let pending_checks = std::mem::take(&mut sess.pending_checks);
+    let prev_narration = std::mem::take(&mut sess.last_narration);
     let outcome = run_turn(
         &sess.client,
         &mut sess.state,
@@ -282,12 +286,15 @@ async fn play_turn(
         sess.lang,
         &pending,
         &pending_checks,
+        &prev_narration,
     )
     .await
     .map_err(|e| e.to_string())?;
 
     let view = match outcome {
         TurnOutcome::Accepted { narration, rolls, checks, fired, attempts } => {
+            // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止)。
+            sess.last_narration = narration.clone();
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
             let beats = resolved

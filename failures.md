@@ -281,3 +281,24 @@ check_result_is_fed_into_next_prompt。gm_core 40→43, harness 25→26。
 求めるなら、判定結果を受けてプレイヤー/LLM が次手 (set_flag 等) を出す二段が要る。これは設計どおり
 (判定は出目の確定、状態遷移は別 op) だが、判定成功を自動で状態に反映させたい場合は将来 trigger 連携
 (check 成功 → flag) を検討。
+
+### 27. 情景がくどく二度出る → 「忘れない GM」が自分の語りは覚えていない (state 真実 ≠ narration 継続性)
+【実プレイ発見 (2026-06-24, classroom 盤面)】2ターン目の narration が開幕の情景を丸ごと再描写し
+(夕日・散らかった机)、しかも moka の「気づいて驚く」という**一度きりの登場ビートを再演**した
+(再会なのに初対面の演技＝「矛盾しない GM」の破れ)。【原因 (現物で特定)】(a) `scenario_brief` が
+場所の `description` を毎ターン system に入れる → 開幕の一度きりビート入り description が再レンダリング
+される。(b) **`run_turn` は毎ターン messages を新規構築する** (state が唯一の真実という設計) ため、LLM は
+自分が直前に何を語ったかの記憶を持たない → 静的情景をゼロから再 establish するしかない。【核心の罠】
+正本エンジンは **state (数値/フラグ/位置) の真実**は握るが、**narration の継続性は別の文脈チャネル**で、
+state-grounding ではカバーされない。「忘れない GM」は世界状態を忘れないが、ステートレス再構築ループでは
+自分の散文を忘れる — これは state-truth とは独立した第二の失敗軸。【解】直前ターンの語りを
+`recent_narration` として次ターンの prompt に還流し (check/lore carryover と同じ輪)、
+`recent_narration_note` で「既出の静的情景・済んだ登場/挨拶/初対面の驚きを繰り返すな、続きから変化だけ
+描け」と接地。**prompt 層のみ** (engine 不変)。run_turn に引数追加、CLI/app の両ループが last_narration を
+持ち越す (campaign 遷移時はリセット=新しい情景)。【実 LLM 検証 (2026-06-24)】同じ冒頭行動で再プレイ →
+2ターン目以降は会話の続きに直行、情景の再描写・驚きの再演が消え、継続フレーバー (「夕日が頬を染める」)
+程度に留まった。PoC: recent_narration_is_woven_into_prompt_for_continuity /
+no_recent_narration_means_no_continuity_block。harness 33→35。
+【authoring 観測】location.description に一度きりビート (「モカが入ってきた」「気づくと驚いた表情」) を
+書くと再演の温床。description は**持続する場所**を描き、登場/挨拶は GM の即興に委ねるのが筋
+(継続性 note で大半は中和されるが、authoring 側でも分けると堅い)。

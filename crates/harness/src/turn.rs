@@ -52,6 +52,8 @@ impl TurnOutcome {
 /// 今回の語りに「思い出す様子」として織り込ませるため prompt に注入する (空なら注入しない)。
 /// `recent_checks` は直前ターンの技能判定の結果。出目は apply 後に確定するので同一ターンの
 /// narration に間に合わない → 次ターンの prompt に還流し、GM に結果へ沿って語らせる。
+/// `recent_narration` は直前ターンの語り。継続文脈として渡し、既出情景の繰り返しを防ぐ
+/// (毎ターン messages を新規構築するので LLM は自分の直前の語りを記憶していない)。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn<P: DeltaProposer>(
     proposer: &P,
@@ -62,9 +64,11 @@ pub async fn run_turn<P: DeltaProposer>(
     lang: Lang,
     recalled_lore: &[MemoryFragment],
     recent_checks: &[CheckOutcome],
+    recent_narration: &str,
 ) -> Result<TurnOutcome, HarnessError> {
     // 盤面と現在状態を毎ターン新規に提示する (state は正本の唯一の真実)。
-    // recalled_lore=思い出された伏線、recent_checks=直前判定の結果を語りに還流する。
+    // recalled_lore=思い出された伏線、recent_checks=直前判定の結果、recent_narration=直前の語り
+    // (継続文脈、繰り返し禁止) を語りに還流する。
     let mut messages = vec![
         ChatMessage::system(format!(
             "{}\n\n{}",
@@ -72,10 +76,11 @@ pub async fn run_turn<P: DeltaProposer>(
             prompt::scenario_brief(scenario)
         )),
         ChatMessage::user(format!(
-            "{}{}{}\n\n# プレイヤーの行動\n{}",
+            "{}{}{}{}\n\n# プレイヤーの行動\n{}",
             prompt::state_brief(state),
             prompt::check_outcome_note(recent_checks),
             prompt::recalled_lore_note(recalled_lore),
+            prompt::recent_narration_note(recent_narration),
             player_action
         )),
     ];

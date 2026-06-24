@@ -270,6 +270,29 @@ DesktopUi:
 # 間は GM が narration で即興。LLM にシナリオ/フラグを生成させる案は棄却(拘束が流動したら
 # 一貫性保証が崩れる → validate_scenario も不要)。二エンジン同期(SomniumTextor 等)も棄却
 # (正本が2つ = split-brain = 矛盾する GM)。
+
+# --- Campaign file (PoC-2c。authored モジュールグラフ = orchestration の正本) ----
+# campaigns/<name>.yaml。独立 file にモジュール接続トポロジを書く(scenario は自己完結の
+# まま=別キャンペーンで再利用可)。file I/O + 地図参照ゆえ harness の責務(gm_core は純粋の
+# まま不変)。発火 GoalId が辺を選び、次モジュールを load + transition する駆動を harness が握る。
+CampaignFile:                       # campaigns/*.yaml の凍結スキーマ
+  title: String?                    # 表示用 (任意)
+  start: ModuleId                   # 開始モジュール id
+  modules: { ModuleId: String }     # id → scenario file path (repo root 相対)
+  edges: [CampaignEdge]             # (from, on_goal) → to の分岐表。authored 順
+CampaignEdge:
+  from:    "ModuleId。現モジュール"
+  on_goal: "GoalId。reached() が返したエンディング id"
+  to:      "ModuleId。遷移先モジュール"
+Advance:                            # advance_campaign の戻り (遷移が起きた時)
+  module_id: "ModuleId。遷移先の id"
+  scenario:  "Scenario。次モジュールの骨格 (load + inject_cast + validate 済)"
+  state:     "GameState。transition(prev_state, prev_scenario) で状態を糸通しした次状態"
+Orchestration:                      # harness 層の駆動 (gm_core 無改修)
+  next:        "Campaign::next(from, goal)->Option<&ModuleId>。authored 順で最初に一致した辺の to。純粋参照"
+  load_module: "load_module(campaign, root, id)->Scenario。module path を read + inject_cast + validate"
+  advance:     "advance_campaign(campaign, root, current_module, scenario, state)->Option<Advance>。reached()=None(未到達) or 辺無し(終端エンディング)なら None、辺が在れば次モジュールを load して transition した Advance を返す。LLM 非依存(駆動は state と地図だけで決まる)"
+
 Campaign:
   self_contained_file: "語り部 = 自己完結 file の純粋実行器。1 file = {scenario 骨格 + GameState + RngState}。GameState/RngState は既に Serialize 派生(save-state 化が型レベルで可能・出目まで再現)。生きた可変コピーが2つ無い → split-brain が構造的に不可能。ホストは『次の骨格を渡す+演出』だけに縮み、HP の対抗コピーを持たない"
   transition: "✅実装(PoC-2a): Scenario::transition(prev_state, prev_scenario)->GameState。self=遷移先骨格。持ち越す=数値(entities)/所持品/能力/RNGストリーム/累積turn/世界フラグ(prev_scenario.global_flags 宣言分)。捨てる=局所フラグ/fired。location は self.start にリセット。次モジュールの新規宣言(entity/stat/skill)は初期化、既存値は持ち越しが上書き。initial_state の双対(あちら初期化/こちら持ち越し)。帰結は全て engine が運ぶ=生成器/LLM は値を持てない(シーン跨ぎでも不変条件維持)"
@@ -280,7 +303,8 @@ Campaign:
   landing_order: "最小着地順: transition(状態の器・per-flag 持続性込み) → reached()(分岐の出口)。依存的に transition が先(状態の器)、reached() が後(分岐の出口)。PoC = 『状態を持ったまま骨格 swap → HP/所持品/好感度が保たれる』を Red→Green"
   poc1_done: "✅fumble-as-trigger 前半 (2026-06-24): AttemptChallenge(authored challenge を LLM が選ぶだけ) → 大失敗(natural min)→ engine が帰結 flag 直書き → 既存 trigger 発火 → goal。scenarios/fumble_check.yaml + gm_core 47/47。spine `Check→tier(宣言済)→trigger` が実体化"
   poc2a_done: "✅transition (2026-06-24): 状態持ち越し swap を実装。村→森で hp(減った値)/所持品/能力/alice 好感度/世界フラグ(met_alice)が持ち越され、局所フラグ(door_open)は捨てられ、location は次の start にリセット、新規 stat(stamina)は初期化を実証(transition_carries_state_drops_local_flags)。global_flags の参照整合も validate に追加"
-  poc2b_done: "✅reached / 名前付き goal (2026-06-24): goal→Option + goals 追加(後方互換)。大失敗→fumble_drawer→trigger→drawer_jammed→reached()=='jammed_ending'(opened_ending でなく)を実証(reached_selects_named_goal_from_fumble_branch)。spine 全長 `Check→tier→trigger→goal(reached)→[transition の分岐セレクタ]` が gm_core 内で閉じた。残り: reached()→transition を harness/app で結線(orchestration 層)"
+  poc2b_done: "✅reached / 名前付き goal (2026-06-24): goal→Option + goals 追加(後方互換)。大失敗→fumble_drawer→trigger→drawer_jammed→reached()=='jammed_ending'(opened_ending でなく)を実証(reached_selects_named_goal_from_fumble_branch)。spine 全長 `Check→tier→trigger→goal(reached)→[transition の分岐セレクタ]` が gm_core 内で閉じた"
+  poc2c_orchestration: "reached()→transition の結線(harness 層, gm_core 無改修)。独立 Campaign file(campaigns/*.yaml)に {start, modules:{id→path}, edges:[{from,on_goal,to}]} を authored 凍結。advance_campaign が『goal 到達→発火 GoalId で辺を引く→次モジュール load→transition→次状態』を駆動。CLI play が campaign 指定で複数モジュールを通す。PoC: study(大失敗→jammed_ending)→cellar へ state 持ち越し遷移を Red→Green。per-flag 持続性(flag_persistence の宝箱問題)は本結線のスコープ外(既存 transition の二値モデルのまま)"
   rejected_check_tiers_on_op: "却下した代替: tier/flag を Check op に畳む案。Check は LLM 提案 op なので op に tier を乗せると LLM が帰結(fumble→flag)を author できる=#23/#24 の穴。tier/flag は Scenario.challenges(authored)に置き、AttemptChallenge は challenge 名の参照のみ(LLM は選ぶだけ)。閉世界の三例目"
   rejected: "LLM シナリオ/フラグ生成・validate_scenario・二エンジン同期・オーサリング editor は棄却(2026-06-24 設計対話で収束)。将来リプレイ性で生成を入れる時も、生成部は load-bearing な gate の外側(goal を gate しない flavor のみ)に閉じ込め、骨格は authored のまま"
 

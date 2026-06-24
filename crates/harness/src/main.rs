@@ -7,18 +7,25 @@
 //! 使い方:
 //! ```text
 //! # .env に LLM_API_KEY を設定してから
-//! cargo run -p harness --bin play                 # 対話 (stdin から行動を入力)
-//! cargo run -p harness --bin play < actions.txt   # 台本を流し込む
-//! cargo run -p harness --bin play scenarios/foo.yaml   # シナリオ指定
+//! cargo run -p harness --bin play                          # 既定シナリオ (対話)
+//! cargo run -p harness --bin play scenarios/foo.yaml       # 単一シナリオ指定
+//! cargo run -p harness --bin play --campaign campaigns/escape.yaml  # キャンペーン (複数モジュール通し)
+//! cargo run -p harness --bin play < actions.txt            # 台本を流し込む
 //! ```
+//!
+//! キャンペーンモードでは goal 到達ごとに [`advance_campaign`] が発火 GoalId で次モジュールを
+//! 選び、状態を持ち越して骨格を差し替える (reached→transition の結線、PoC-2c)。
 
 use std::error::Error;
 use std::io::{self, BufRead, Write};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use gm_core::{is_goal, GameState, Lang, Scenario};
-use harness::{inject_cast, load_lore, resolve_recall, run_turn, TurnOutcome};
+use gm_core::{GameState, Lang, Scenario};
+use harness::{
+    advance_campaign, inject_cast, load_campaign, load_lore, load_module, resolve_recall, run_turn,
+    Campaign, TurnOutcome,
+};
 use llm_client::{LlmClient, LlmConfig};
 
 /// 既定シナリオ (cwd 非依存: crate からの相対で解決)。
@@ -35,6 +42,15 @@ fn lang_from_env() -> Lang {
 }
 /// 初期 RNG seed (決定論再現用。将来は引数化)。
 const SEED: u64 = 42;
+
+/// `parent/parent` を repo root とみなす (scenarios/ campaigns/ characters/ memoria/ の親)。
+fn root_of(path: &str) -> PathBuf {
+    Path::new(path)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -54,27 +70,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
     eprintln!("[接続] {} / model={}", config.base_url, config.model);
     let client = LlmClient::new(config)?;
 
-    // --- シナリオ ---
-    let scenario_path = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_SCENARIO.to_string());
-    let yaml = std::fs::read_to_string(&scenario_path)
-        .map_err(|e| format!("シナリオを読めません ({scenario_path}): {e}"))?;
-    let mut scenario = Scenario::from_yaml(&yaml)?;
+    // --- シナリオ / キャンペーン ---
+    // `--campaign <path>` でキャンペーンモード、それ以外は単一シナリオ (第1引数 or 既定)。
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let campaign_mode = args.first().map(String::as_str) == Some("--campaign");
 
-    // シナリオが cast 宣言した外部キャラ (scenarios/ の隣の characters/) だけを注入する。
-    let chars_dir = Path::new(&scenario_path)
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| root.join("characters"))
-        .unwrap_or_else(|| Path::new("characters").to_path_buf());
-    inject_cast(&mut scenario, &chars_dir)?;
+    let (campaign, mut current_module, mut scenario, root): (
+        Option<Campaign>,
+        Option<String>,
+        Scenario,
+        PathBuf,
+    ) = if campaign_mode {
+        let camp_path = args
+            .get(1)
+            .ok_or("--campaign の後に campaign file のパスを指定してください")?;
+        let camp = load_campaign(Path::new(camp_path))?;
+        let root = root_of(camp_path);
+        let start = camp.start.clone();
+        let scen = load_module(&camp, &root, &start)?;
+        eprintln!("[キャンペーン] {} / 開始モジュール={start}", camp.title);
+        (Some(camp), Some(start), scen, root)
+    } else {
+        let scenario_path = args.first().cloned().unwrap_or_else(|| DEFAULT_SCENARIO.to_string());
+        let yaml = std::fs::read_to_string(&scenario_path)
+            .map_err(|e| format!("シナリオを読めません ({scenario_path}): {e}"))?;
+        let mut scen = Scenario::from_yaml(&yaml)?;
+        let root = root_of(&scenario_path);
+        // シナリオが cast 宣言した外部キャラだけを注入する。
+        inject_cast(&mut scen, &root.join("characters"))?;
+        (None, None, scen, root)
+    };
 
-    // 伏線 lore (scenarios/ の隣の memoria/) をロード。トリガー発火点で recall する (memoria_bridge)。
-    let lore_dir = Path::new(&scenario_path)
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| root.join("memoria"))
-        .unwrap_or_else(|| Path::new("memoria").to_path_buf());
-    let lore = load_lore(&lore_dir)?;
+    // 伏線 lore (root の隣の memoria/) をロード。トリガー発火点で recall する (memoria_bridge)。
+    let lore = load_lore(&root.join("memoria"))?;
     eprintln!("[伏線] {} 件ロード", lore.len());
 
     // 初期 stat (HP/STR 等) をシナリオから読んで状態を作る。
@@ -94,6 +122,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut pending_lore: Vec<harness::MemoryFragment> = Vec::new();
     // 直前ターンの技能判定の結果。次ターンの語りに還流する (出目は apply 後確定)。
     let mut pending_checks: Vec<gm_core::CheckOutcome> = Vec::new();
+    // 直前ターンの語り。次ターンに「続く情景」として渡し、既出描写の繰り返しを防ぐ (継続性)。
+    let mut last_narration = String::new();
     loop {
         print!("> ");
         io::stdout().flush().ok();
@@ -112,8 +142,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             action.trim(),
             MAX_ATTEMPTS,
             lang,
-            &pending_lore,   // 前ターンの伏線を注入
-            &pending_checks, // 前ターンの判定結果を注入
+            &pending_lore,    // 前ターンの伏線を注入
+            &pending_checks,  // 前ターンの判定結果を注入
+            &last_narration,  // 前ターンの語りを継続文脈として注入 (繰り返し防止)
         )
         .await;
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
@@ -121,6 +152,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match outcome {
             Ok(TurnOutcome::Accepted { narration, rolls, checks, fired, attempts }) => {
                 println!("\n{narration}");
+                last_narration = narration.clone(); // 次ターンの継続文脈に持ち越す
                 for r in &rolls {
                     let mark = if r.success { "成功" } else { "失敗" };
                     println!("  🎲 1d{} = {} (DC {}) → {mark}", r.sides, r.result, r.dc);
@@ -155,9 +187,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     stats_line(&state),
                 );
 
-                if is_goal(&state, &scenario) {
-                    println!("\n🎉 クリア。goal 到達 (turn {}).", state.turn);
-                    break;
+                // goal 到達処理: キャンペーンなら発火 GoalId で次モジュールへ遷移、単発なら終了。
+                if let Some(reached) = scenario.reached(&state) {
+                    match &campaign {
+                        Some(camp) => {
+                            let from = current_module.as_deref().unwrap_or("");
+                            match advance_campaign(camp, &root, from, &scenario, &state)? {
+                                // 辺が在る = 次モジュールへ。状態を持ち越し骨格だけ差し替える。
+                                Some(adv) => {
+                                    println!(
+                                        "\n━━ エンディング『{reached}』→ 次モジュール『{}』へ ━━",
+                                        adv.scenario.title
+                                    );
+                                    current_module = Some(adv.module_id);
+                                    scenario = adv.scenario;
+                                    state = adv.state;
+                                    pending_lore = Vec::new();
+                                    pending_checks = Vec::new();
+                                    last_narration = String::new(); // 新モジュール=新しい情景
+                                    println!("=== {} ===", scenario.title);
+                                    if let Some(loc) = scenario.location(&state.location) {
+                                        println!("{}\n", loc.description);
+                                    }
+                                    continue;
+                                }
+                                // 辺が無い = 終端エンディング。
+                                None => {
+                                    println!(
+                                        "\n🎉 キャンペーン完了。エンディング『{reached}』(turn {}).",
+                                        state.turn
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        None => {
+                            println!("\n🎉 クリア。goal 到達 (turn {}).", state.turn);
+                            break;
+                        }
+                    }
                 }
             }
             Ok(TurnOutcome::Rejected { last_reasons, attempts }) => {
