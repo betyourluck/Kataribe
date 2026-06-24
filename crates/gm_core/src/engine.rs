@@ -782,6 +782,96 @@ goal: { kind: always }
         );
     }
 
+    // -------------------------------------------------------------------------
+    // transition PoC-2a (campaign keystone): 状態を持ち越したまま骨格を差し替える。
+    // 「密室脱出→森へ、HP/所持品/好感度を保ったまま」。局所フラグは捨て、location は次の start。
+    // 名前付き goal (reached) は 2b に分離。ここは純粋な状態持ち越し swap のみ。
+    // -------------------------------------------------------------------------
+
+    const VILLAGE: &str = r#"
+title: 村
+start: square
+initial_stats: { hp: 10 }
+initial_skills: [tracking]
+global_flags: [met_alice]
+allowed_flags: [met_alice, door_open]
+characters:
+  alice:
+    name: アリス
+    stats: { 好感度: { initial: 0, min: 0, max: 100 } }
+locations:
+  square:
+    description: 村の広場。
+    items: { lantern: { kind: always } }
+    exits: []
+goal: { kind: always }
+"#;
+
+    const FOREST: &str = r#"
+title: 森
+start: forest_entrance
+initial_stats: { hp: 10, stamina: 5 }
+allowed_flags: [campfire_lit]
+locations:
+  forest_entrance:
+    description: 森の入口。
+    items: {}
+    exits: []
+goal: { kind: always }
+"#;
+
+    /// 【状態持ち越し swap】村で進めた状態が森へ運ばれる。global は残り、局所は消え、場所はリセット。
+    #[test]
+    fn transition_carries_state_drops_local_flags() {
+        let village = Scenario::from_yaml(VILLAGE).expect("village yaml");
+        let forest = Scenario::from_yaml(FOREST).expect("forest yaml");
+        assert!(village.validate().is_empty() && forest.validate().is_empty());
+
+        // 村で状態を進める: hp を減らし、ランタンを拾い、アリスの好感度を上げ、両フラグを立てる。
+        let mut prev = village.initial_state(7);
+        apply(&mut prev, &village, &d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "hp".into(), delta: -3 }])).unwrap();
+        apply(&mut prev, &village, &d(vec![StateOp::AddItem { item: "lantern".into() }])).unwrap();
+        apply(&mut prev, &village, &d(vec![StateOp::AdjustStat { entity: "alice".into(), key: "好感度".into(), delta: 40 }])).unwrap();
+        apply(&mut prev, &village, &d(vec![StateOp::SetFlag { key: "met_alice".into(), value: true }])).unwrap();
+        apply(&mut prev, &village, &d(vec![StateOp::SetFlag { key: "door_open".into(), value: true }])).unwrap();
+        assert_eq!(prev.stat("hp"), 7);
+
+        // 森へ遷移 (状態を持ち越し、骨格だけ差し替え)。
+        let s = forest.transition(&prev, &village);
+
+        assert_eq!(s.location, "forest_entrance", "場所は次モジュールの start にリセット");
+        assert_eq!(s.stat("hp"), 7, "数値は持ち越し (森の initial 10 を上書き)");
+        assert_eq!(s.stat("stamina"), 5, "次モジュールの新規 stat は初期化される");
+        assert!(s.has_item(PLAYER, "lantern"), "所持品は持ち越し");
+        assert!(s.has_skill(PLAYER, "tracking"), "能力は持ち越し");
+        assert_eq!(s.stat_of("alice", "好感度"), 40, "NPC の数値も持ち越し (忘れない GM)");
+        assert_eq!(s.flags.get("met_alice"), Some(&true), "global フラグは持ち越し");
+        assert_eq!(s.flags.get("door_open"), None, "局所フラグは捨てる (再訪で復活しない最小形)");
+        assert!(s.fired.is_empty(), "発火済みトリガーはリセット (次モジュールの反応は新規)");
+    }
+
+    /// 【load 時参照整合】global_flags が allowed_flags に無ければ validate が弾く。
+    #[test]
+    fn validate_rejects_undeclared_global_flag() {
+        let yaml = r#"
+title: bad
+start: room
+allowed_flags: []
+global_flags: [ghost_world_flag]
+locations:
+  room: { description: x, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).expect("パースは通る");
+        assert!(
+            sc.validate().iter().any(|e| matches!(
+                e,
+                crate::spine::ScenarioError::GlobalFlagUndeclared { flag } if flag == "ghost_world_flag"
+            )),
+            "未宣言の global_flag は validate で検出されるべき"
+        );
+    }
+
     // =========================================================================
     // 数値ステータス PoC: 四則演算をエンジンが代行する (LLM は値を持てない)
     // =========================================================================

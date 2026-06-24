@@ -189,6 +189,8 @@ pub enum ScenarioError {
         tier: String,
         flag: FlagKey,
     },
+    /// `global_flags` に挙げたフラグが `allowed_flags` に宣言されていない (幻の世界フラグ)。
+    GlobalFlagUndeclared { flag: FlagKey },
 }
 
 /// シナリオ全体。`scenarios/*.yaml` から読み込まれる。
@@ -199,6 +201,10 @@ pub struct Scenario {
     pub start: LocationId,
     #[serde(default)]
     pub allowed_flags: BTreeSet<FlagKey>,
+    /// **世界フラグ** (campaign 横断で持ち越す)。`allowed_flags` の部分集合。
+    /// [`Scenario::transition`] はこれに挙げたフラグだけ次モジュールへ運び、残り (局所) は捨てる。
+    #[serde(default)]
+    pub global_flags: BTreeSet<FlagKey>,
     /// フラグを true にするための gate。記載なければ [`Gate::Always`]。
     #[serde(default)]
     pub flag_rules: BTreeMap<FlagKey, Gate>,
@@ -271,7 +277,58 @@ impl Scenario {
                 }
             }
         }
+        // 世界フラグは許可フラグの部分集合でなければならない (幻の世界フラグを持ち越さない)。
+        for flag in &self.global_flags {
+            if !self.allowed_flags.contains(flag) {
+                errs.push(ScenarioError::GlobalFlagUndeclared { flag: flag.clone() });
+            }
+        }
         errs
+    }
+
+    /// **状態を持ち越したまま次の骨格へ遷移する** (campaign keystone, PoC-2a)。
+    ///
+    /// `self` = 遷移先 (次モジュール) の骨格。`prev` = 直前の状態、`prev_scenario` = 直前の骨格。
+    /// 「密室脱出 → 森へ、HP/所持品/好感度を保ったまま」の本体。`initial_state` の双対 —
+    /// あちらは初期化、こちらは**持ち越し** (リセットしないことで状態が場所を跨ぐ)。
+    ///
+    /// - **持ち越す**: 数値 (entities)・所持品・能力・RNG ストリーム・累積ターン・
+    ///   **世界フラグ** (`prev_scenario.global_flags` に宣言された分。source が「出ても残る」と宣言)。
+    /// - **捨てる**: 局所フラグ・発火済みトリガー (次モジュールの反応は新規)。
+    /// - **リセット**: `location` を `self.start` へ。
+    /// - 次モジュールが新規宣言する entity/stat/skill は初期化され、既存値は持ち越しが上書きする。
+    ///
+    /// 帰結 (HP 等) はすべて engine が運ぶ — 生成器/LLM は値を持てない (シーン跨ぎでも不変条件を維持)。
+    pub fn transition(&self, prev: &GameState, prev_scenario: &Scenario) -> GameState {
+        // 次モジュールの宣言で初期化 (新規 entity/stat/skill を立て、location=self.start, flags/fired 空)。
+        let mut s = self.initial_state(prev.rng.seed);
+        // RNG ストリームと累積ターンを継続 (監査の連続性)。
+        s.rng = prev.rng.clone();
+        s.turn = prev.turn;
+        // 数値: 既存値で上書き (新規宣言の初期値より持ち越しが優先)。
+        for (entity, stats) in &prev.entities {
+            for (key, value) in stats {
+                s.set_stat(entity, key, *value);
+            }
+        }
+        // 所持品・能力: 丸ごと持ち越し (次モジュールの新規宣言と union)。
+        for (entity, items) in &prev.inventory {
+            for item in items {
+                s.add_to_inventory(entity, item);
+            }
+        }
+        for (entity, skills) in &prev.skills {
+            for skill in skills {
+                s.grant_skill(entity, skill);
+            }
+        }
+        // フラグ: source が global と宣言したものだけ運ぶ (局所は捨てる)。
+        for key in &prev_scenario.global_flags {
+            if let Some(value) = prev.flags.get(key) {
+                s.flags.insert(key.clone(), *value);
+            }
+        }
+        s
     }
 
     /// 指定キャラの stat が宣言済か (adjust/scale の対象になれるか)。
