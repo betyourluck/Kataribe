@@ -302,3 +302,23 @@ no_recent_narration_means_no_continuity_block。harness 33→35。
 【authoring 観測】location.description に一度きりビート (「モカが入ってきた」「気づくと驚いた表情」) を
 書くと再演の温床。description は**持続する場所**を描き、登場/挨拶は GM の即興に委ねるのが筋
 (継続性 note で大半は中和されるが、authoring 側でも分けると堅い)。
+
+### 28. narration に tool-call マークアップが漏れる → 非検証ゆえソースで掃除する
+【実プレイ発見 (2026-06-24, classroom)】表示された語りの末尾に `</narration>` と
+`<parameter name="ops">[{...}]` が混入した。【原因 (現物で特定)】リクエストは tool_choice で
+emit_delta を強制 → 応答は native tool_call の arguments(JSON) を `parse::extract` で StateDelta 化。
+CLI/app は `delta.narration` だけ表示するので、見えた format token は **narration の文字列値の中**に
+在る。モデルが narration 文字列へ `</narration>`/`<parameter name="ops">` 等の構造化出力 token を
+漏らした (ops 配列自体は別フィールドで valid)。tool_call 全体は valid JSON なので extract はエラーに
+せず素通り → 混入が残る。【核心】narration は**非検証** (LLM の領分、engine バックストップが原理的に
+無い #23 と同型)。だから「弾く」のでなく**提示前に掃除**する。【解】`parse::sanitize_narration` を
+`generate_delta` で適用 (extract 直後)。先頭の開きタグ (`<narration>`/`<parameter name="narration">`) を
+剥がし、構造マークアップ (`</narration>` / `<parameter` / `<invoke` / `<function_calls>` 等) の最初の
+出現以降を切り捨て、trim する。ops は valid な別フィールドなので無改変。提示層の `\n` 正規化(#16)と
+同じ「正本を汚さない後処理」をソース(llm_client)に置くことで CLI/app/却下 echo すべてに効く。
+【PoC】sanitizes_leaked_tool_markup_from_narration (実例 + 開きタグ + XML 関数タグ + 無改変ケース) /
+extract_passes_leaked_tags_sanitize_cleans_them (extract 単体ではタグが残る=症状、sanitize で掃除、
+ops は別フィールドで正常)。llm_client 9→11。
+【棄却した代替】prompt で「XML タグを書くな」と刷り込む案は、format token 漏れを確実には防げず
+(narration は非検証で唯一の防衛線が prompt なのは #23 と同じだが、ここは決定論的に掃除できる経路が
+在る)、prompt を伸ばすだけなので不採用 (usage-over-extension)。決定論的な後処理が在る所はそちらを使う。

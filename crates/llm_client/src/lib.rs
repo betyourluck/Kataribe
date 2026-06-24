@@ -53,13 +53,20 @@ impl LlmClient {
         &self,
         messages: Vec<ChatMessage>,
     ) -> Result<StateDelta, LlmError> {
-        self.generate_structured::<StateDelta>(
-            messages,
-            EMIT_DELTA_TOOL,
-            EMIT_DELTA_DESCRIPTION,
-            state_delta_schema(),
-        )
-        .await
+        let delta = self
+            .generate_structured::<StateDelta>(
+                messages,
+                EMIT_DELTA_TOOL,
+                EMIT_DELTA_DESCRIPTION,
+                state_delta_schema(),
+            )
+            .await?;
+        // narration は非検証ゆえ、漏れた tool-call マークアップを提示前に掃除する
+        // (ops は検証済の別フィールドで無改変)。
+        Ok(StateDelta::new(
+            parse::sanitize_narration(&delta.narration),
+            delta.ops,
+        ))
     }
 }
 
@@ -203,6 +210,36 @@ mod tests {
             LlmError::Parse { raw, .. } => assert!(raw.contains("壊れた"), "raw を再生成用に保持すべき"),
             other => panic!("Parse エラーであるべき: {other:?}"),
         }
+    }
+
+    /// 【narration 掃除】モデルが narration 本文に漏らした tool-call マークアップを除去する
+    /// (実プレイで観測: `</narration>` / `<parameter name="ops">` が語りに混入)。
+    #[test]
+    fn sanitizes_leaked_tool_markup_from_narration() {
+        // 観測された実例: narration の末尾に閉じタグ + ops の format token が漏れた。
+        let leaked = "けらけら、と笑う。夕日の中で小さく光っていた。</narration>\n<parameter name=\"ops\">[{\"op\":\"set_flag\"}]";
+        let clean = parse::sanitize_narration(leaked);
+        assert_eq!(clean, "けらけら、と笑う。夕日の中で小さく光っていた。");
+        assert!(!clean.contains("</narration>") && !clean.contains("<parameter"));
+
+        // 先頭の開きタグも剥がす。
+        assert_eq!(parse::sanitize_narration("<narration>本文だけ</narration>"), "本文だけ");
+        // Anthropic XML 関数呼び出しタグも切る。
+        assert!(!parse::sanitize_narration("語り<function_calls><invoke name=\"emit_delta\">").contains('<'));
+        // 正常な narration は無改変。
+        assert_eq!(parse::sanitize_narration("普通の語り。"), "普通の語り。");
+    }
+
+    /// 【症状と修正の分離】tool_call は valid JSON なので extract はタグ混入を素通りさせる
+    /// (= 症状)。sanitize で初めて掃除される。ops は別フィールドで無改変。
+    #[test]
+    fn extract_passes_leaked_tags_sanitize_cleans_them() {
+        let args = r#"{"narration":"語り。</narration><parameter name=\"ops\">[]","ops":[{"op":"set_flag","key":"f","value":true}]}"#;
+        let resp = response_with_tool_args(args);
+        let delta: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        assert!(delta.narration.contains("</narration>"), "extract 単体ではタグが残る (症状)");
+        assert_eq!(delta.ops.len(), 1, "ops は valid な別フィールドで正常");
+        assert_eq!(parse::sanitize_narration(&delta.narration), "語り。", "sanitize で掃除");
     }
 
     /// 【空応答】tool_calls も content も無ければ NoStructuredOutput。

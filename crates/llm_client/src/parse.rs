@@ -22,6 +22,37 @@ pub fn strip_code_fence(raw: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
+/// LLM が narration の本文に紛れ込ませた tool-call マークアップを除去する。
+///
+/// 強モデルでも稀に narration の**文字列値**へ `</narration>` や `<parameter name="ops">` 等の
+/// 構造化出力 format token を漏らす (実プレイで観測。ops 配列自体は別フィールドで正常)。
+/// tool_call は valid JSON なので [`extract`] はエラーにせず素通り → narration に混入が残る。
+/// narration は非検証 (LLM の領分) ゆえ、**提示前にここで掃除**する (提示層の `\n` 正規化と
+/// 同じ「正本を汚さない後処理」)。先頭の開きタグは剥がし、構造マークアップ以降は切り捨てる。
+pub fn sanitize_narration(s: &str) -> String {
+    let mut t = s.trim();
+    // 先頭が開きタグで始まる稀ケースを剥がす。
+    for open in ["<narration>", "<parameter name=\"narration\">", "<parameter name='narration'>"] {
+        if let Some(rest) = t.strip_prefix(open) {
+            t = rest.trim_start();
+        }
+    }
+    // 構造マークアップが現れたら、そこ以降は漏れた構造とみなして切る (最初の出現で切断)。
+    const CUT: &[&str] = &[
+        "</narration>",
+        "<narration>",
+        "</parameter>",
+        "<parameter name=",
+        "<parameter",
+        "<function_calls>",
+        "</function_calls>",
+        "<invoke",
+        "</invoke>",
+    ];
+    let cut = CUT.iter().filter_map(|m| t.find(m)).min().unwrap_or(t.len());
+    t[..cut].trim().to_string()
+}
+
 /// 応答 message から `T` を取り出す。
 ///
 /// 1. `tool_calls` があれば最初の関数の `arguments` (JSON 文字列) を `T` にパース。
