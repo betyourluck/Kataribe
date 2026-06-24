@@ -121,6 +121,24 @@ mod tests {
         assert!(sc.characters.is_empty(), "cast 未宣言なら alice は混入しない");
     }
 
+    /// 【classroom シナリオの整合性】cast [moka] が外部ファイルから注入され、start が実在し、
+    /// goal が参照する moka の 好感度 stat が初期化される (start≠location バグの回帰防止)。
+    #[test]
+    fn classroom_injects_moka_and_is_coherent() {
+        const CLASSROOM: &str = include_str!("../../../scenarios/classroom.yaml");
+        let mut sc = Scenario::from_yaml(CLASSROOM).unwrap();
+        inject_cast(&mut sc, &repo_chars_dir()).expect("cast [moka] の注入が成功する");
+        assert!(sc.characters.contains_key("moka"), "moka が characters/moka.yaml から注入される");
+        assert!(
+            sc.location(&sc.start).is_some(),
+            "start が指す場所が定義されている (start={} ≠ location の不整合を防ぐ)",
+            sc.start
+        );
+        let s = sc.initial_state(1);
+        assert_eq!(s.stat_of("moka", "好感度"), 0, "goal が参照する moka の 好感度 が初期化される");
+        assert!(sc.validate().is_empty(), "整合性チェックが通る");
+    }
+
     /// cast に挙げたのに定義ファイルが無ければエラー (宣言と実体の乖離を黙認しない)。
     #[test]
     fn inject_cast_missing_definition_errors() {

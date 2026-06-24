@@ -8,6 +8,7 @@ export const SCENARIOS = [
   { path: "scenarios/strength_trial.yaml", label: "力の試練" },
   { path: "scenarios/heroine_route.yaml", label: "邂逅 (好感度)" },
   { path: "scenarios/trigger_recall_demo.yaml", label: "約束の想起 (反応ビート)" },
+  { path: "scenarios/classroom.yaml", label: "教室 (日常)" },
 ];
 
 interface GameState {
