@@ -7,17 +7,19 @@ title: 放課後の教室
 start: classroom
 
 initial_stats:
-  hp: 12
+  hp: 0
 
 cast: [moka]
 
-# 「オタク嫌い」は moka.profile の柔らかい性向として GM が語りで反映する
-# (engine 強制でなく narration の素材)。硬い禁忌・フラグは持たせない。
-allowed_flags: []
+# 「オタク嫌い」は moka.profile の柔らかい性向 (engine 強制でなく GM が語りで反映)。
+# フラグは関係の段 (素を見せる→家庭問題を打ち明ける) を刻む authored ビート用 (閉世界宣言)。
+allowed_flags:
+  - moka_opened_up      # 好感度20: 素を見せた
+  - domestic_problem    # 好感度40: 家庭問題を打ち明けた
 
 locations:
   classroom:
-    description: 放課後の教室。机の上には教科書やノートが散らばっている。窓からは夕日が差し込み、教室内はオレンジ色に染まっている。モカは机に座ってスマホをいじっている。彼女はあなたに気づくと、少し驚いた表情を見せる。
+    description: 僕は高校教師である。放課後の教室。机の上には生徒たちの教科書やノートが散らばっている。窓からは夕日が差し込み、教室内はオレンジ色に染まっている。モカは机に座ってスマホをいじっている。彼女はあなたに気づくと、少し驚いた表情を見せる。
     items: {}
     exits: []
 
@@ -27,15 +29,15 @@ triggers:
     when: { kind: stat_at_least, entity: moka, key: 好感度, value: 20 }
     effects: [ { op: set_flag, key: moka_opened_up, value: true } ]
     narration: モカがふと声のトーンを落とし、モデルの仕事の本音をこぼし始めた。
-  - id: pinky_promise      # 好感度40: 約束（告白前の踏み段）
+  - id: confide_problem    # 好感度40: 家庭問題を打ち明ける（告白前の踏み段）
     when: { kind: stat_at_least, entity: moka, key: 好感度, value: 40 }
-    effects: [ { op: set_flag, key: promised, value: true } ]
-    narration: 「……今度の文化祭、ホントに一緒に回ろうね」モカが小指を立てた。
-    recall: childhood_promise        # memoria_bridge で伏線を引く
+    effects: [ { op: set_flag, key: domestic_problem, value: true } ]
+    narration: モカがふと黙り込み、抱えている家庭の事情を、ぽつりと打ち明けはじめた。
 
-goals:                     # 分岐する結末（単一 goal を named に）
-  - id: confession_ok      # 約束を経て50 = 王道エンド
-    when: { kind: all, of: [ {kind: flag_is, key: promised, value: true},
+# 告白 (single エンド)。家庭問題を打ち明けるほど心を開いた上で好感度50。
+# 閾値トリガー(domestic_problem は40で自動発火)ゆえ50到達時には必ず立つ → 「打ち明けを飛ばす」枝は
+# threshold 設計では構造的に出ない。本物の分岐にするには踏み段をプレイヤーの選択フラグにする(後続)。
+goals:
+  - id: confession
+    when: { kind: all, of: [ {kind: flag_is, key: domestic_problem, value: true},
                              {kind: stat_at_least, entity: moka, key: 好感度, value: 50} ] }
-  - id: too_fast           # 約束を飛ばして50 = 上滑りエンド（別の枝）
-    when: { kind: stat_at_least, entity: moka, key: 好感度, value: 50 }

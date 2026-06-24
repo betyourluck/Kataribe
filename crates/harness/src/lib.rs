@@ -366,6 +366,44 @@ mod tests {
         assert!(s.contains("なぜ") && s.contains("原因"), "なぜ成功/失敗したかを物語内の原因として語らせる");
     }
 
+    /// 【galge spine】classroom の好感度閾値トリガーが関係の「段」を刻む: 20→素を見せる、
+    /// 40→家庭問題を打ち明ける、50→告白(confession)。漂いを段に変える authored ビートで、
+    /// 告白は「打ち明け(domestic_problem)を経た好感度50」を要求する。
+    #[test]
+    fn classroom_spine_fires_relationship_beats_and_reaches_confession() {
+        use gm_core::apply;
+        let mut sc = Scenario::from_yaml(include_str!("../../../scenarios/classroom.yaml")).unwrap();
+        inject_cast(
+            &mut sc,
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../characters")),
+        )
+        .unwrap();
+        assert!(sc.validate().is_empty(), "spine 込みでも整合");
+        let mut s = sc.initial_state(1);
+        let bump = |n: i64| {
+            StateDelta::new(
+                "",
+                vec![StateOp::AdjustStat { entity: "moka".into(), key: "好感度".into(), delta: n }],
+            )
+        };
+
+        // 好感度20 → 素を見せる。
+        let o1 = apply(&mut s, &sc, &bump(20)).unwrap();
+        assert!(o1.fired.iter().any(|f| f.id == "opens_up"), "20 で素を見せるビート");
+        assert_eq!(s.flags.get("moka_opened_up"), Some(&true));
+        assert_eq!(sc.reached(&s), None, "20 では告白に至らない");
+
+        // 好感度40 → 家庭問題を打ち明ける。
+        let o2 = apply(&mut s, &sc, &bump(20)).unwrap();
+        assert!(o2.fired.iter().any(|f| f.id == "confide_problem"), "40 で打ち明けビート");
+        assert_eq!(s.flags.get("domestic_problem"), Some(&true));
+        assert_eq!(sc.reached(&s), None, "打ち明けただけでは告白に至らない");
+
+        // 好感度50 → 告白 (confession)。
+        apply(&mut s, &sc, &bump(10)).unwrap();
+        assert_eq!(sc.reached(&s).as_deref(), Some("confession"), "打ち明けを経て50で告白");
+    }
+
     /// 【プロンプト健全性】盤面要約にシナリオ要素が、状態要約に現在地が含まれる。
     #[test]
     fn prompt_reflects_scenario_and_state() {
