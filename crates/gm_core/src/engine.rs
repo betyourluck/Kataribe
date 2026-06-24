@@ -412,9 +412,9 @@ fn clamp_stat(scenario: &Scenario, entity: &str, key: &str, value: i64) -> i64 {
     max.map_or(v, |m| v.min(m))
 }
 
-/// クリア条件を満たしているか。
+/// クリア条件を満たしているか (いずれかのエンディングに到達したか)。
 pub fn is_goal(state: &GameState, scenario: &Scenario) -> bool {
-    scenario.goal.eval(state)
+    scenario.reached(state).is_some()
 }
 
 // =============================================================================
@@ -869,6 +869,97 @@ goal: { kind: always }
                 crate::spine::ScenarioError::GlobalFlagUndeclared { flag } if flag == "ghost_world_flag"
             )),
             "未宣言の global_flag は validate で検出されるべき"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // PoC-2b (reached / 名前付き goal): spine の尾を閉じる。
+    // 大失敗フラグ → どのエンディング(GoalId)に着いたか → それが次モジュールの分岐セレクタ。
+    // 後方互換: goal(単一) はそのまま、goals(名前付き) は任意追加。
+    // -------------------------------------------------------------------------
+
+    const BRANCHING: &str = r#"
+title: 分岐の引き出し
+start: study
+initial_stats: { str: 2 }
+allowed_flags: [fumble_drawer, drawer_jammed, drawer_opened]
+challenges:
+  drawer_pick:
+    stat: str
+    sides: 6
+    dc: 5
+    tiers:
+      crit_fail: { natural: min, flag: fumble_drawer }
+triggers:
+  - id: drawer_jam
+    when: { kind: flag_is, key: fumble_drawer, value: true }
+    effects: [ { op: set_flag, key: drawer_jammed, value: true } ]
+    narration: 工具が折れ、引き出しは固まった。
+goals:
+  - id: jammed_ending
+    when: { kind: flag_is, key: drawer_jammed, value: true }
+  - id: opened_ending
+    when: { kind: flag_is, key: drawer_opened, value: true }
+locations:
+  study: { description: 書斎, items: {}, exits: [] }
+"#;
+
+    /// 【分岐セレクタ】大失敗 → fumble_drawer → trigger → drawer_jammed → reached() が jammed_ending を選ぶ。
+    /// この GoalId が次モジュールの transition 分岐セレクタになる (spine の尾)。
+    #[test]
+    fn reached_selects_named_goal_from_fumble_branch() {
+        let sc = Scenario::from_yaml(BRANCHING).expect("branching yaml");
+        assert!(sc.validate().is_empty(), "goals だけ (goal 無し) でも健全");
+        let mut s = sc.initial_state(19); // 1d6 → natural 1
+        assert_eq!(sc.reached(&s), None, "開始時はどのエンディングにも未到達");
+
+        apply(
+            &mut s,
+            &sc,
+            &d(vec![StateOp::AttemptChallenge {
+                entity: PLAYER.into(),
+                challenge: "drawer_pick".into(),
+            }]),
+        )
+        .unwrap();
+
+        assert_eq!(s.flags.get("drawer_jammed"), Some(&true), "大失敗→fumble→trigger→drawer_jammed");
+        assert_eq!(
+            sc.reached(&s).as_deref(),
+            Some("jammed_ending"),
+            "大失敗が jammed_ending を選ぶ=分岐セレクタ (opened_ending ではない)"
+        );
+        assert!(is_goal(&s, &sc), "named goal 到達でも is_goal は true (後方互換)");
+    }
+
+    /// 【後方互換】単一 goal のシナリオも reached に既定 GoalId で乗る。既存 is_goal は不変。
+    #[test]
+    fn reached_falls_back_to_single_goal() {
+        let sc = scenario(); // locked_room: goal=location_is corridor, goals 無し
+        let mut s = fresh(&sc);
+        assert_eq!(sc.reached(&s), None, "未クリア時は None");
+        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::AddItem { item: "rusty_key".into() }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "door_unlocked".into(), value: true }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "corridor".into() }])).unwrap();
+        assert!(sc.reached(&s).is_some(), "単一 goal も既定 GoalId で reached に乗る");
+        assert!(is_goal(&s, &sc), "is_goal は reached 経由でも従来通り true");
+    }
+
+    /// 【整合性】goal も goals も無いシナリオ (勝利条件不在) は validate で弾く。
+    #[test]
+    fn validate_rejects_scenario_with_no_goal() {
+        let yaml = r#"
+title: goalless
+start: room
+allowed_flags: []
+locations:
+  room: { description: x, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).expect("goal/goals 無しでもパースは通る (整合性は別検査)");
+        assert!(
+            sc.validate().iter().any(|e| matches!(e, crate::spine::ScenarioError::NoGoal)),
+            "goal も goals も無いシナリオは validate で弾く"
         );
     }
 

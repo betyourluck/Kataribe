@@ -15,6 +15,11 @@ pub type TriggerId = String;
 pub type SkillId = String;
 /// authored challenge の識別子。閉世界 — 宣言された ChallengeId にしか挑めない。
 pub type ChallengeId = String;
+/// 名前付き goal (エンディング) の識別子。`reached` が返し、次モジュールの分岐セレクタになる。
+pub type GoalId = String;
+
+/// 単一 `goal` (名前無し) を `reached` が返す時の既定 GoalId (後方互換)。
+pub const DEFAULT_GOAL: &str = "goal";
 
 /// 主人公の規約的 EntityId。op/gate が entity を省略した時の既定。
 pub const PLAYER: &str = "player";

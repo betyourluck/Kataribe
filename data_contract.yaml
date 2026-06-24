@@ -94,6 +94,7 @@ ScenarioError:                    # 静的整合性の破れ (load 時検査。a
   validate: "Scenario::validate()->Vec<ScenarioError>。空なら健全。harness loader が from_yaml 直後に呼ぶ"
   ChallengeFlagUndeclared: "challenge の tier flag が allowed_flags 未宣言(幻フラグを engine 直書き経路に乗せない)"
   GlobalFlagUndeclared: "global_flags のフラグが allowed_flags 未宣言(幻の世界フラグを持ち越さない)"
+  NoGoal: "goal も goals も無い(勝利条件不在=到達不能シナリオ)"
 
 # --- キャラクター定義 (characters/*.yaml、不変の authored 定義 = GameDefinitions 相当) ---
 # 数値=正本(エンジン), 設定/背景/性向=語りの素材(→いずれ Memoria), 硬い禁忌=エンジン強制(Phase B)。
@@ -109,7 +110,18 @@ StatDecl:
   min: i64                          # 下限 (省略時 0)
   max: i64                          # 上限 (省略時 なし)
   locations: { LocationId: Location }
-  goal: Gate                        # 達成でクリア
+  goal: Gate?                       # 単一の達成条件 (名前無し・後方互換・任意)。goals を使う時は省略可
+  goals: [GoalDef]                  # 名前付き goal(エンディング)の authored 順リスト。非空ならこちら優先
+
+# --- 名前付き goal (PoC-2b。分岐する結末と次モジュールの分岐セレクタ) ----------
+# is_goal(state)->bool は reached(state).is_some()。後方互換: goal(単一) はそのまま、
+# goals(名前付き) は任意追加。発火 GoalId が次モジュールの transition 分岐セレクタになる。
+GoalDef:
+  id:   "GoalId。reached() が返す = transition の分岐セレクタ (jammed_ending→地下 等)"
+  when: "Gate。成立でこの結末に到達"
+Reached:
+  reached: "Scenario::reached(state)->Option<GoalId>。goals 非空なら authored 順で最初に成立した id (決定論)、空なら単一 goal を DEFAULT_GOAL='goal' で評価 (後方互換)"
+  is_goal: "is_goal(state,scenario)=reached().is_some()。既存シナリオ(goal のみ)は不変"
 
 Location:
   description: string
@@ -262,12 +274,13 @@ Campaign:
   self_contained_file: "語り部 = 自己完結 file の純粋実行器。1 file = {scenario 骨格 + GameState + RngState}。GameState/RngState は既に Serialize 派生(save-state 化が型レベルで可能・出目まで再現)。生きた可変コピーが2つ無い → split-brain が構造的に不可能。ホストは『次の骨格を渡す+演出』だけに縮み、HP の対抗コピーを持たない"
   transition: "✅実装(PoC-2a): Scenario::transition(prev_state, prev_scenario)->GameState。self=遷移先骨格。持ち越す=数値(entities)/所持品/能力/RNGストリーム/累積turn/世界フラグ(prev_scenario.global_flags 宣言分)。捨てる=局所フラグ/fired。location は self.start にリセット。次モジュールの新規宣言(entity/stat/skill)は初期化、既存値は持ち越しが上書き。initial_state の双対(あちら初期化/こちら持ち越し)。帰結は全て engine が運ぶ=生成器/LLM は値を持てない(シーン跨ぎでも不変条件維持)"
   flag_persistence: "フラグの持続性は per-flag の authored 属性(捨てる / 世界に持つ / その場所に持つ)。global vs 局所の二値でハードコードすると再訪で詰む(『宝箱はもう開けた』は局所だが捨てられない = 復活すると矛盾する GM)。密室脱出は一方向で戻りが無いので二値で済んでいた = フィールドが暴く穴"
-  named_goals: "goal: Gate → goals: {GoalId: Gate}。reached(state)->Option<GoalId> (authored 順で最初の一致 = 決定論)。条件付き勝利(flag 立てば A 無ければ B)は既存合成 Gate(All/Any/FlagIs{bool})で表現可だが、どのエンディングかを知るには named goals が要る"
+  named_goals: "✅実装(PoC-2b): goal: Option<Gate>(単一・後方互換) + goals: [GoalDef{id,when}](名前付き・authored 順)。reached(state)->Option<GoalId> = goals 非空なら最初の一致 id、空なら単一 goal を DEFAULT_GOAL で評価。is_goal=reached().is_some()(既存不変)。条件付き勝利は合成 Gate でも書けるが、どのエンディングかを知るには named goals が要る"
   branch: "発火した GoalId が次モジュールの分岐セレクタ(A エンド→森, B エンド→地下、どちらも global 状態は持ち越し)。単一 goal では出ない枝 = 自由度の出所"
   memoria_scale: "フィールド規模で初めて Memoria が働く(密室は小さすぎた)。NPC/伏線/土地 lore が積もる = 大規模 lore の on-demand recall(memoria_bridge の固有価値, #22)が効く高度"
   landing_order: "最小着地順: transition(状態の器・per-flag 持続性込み) → reached()(分岐の出口)。依存的に transition が先(状態の器)、reached() が後(分岐の出口)。PoC = 『状態を持ったまま骨格 swap → HP/所持品/好感度が保たれる』を Red→Green"
   poc1_done: "✅fumble-as-trigger 前半 (2026-06-24): AttemptChallenge(authored challenge を LLM が選ぶだけ) → 大失敗(natural min)→ engine が帰結 flag 直書き → 既存 trigger 発火 → goal。scenarios/fumble_check.yaml + gm_core 47/47。spine `Check→tier(宣言済)→trigger` が実体化"
-  poc2a_done: "✅transition (2026-06-24): 状態持ち越し swap を実装。村→森で hp(減った値)/所持品/能力/alice 好感度/世界フラグ(met_alice)が持ち越され、局所フラグ(door_open)は捨てられ、location は次の start にリセット、新規 stat(stamina)は初期化を実証(transition_carries_state_drops_local_flags)。global_flags の参照整合も validate に追加。残り 2b = reached()(名前付き goal→分岐)で spine の尾 `Check→tier→trigger→goal→transition` を閉じる"
+  poc2a_done: "✅transition (2026-06-24): 状態持ち越し swap を実装。村→森で hp(減った値)/所持品/能力/alice 好感度/世界フラグ(met_alice)が持ち越され、局所フラグ(door_open)は捨てられ、location は次の start にリセット、新規 stat(stamina)は初期化を実証(transition_carries_state_drops_local_flags)。global_flags の参照整合も validate に追加"
+  poc2b_done: "✅reached / 名前付き goal (2026-06-24): goal→Option + goals 追加(後方互換)。大失敗→fumble_drawer→trigger→drawer_jammed→reached()=='jammed_ending'(opened_ending でなく)を実証(reached_selects_named_goal_from_fumble_branch)。spine 全長 `Check→tier→trigger→goal(reached)→[transition の分岐セレクタ]` が gm_core 内で閉じた。残り: reached()→transition を harness/app で結線(orchestration 層)"
   rejected_check_tiers_on_op: "却下した代替: tier/flag を Check op に畳む案。Check は LLM 提案 op なので op に tier を乗せると LLM が帰結(fumble→flag)を author できる=#23/#24 の穴。tier/flag は Scenario.challenges(authored)に置き、AttemptChallenge は challenge 名の参照のみ(LLM は選ぶだけ)。閉世界の三例目"
   rejected: "LLM シナリオ/フラグ生成・validate_scenario・二エンジン同期・オーサリング editor は棄却(2026-06-24 設計対話で収束)。将来リプレイ性で生成を入れる時も、生成部は load-bearing な gate の外側(goal を gate しない flavor のみ)に閉じ込め、骨格は authored のまま"
 

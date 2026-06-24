@@ -90,7 +90,14 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
             }
         }
     }
-    s.push_str(&format!("\n## クリア条件\n{}\n", gate_brief(&scenario.goal)));
+    if !scenario.goals.is_empty() {
+        s.push_str("\n## クリア条件 (いずれかの結末へ)\n");
+        for g in &scenario.goals {
+            s.push_str(&format!("- {}: {}\n", g.id, gate_brief(&g.when)));
+        }
+    } else if let Some(goal) = &scenario.goal {
+        s.push_str(&format!("\n## クリア条件\n{}\n", gate_brief(goal)));
+    }
     s
 }
 

@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{
-    default_entity, ChallengeId, EntityId, FlagKey, GameState, ItemId, LocationId, SkillId,
-    StateOp, StatKey, TriggerId, PLAYER,
+    default_entity, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId, SkillId,
+    StateOp, StatKey, TriggerId, DEFAULT_GOAL, PLAYER,
 };
 
 /// state に対して評価される条件。
@@ -191,6 +191,16 @@ pub enum ScenarioError {
     },
     /// `global_flags` に挙げたフラグが `allowed_flags` に宣言されていない (幻の世界フラグ)。
     GlobalFlagUndeclared { flag: FlagKey },
+    /// 勝利条件が無い (`goal` も `goals` も未指定)。到達不能なシナリオ。
+    NoGoal,
+}
+
+/// 名前付き goal (エンディング)。複数を authored 順に持ち、最初に成立したものが
+/// [`Scenario::reached`] の戻り値 = 次モジュールの**分岐セレクタ**になる。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalDef {
+    pub id: GoalId,
+    pub when: Gate,
 }
 
 /// シナリオ全体。`scenarios/*.yaml` から読み込まれる。
@@ -229,8 +239,13 @@ pub struct Scenario {
     #[serde(default)]
     pub challenges: BTreeMap<ChallengeId, ChallengeDef>,
     pub locations: BTreeMap<LocationId, Location>,
-    /// 達成でクリアとなる条件。
-    pub goal: Gate,
+    /// 単一の達成条件 (名前無し・後方互換)。`goals` を使う時は省略可。
+    #[serde(default)]
+    pub goal: Option<Gate>,
+    /// 名前付き goal (エンディング) の authored 順リスト。分岐する結末を書ける。
+    /// 非空ならこちらが優先され、最初に成立した [`GoalDef::id`] が [`Scenario::reached`] の戻り値。
+    #[serde(default)]
+    pub goals: Vec<GoalDef>,
 }
 
 impl Scenario {
@@ -283,7 +298,31 @@ impl Scenario {
                 errs.push(ScenarioError::GlobalFlagUndeclared { flag: flag.clone() });
             }
         }
+        // 勝利条件は最低一つ要る (goal 単一 or goals 名前付き)。
+        if self.goal.is_none() && self.goals.is_empty() {
+            errs.push(ScenarioError::NoGoal);
+        }
         errs
+    }
+
+    /// **どのエンディング (GoalId) に到達したか**を返す (PoC-2b)。`None` なら未達。
+    ///
+    /// 戻り値の `GoalId` は次モジュールの **transition 分岐セレクタ**になる
+    /// (jammed_ending → 地下、open_ending → 森、等)。
+    /// `goals` (名前付き) が非空ならそれを authored 順で評価し、最初に成立した id を返す
+    /// (決定論)。`goals` が空なら単一 `goal` を [`DEFAULT_GOAL`] という既定 id で評価する (後方互換)。
+    pub fn reached(&self, state: &GameState) -> Option<GoalId> {
+        if !self.goals.is_empty() {
+            self.goals
+                .iter()
+                .find(|g| g.when.eval(state))
+                .map(|g| g.id.clone())
+        } else {
+            self.goal
+                .as_ref()
+                .filter(|g| g.eval(state))
+                .map(|_| DEFAULT_GOAL.to_string())
+        }
     }
 
     /// **状態を持ち越したまま次の骨格へ遷移する** (campaign keystone, PoC-2a)。
