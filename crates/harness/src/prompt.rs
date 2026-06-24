@@ -16,6 +16,9 @@ use crate::memoria::MemoryFragment;
 /// 既成事実にさせない (= 行商ネックレス問題の prompt 層対策、failures #23)。
 pub const GM_SYSTEM: &str = "\
 あなたは TRPG のゲームマスター (GM) です。プレイヤーの行動に応じて物語を進めます。\n\
+- 盤面に『世界観』『主人公（プレイヤー）の設定』が与えられたら、それに沿って語ること。\
+**NPC は主人公の設定（職業・年齢・立場など）を認識し、それに沿って接する**（例: 主人公が教師なら、\
+生徒の NPC は教師として接する）。設定を無視してプレイヤーを別の立場として扱ってはならない。\n\
 - narration には情景・NPC の台詞・行動の結果を自由に書いてよい。ただし**現在の状態 \
 (所持品・立っている状態・所在・能力値) に反する出来事を起こしてはならない**。narration は \
 エンジンに検証されないので、矛盾しない一貫性はあなた自身が守ること (それが「矛盾しない GM」の責務)。\n\
@@ -37,7 +40,7 @@ pub const GM_SYSTEM: &str = "\
 - 存在しないアイテムの取得や、条件を満たさない移動を ops に書いても**エンジンに却下される**。\n\
   嘘の状態変更で物語を進めることはできない。今ある盤面の事実に忠実であること。\n\
 - 何も状態が変わらない描写だけのターンなら ops は空でよい。\n\
-必ず emit_delta ツールで {narration, ops} を提出すること。";
+narration と ops を必ず構造化出力として提出すること (ツール emit_delta、またはサーバ指示の JSON 形式)。";
 
 /// 条件 (Gate) を平易な日本語にする。LLM に前提条件を理解させるため。
 fn gate_brief(gate: &Gate) -> String {
@@ -64,6 +67,24 @@ fn gate_brief(gate: &Gate) -> String {
 /// シナリオの盤面を要約する (登場人物・場所・アイテム・出口・ゴール)。
 pub fn scenario_brief(scenario: &Scenario) -> String {
     let mut s = format!("# シナリオ: {}\n", scenario.title);
+
+    // 世界観 (語りの素材)。情景・時代・舞台設定を語りに一貫させる。
+    if !scenario.world.trim().is_empty() {
+        s.push_str(&format!("\n## 世界観\n{}\n", scenario.world.trim()));
+    }
+
+    // 主人公(プレイヤー)の設定。**NPC はこの設定に沿ってプレイヤーを認識・反応する**
+    // (例: 主人公が教師なら、生徒の NPC は教師として接する)。
+    let p = &scenario.protagonist;
+    if !p.name.trim().is_empty() || !p.profile.trim().is_empty() {
+        s.push_str("\n## 主人公（プレイヤー）\n");
+        if !p.name.trim().is_empty() {
+            s.push_str(&format!("- 呼称: {}\n", p.name.trim()));
+        }
+        if !p.profile.trim().is_empty() {
+            s.push_str(&format!("- 設定: {}\n", p.profile.trim()));
+        }
+    }
 
     // 登場人物の profile (設定・背景・性格・性向)。語りで一貫させるための素材。
     if !scenario.characters.is_empty() {

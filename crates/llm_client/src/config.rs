@@ -19,6 +19,10 @@ pub struct LlmConfig {
     pub request_timeout: Duration,
     /// chat 呼び出しの最大試行回数 (指数 backoff)。tenacity `stop_after_attempt` 同型。
     pub max_retries: u32,
+    /// tool-use (function calling) を使うか。`true`=`tool_choice` 強制で構造化出力 (OpenAI/Anthropic)。
+    /// `false`=tools を送らず prompt で JSON 出力を指示し content から拾う (tool_choice 非対応の
+    /// さくら AI Engine / ローカル OpenAI 互換サーバ向け)。`LLM_USE_TOOLS=false` で切替。既定 true。
+    pub use_tools: bool,
 }
 
 impl LlmConfig {
@@ -59,6 +63,10 @@ impl LlmConfig {
             max_tokens: env_parse("LLM_MAX_TOKENS", 4096)?,
             request_timeout: Duration::from_secs(env_parse("LLM_REQUEST_TIMEOUT_SECS", 120)?),
             max_retries: env_parse("LLM_MAX_RETRIES", 3)?,
+            // 既定 true。"false"/"0"/"no"/"off" のみ false (tool 非対応サーバ向け)。
+            use_tools: env_opt("LLM_USE_TOOLS")
+                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
+                .unwrap_or(true),
         })
     }
 
@@ -72,6 +80,7 @@ impl LlmConfig {
             max_tokens: 4096,
             request_timeout: Duration::from_secs(120),
             max_retries: 3,
+            use_tools: true,
         }
     }
 

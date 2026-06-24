@@ -200,6 +200,50 @@ mod tests {
         assert!(delta.ops.is_empty());
     }
 
+    /// 【no-tools モード】tool_calls 無しで content が素の JSON / prose 包みでも StateDelta に解決する
+    /// (さくら AI Engine 等 tool_choice 非対応サーバの経路。LLM_USE_TOOLS=false)。
+    #[test]
+    fn parses_state_delta_from_plain_and_prose_content() {
+        // 素の JSON (コードフェンス無し)。さくら gpt-oss-120b の実観測形。
+        let raw = ChatResponse {
+            choices: vec![Choice {
+                message: ResponseMessage {
+                    content: Some(r#"{"narration":"教室に入る","ops":[]}"#.into()),
+                    tool_calls: vec![],
+                },
+            }],
+        };
+        let d: StateDelta = parse::extract(raw.first_message().unwrap()).unwrap();
+        assert_eq!(d.narration, "教室に入る");
+        assert!(d.ops.is_empty());
+
+        // prose に前後を包まれても first '{'..last '}' で救済。
+        let prose = ChatResponse {
+            choices: vec![Choice {
+                message: ResponseMessage {
+                    content: Some("はい:\n{\"narration\":\"了解\",\"ops\":[]} 以上".into()),
+                    tool_calls: vec![],
+                },
+            }],
+        };
+        let d2: StateDelta = parse::extract(prose.first_message().unwrap()).unwrap();
+        assert_eq!(d2.narration, "了解");
+    }
+
+    /// 【JSON モード指示】json_instruction は schema (narration/ops) と「JSON だけ出せ」旨を含む。
+    #[test]
+    fn json_instruction_carries_schema_and_directive() {
+        let s = crate::client::json_instruction(&state_delta_schema());
+        assert!(s.contains("JSON"), "JSON 出力指示を含む");
+        assert!(s.contains("narration") && s.contains("ops"), "schema (narration/ops) を含む");
+    }
+
+    /// 【既定 tool-use】LlmConfig::new / 未設定時は use_tools=true (OpenAI/Anthropic 既定経路)。
+    #[test]
+    fn config_defaults_to_tool_use() {
+        assert!(LlmConfig::new("u", "k", "m").use_tools, "既定は tool-use ON");
+    }
+
     /// 【再生成の燃料】壊れた JSON は raw を保持した Parse エラーになる
     /// (却下→再生成ループが raw を LLM に戻せること = self_repair 同型の前提)。
     #[test]

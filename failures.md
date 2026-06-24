@@ -322,3 +322,24 @@ ops は別フィールドで正常)。llm_client 9→11。
 【棄却した代替】prompt で「XML タグを書くな」と刷り込む案は、format token 漏れを確実には防げず
 (narration は非検証で唯一の防衛線が prompt なのは #23 と同じだが、ここは決定論的に掃除できる経路が
 在る)、prompt を伸ばすだけなので不採用 (usage-over-extension)。決定論的な後処理が在る所はそちらを使う。
+
+### 29. OpenAI 互換 ≠ tool_choice 対応 → no-tools / JSON モードが要る (さくら AI Engine)
+【実機で分離・確定 (2026-06-24)】ユーザーが .env をさくらのクラウド AI Engine
+(https://api.ai.sakura.ad.jp/v1, OpenAI 互換) に変更 → 「うまくいかない」。CLI 1ターンで再現すると
+status=500 "Upstream server error"。**変数を分離**して原因を二つに切り分けた: (1) モデル
+`preview/Qwen3-0.6B-cpu` は素の chat でも **504 Gateway Timeout** — CPU プレビューが応答しない(死因①、
+モデル選択ミス)。マニュアルのサンプル `gpt-oss-120b` は 200。(2) `gpt-oss-120b` + `tool_choice` 強制は
+**200 だが tool_calls:[] のまま** — さくらの serving (vLLM) は OpenAI の関数呼び出し強制を**実装して
+いない**(死因②)。content に壊れた JSON もどきが出るだけ。語り部は tool-use 強制が前提なので構造化
+出力が取れず Parse 失敗。【核心の罠】「OpenAI 互換」を名乗っても **tool_choice / function calling
+対応は別物**。chat/completions は通っても tool 強制は通らないサーバが普通にある(特にローカル/廉価層)。
+【解】`LlmConfig.use_tools`(`LLM_USE_TOOLS`、既定 true)で切替。off の時 tools/tool_choice を送らず、
+`json_instruction`(schemars schema を載せた「JSON だけ出せ」system 指示)を積み、既存の content
+フォールバックで拾う。prose 包みは first`{`..last`}` で救済。**実機実証**: さくら `gpt-oss-120b` +
+`LLM_USE_TOOLS=false` で「モカに挨拶」が valid narration を生成・state 更新・日本語化けなし
+(reqwest は正しい UTF-8。curl の化けはシェル由来でクライアント無実)。PoC:
+parses_state_delta_from_plain_and_prose_content / json_instruction_carries_schema_and_directive /
+config_defaults_to_tool_use。llm_client 11→14。
+【設定の正解】さくらを使うには .env を: LLM_BASE_URL=https://api.ai.sakura.ad.jp/v1 /
+LLM_MODEL=gpt-oss-120b (cpu プレビュー不可) / LLM_USE_TOOLS=false / LLM_API_KEY=<UUID>:<シークレット>
+(ペア形式)。同人配布の北極星(受領者は tool 非対応の安い/ローカルモデルを使う)に直結する機能。

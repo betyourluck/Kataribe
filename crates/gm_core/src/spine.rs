@@ -203,11 +203,27 @@ pub struct GoalDef {
     pub when: Gate,
 }
 
+/// 主人公(プレイヤー)の設定。**語りの素材** (非検証) — NPC がプレイヤーを認識・反応する材料。
+/// package.player から注入される (gm_core は値を解釈せず prompt へ供給するだけ。CharacterDef.profile と同類)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Protagonist {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub profile: String,
+}
+
 /// シナリオ全体。`scenarios/*.yaml` から読み込まれる。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scenario {
     #[serde(default)]
     pub title: String,
+    /// 世界観 lore (語りの素材、非検証)。package.world から注入。可変状態は持たない (北極星)。
+    #[serde(default)]
+    pub world: String,
+    /// 主人公(プレイヤー)の設定 (語りの素材)。package.player から注入。NPC が認識する。
+    #[serde(default)]
+    pub protagonist: Protagonist,
     pub start: LocationId,
     #[serde(default)]
     pub allowed_flags: BTreeSet<FlagKey>,

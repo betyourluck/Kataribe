@@ -429,6 +429,31 @@ mod tests {
         assert!(sb.contains("cell"), "現在地が含まれる");
     }
 
+    /// 【主人公の認識】world / protagonist が scenario_brief に surface され、GM_SYSTEM が
+    /// 「NPC は主人公の設定に沿って接する」を刷り込む (教師なのにモカが認識しない問題の対策)。
+    #[test]
+    fn scenario_brief_surfaces_world_and_protagonist() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\n",
+            "world: 現代日本の高校。\n",
+            "protagonist: { name: 先生, profile: 25才の高校教師。 }\n",
+            "start: room\nallowed_flags: []\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let brief = prompt::scenario_brief(&sc);
+        assert!(brief.contains("世界観") && brief.contains("現代日本の高校"), "world が surface される");
+        assert!(
+            brief.contains("主人公") && brief.contains("先生") && brief.contains("高校教師"),
+            "主人公(プレイヤー)の設定が surface される"
+        );
+        assert!(
+            prompt::GM_SYSTEM.contains("主人公の設定") && prompt::GM_SYSTEM.contains("教師"),
+            "GM_SYSTEM が NPC の主人公認識を刷り込む"
+        );
+    }
+
     /// 【正本の接地 / 行商ネックレス対策】GM プロンプトは「行動文は意図」「所持品に無い物は
     /// 存在しない」「narration は非検証ゆえ GM 自身が矛盾を防ぐ」を刷り込む (failures #23)。
     /// narration には engine バックストップが無いので、この刷り込みが唯一の防衛線。

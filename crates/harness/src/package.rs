@@ -86,11 +86,22 @@ pub struct LoadedPackage {
 /// - **globals.flags**: 「使える (`allowed_flags`)」と「跨いで生きる (`global_flags`)」の両方へ union。
 ///   これで一元宣言が閉世界検査 (`global_flags ⊆ allowed_flags`) を自動で通り、手動転記が消える。
 pub fn inject_package(scenario: &mut Scenario, manifest: &PackageManifest) {
+    // 世界観 (語りの素材) を注入 → scenario_brief が GM に供給。
+    if !manifest.world.trim().is_empty() {
+        scenario.world = manifest.world.clone();
+    }
     if let Some(p) = &manifest.player {
         for (k, v) in &p.stats {
             scenario.initial_stats.insert(k.clone(), *v); // package が勝つ
         }
         scenario.initial_skills.extend(p.skills.iter().cloned());
+        // 主人公の設定 (name/profile) を注入 → NPC がプレイヤーを認識する材料 (語りの素材)。
+        if !p.name.trim().is_empty() {
+            scenario.protagonist.name = p.name.clone();
+        }
+        if !p.profile.trim().is_empty() {
+            scenario.protagonist.profile = p.profile.clone();
+        }
     }
     if let Some(g) = &manifest.globals {
         for f in &g.flags {
@@ -183,8 +194,10 @@ mod tests {
         assert!(loaded.scenario.characters.contains_key("moka"), "フォルダ内 characters/ から注入");
         // 注入後も整合 (閉世界検査が通る)。
         assert!(loaded.scenario.validate().is_empty());
-        // 語り素材は manifest に保持 (surfacing は後続)。
-        assert!(loaded.manifest.world.contains("放課後"));
+        // 語り素材 (world / 主人公設定) が scenario へ注入され GM に供給される (NPC 認識の材料)。
+        assert!(!loaded.scenario.world.trim().is_empty(), "world が scenario へ注入される");
+        assert!(!loaded.scenario.protagonist.name.trim().is_empty(), "主人公の呼称が注入される");
+        assert!(!loaded.scenario.protagonist.profile.trim().is_empty(), "主人公の設定が注入される");
     }
 
     /// 【自己完結検査】package.yaml が無いフォルダはエラー (配布物の体裁を満たさない)。
@@ -218,7 +231,10 @@ mod tests {
         .unwrap();
         let manifest = PackageManifest {
             entry: "x".into(),
+            world: "現代日本の高校。".into(),
             player: Some(PlayerDef {
+                name: "先生".into(),
+                profile: "高校教師。".into(),
                 stats: BTreeMap::from([("hp".to_string(), 10)]),
                 ..Default::default()
             }),
@@ -231,5 +247,9 @@ mod tests {
             sc.allowed_flags.contains("w") && sc.global_flags.contains("w"),
             "globals は allowed_flags と global_flags の両方へ union"
         );
+        // 語り素材 (world / 主人公) も scenario へ注入され、NPC がプレイヤーを認識できる。
+        assert_eq!(sc.world, "現代日本の高校。", "world が注入される");
+        assert_eq!(sc.protagonist.name, "先生", "主人公の呼称が注入される");
+        assert_eq!(sc.protagonist.profile, "高校教師。", "主人公の設定が注入される");
     }
 }

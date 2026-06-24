@@ -60,22 +60,32 @@ impl LlmClient {
         tool_description: &str,
         parameters: serde_json::Value,
     ) -> Result<T, LlmError> {
-        let tool = Tool {
-            kind: ToolKind::Function,
-            function: FunctionDef {
-                name: tool_name.to_string(),
-                description: tool_description.to_string(),
-                parameters,
-            },
+        // tool-use 対応サーバ (OpenAI/Anthropic) は tool_choice 強制で構造を保証。
+        // 非対応サーバ (さくら AI Engine / ローカル互換) は tools を送らず、prompt で JSON 出力を
+        // 指示して content から拾う (extract のフォールバック)。
+        let mut messages = messages;
+        let (tools, tool_choice) = if self.config.use_tools {
+            let tool = Tool {
+                kind: ToolKind::Function,
+                function: FunctionDef {
+                    name: tool_name.to_string(),
+                    description: tool_description.to_string(),
+                    parameters,
+                },
+            };
+            (vec![tool], Some(ToolChoice::force(tool_name)))
+        } else {
+            messages.push(ChatMessage::system(json_instruction(&parameters)));
+            (Vec::new(), None)
         };
         let req = ChatRequest {
             model: self.config.model.clone(),
-            // temperature は config 任せ (未設定なら送らない)。tool_choice 強制が構造を保証する。
+            // temperature は config 任せ (未設定なら送らない)。
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             messages,
-            tools: vec![tool],
-            tool_choice: Some(ToolChoice::force(tool_name)),
+            tools,
+            tool_choice,
         };
         let resp = self.chat_with_retry(&req).await?;
         let message = resp.first_message().ok_or(LlmError::EmptyResponse)?;
@@ -121,4 +131,16 @@ impl LlmClient {
             }
         }
     }
+}
+
+/// no-tools モードで「schema に従う JSON だけを出力せよ」と指示する system メッセージ本文。
+/// tool_choice 非対応サーバ (さくら AI Engine / ローカル OpenAI 互換) 向け。schema は単一真実源。
+pub(crate) fn json_instruction(schema: &serde_json::Value) -> String {
+    format!(
+        "重要: このサーバはツール呼び出し (function calling) に対応していません。\
+        応答は次の JSON Schema に厳密に従う JSON オブジェクトを **1つだけ** 出力し、\
+        前置き・説明・コードフェンスのラベル等、余計なテキストを一切含めないでください。\n\
+        JSON Schema:\n{}",
+        serde_json::to_string(schema).unwrap_or_default()
+    )
 }

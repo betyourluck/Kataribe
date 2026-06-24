@@ -72,12 +72,23 @@ pub fn extract<T: DeserializeOwned>(message: &ResponseMessage) -> Result<T, LlmE
     if let Some(content) = message.content.as_deref() {
         if !content.trim().is_empty() {
             let cleaned = strip_code_fence(content);
-            return serde_json::from_str::<T>(&cleaned).map_err(|source| LlmError::Parse {
-                source,
-                raw: cleaned,
-            });
+            // まず素直にパース。失敗したら prose に包まれた JSON を first '{'..last '}' で救済する
+            // (no-tools モードでモデルが前置きを付けても拾える堅牢性)。
+            return match serde_json::from_str::<T>(&cleaned) {
+                Ok(v) => Ok(v),
+                Err(source) => extract_json_object(&cleaned)
+                    .and_then(|obj| serde_json::from_str::<T>(obj).ok())
+                    .ok_or(LlmError::Parse { source, raw: cleaned }),
+            };
         }
     }
 
     Err(LlmError::NoStructuredOutput)
+}
+
+/// prose に包まれた JSON を救済する: 最初の `{` から最後の `}` までを返す (no-tools モード堅牢化)。
+fn extract_json_object(s: &str) -> Option<&str> {
+    let start = s.find('{')?;
+    let end = s.rfind('}')?;
+    (end > start).then(|| &s[start..=end])
 }
