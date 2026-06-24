@@ -428,19 +428,19 @@ mod tests {
     use crate::state::{RngState, StateOp, PLAYER};
 
     // 密室脱出シナリオをコンパイル時に埋め込む (cwd 非依存)。
-    const LOCKED_ROOM: &str = include_str!("../../../scenarios/locked_room.yaml");
+    const LOCKED_ROOM: &str = include_str!("../fixtures/locked_room.yaml");
     // 数値の最小盤面。
-    const STRENGTH_TRIAL: &str = include_str!("../../../scenarios/strength_trial.yaml");
+    const STRENGTH_TRIAL: &str = include_str!("../fixtures/strength_trial.yaml");
     // キャラ別ステータスの最小盤面。
-    const HEROINE_ROUTE: &str = include_str!("../../../scenarios/heroine_route.yaml");
+    const HEROINE_ROUTE: &str = include_str!("../fixtures/heroine_route.yaml");
     // 反応ビート (Phase C) の最小盤面。
-    const TRIGGER_RECALL: &str = include_str!("../../../scenarios/trigger_recall.yaml");
+    const TRIGGER_RECALL: &str = include_str!("../fixtures/trigger_recall.yaml");
     // 閉世界 capability (スキル覚醒) の最小盤面。
-    const SKILL_AWAKENING: &str = include_str!("../../../scenarios/skill_awakening.yaml");
+    const SKILL_AWAKENING: &str = include_str!("../fixtures/skill_awakening.yaml");
     // NPC inventory + 譲渡 (give_item) の最小盤面。
-    const GIFT: &str = include_str!("../../../scenarios/gift.yaml");
+    const GIFT: &str = include_str!("../fixtures/gift.yaml");
     // 技能判定の大失敗が世界を変える (fumble-as-trigger, PoC-1) の最小盤面。
-    const FUMBLE_CHECK: &str = include_str!("../../../scenarios/fumble_check.yaml");
+    const FUMBLE_CHECK: &str = include_str!("../fixtures/fumble_check.yaml");
 
     fn scenario() -> Scenario {
         Scenario::from_yaml(LOCKED_ROOM).expect("locked_room.yaml がパースできること")

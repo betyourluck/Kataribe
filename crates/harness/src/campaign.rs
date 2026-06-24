@@ -170,11 +170,11 @@ mod tests {
     use gm_core::{apply, GameState, StateDelta, StateOp, PLAYER};
     use std::path::PathBuf;
 
-    const ESCAPE: &str = include_str!("../../../campaigns/escape.yaml");
+    const ESCAPE: &str = include_str!("../../../packages/escape/campaign.yaml");
 
-    /// repo root (scenarios/ campaigns/ characters/ memoria/ が在る所)。
+    /// escape パッケージの root (campaign.yaml / scenarios/ が在る所)。module path はここからの相対。
     fn repo_root() -> PathBuf {
-        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).to_path_buf()
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/escape")).to_path_buf()
     }
     fn campaign() -> Campaign {
         Campaign::from_yaml(ESCAPE).expect("escape.yaml がパースできること")

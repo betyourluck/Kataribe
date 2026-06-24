@@ -363,7 +363,7 @@ mod tests {
     /// リポジトリの `memoria/` から伏線がロードでき、ファイル名が id になる。
     #[test]
     fn loads_lore_from_repo_memoria_dir() {
-        let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../memoria"));
+        let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/memoria"));
         let store = load_lore(dir).expect("memoria/ をロードできる");
         let got = store.recall("childhood_promise");
         assert!(!got.is_empty(), "ファイル名 childhood_promise が id になる");

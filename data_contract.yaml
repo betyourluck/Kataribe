@@ -271,6 +271,34 @@ DesktopUi:
 # 一貫性保証が崩れる → validate_scenario も不要)。二エンジン同期(SomniumTextor 等)も棄却
 # (正本が2つ = split-brain = 矛盾する GM)。
 
+# --- Package (配布単位。フォルダ1つ = 自己完結シナリオ、ZIP 配布の単位) --------
+# packages/<name>/ フォルダが配布・管理・(将来)マーケットの単位。「自己完結 file の純粋実行器」
+# 思想を file → フォルダへ広げたもの。フォルダ内に package.yaml(世界をまとめる1ファイル) +
+# characters/ + memoria/ + scenarios/ + campaign.yaml(任意) を同梱 → zip→解凍→そのまま動く。
+# 注入は harness の責務 (gm_core 無改修): package の player/globals を各モジュールへ射し込む
+# (inject_cast と同型)。自己完結 = 参照は全てフォルダ相対、外部参照ゼロ。
+PackageManifest:                    # packages/<name>/package.yaml の凍結スキーマ
+  title: String                     # 表示名
+  description: String?              # 一覧表示用
+  author: String?
+  version: String?
+  engine: String?                   # semver range (将来用、今は不透明 string・検証なし)
+  entry: String                     # "campaign.yaml" or "scenarios/xxx.yaml" (フォルダ相対)
+  world: String?                    # 世界観 lore = 語りの素材 (非検証、prompt 供給)。可変状態は禁忌(北極星)
+  player: PlayerDef?                # 主人公を一度だけ宣言 → harness が各モジュールへ注入 (継承)
+  globals: Globals?                 # パッケージ横断の世界フラグ宣言
+PlayerDef:
+  name: String?
+  stats: { StatKey: i64 }           # 主人公の初期数値。各モジュールの initial_stats へ merge(package が勝つ=分裂防止)
+  skills: [SkillId]                 # 主人公の初期スキル。各モジュールの initial_skills へ union
+  profile: String?                  # 主人公の性向 = 語りの素材 (非検証、prompt 供給)。surfacing は後続
+Globals:
+  flags: [FlagKey]                  # 宣言のみ。load 時に各モジュールの allowed_flags(使える) と global_flags(跨いで生きる) の両方へ union
+PackageLoad:                        # harness 層の駆動 (gm_core 無改修)
+  load_package: "load_package(dir)->LoadedPackage。dir/package.yaml を読み、entry を load+inject_cast+inject_package(player/globals 注入)+validate。package.yaml 不在/entry 不在はエラー(自己完結 = フォルダ内参照の load 時保証)"
+  inject_package: "inject_package(&mut Scenario, &PackageManifest)。player.stats を initial_stats へ merge(package 優先=モジュール跨ぎの HP 分裂を防ぐ)、player.skills を initial_skills へ union、globals.flags を allowed_flags+global_flags へ union。これで「一度宣言→全モジュールで使える&跨いで生きる」が閉世界検査も通る"
+  deferred: "campaign-entry(entry が campaign.yaml の時の複数モジュール束ね) / world・player.profile の prompt surfacing / engine semver 検証 / GUI フォルダ列挙 は後続。B-core は engine 状態の注入(stats/skills/flags)を Red→Green で固める"
+
 # --- Campaign file (PoC-2c。authored モジュールグラフ = orchestration の正本) ----
 # campaigns/<name>.yaml。独立 file にモジュール接続トポロジを書く(scenario は自己完結の
 # まま=別キャンペーンで再利用可)。file I/O + 地図参照ゆえ harness の責務(gm_core は純粋の

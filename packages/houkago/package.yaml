@@ -1,0 +1,25 @@
+# package.yaml — このパッケージ(配布単位フォルダ)の世界を1ファイルにまとめる。
+# packages/houkago/ を丸ごと zip すれば配布でき、解凍すればそのまま動く(自己完結)。
+# harness が load 時に player/globals を entry シナリオへ注入する(gm_core 無改修)。
+
+title: 放課後の教室
+description: 幼馴染モカと過ごす放課後の galge。好感度を上げて告白へ。
+author: you
+version: 0.1.0
+engine: ">=0.1"          # semver range (将来のマーケット互換チェック用、今は検証しない)
+
+entry: scenarios/classroom.yaml   # 単一シナリオ。複数モジュールなら campaign.yaml を指す(後続)
+
+# 世界観 = 語りの素材 (character.profile の世界版)。非検証、prompt に供給。可変状態は禁忌。
+world: |
+  現代日本の高校。放課後、誰もいなくなった教室。オレンジ色の西日が差し込む。
+
+# 主人公を一度だけ宣言 → harness が各モジュールへ注入 (モジュール跨ぎで分裂しない)。
+player:
+  name: 先生
+  stats: { hp: 10 }
+  profile: 高校教師。生徒思いだが少し抜けている。
+
+# パッケージ横断の世界フラグ宣言。load 時に各モジュールの allowed_flags + global_flags へ union。
+globals:
+  flags: [met_moka]

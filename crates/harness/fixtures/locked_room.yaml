@@ -1,0 +1,36 @@
+# PoC シナリオ: 密室脱出
+# 状態が少なく分岐が明確な「最小の盤面」。ループの正しさを最短で測る。
+#
+# 正規の筋:
+#   1. 引き出しを調べる   → set_flag drawer_opened=true   (gate: always)
+#   2. 鍵を取る           → add_item rusty_key            (gate: drawer_opened)
+#   3. 鍵で扉を解錠する   → set_flag door_unlocked=true   (gate: has_item rusty_key)
+#   4. 廊下へ出る         → move corridor                 (gate: door_unlocked)
+#   => goal (location_is corridor)
+
+title: 密室脱出
+start: cell
+
+allowed_flags:
+  - drawer_opened
+  - door_unlocked
+
+flag_rules:
+  # drawer_opened は記載なし → Always (いつでも引き出しは開けられる)
+  door_unlocked: { kind: has_item, item: rusty_key }   # 鍵がなければ扉は解錠できない
+
+locations:
+  cell:
+    description: 冷たい石造りの独房。木の引き出しのついた古い机と、錆びた鉄の扉が一つ。
+    items:
+      rusty_key: { kind: flag_is, key: drawer_opened, value: true }   # 鍵は引き出しの中
+    exits:
+      - to: corridor
+        gate: { kind: flag_is, key: door_unlocked, value: true }
+
+  corridor:
+    description: 解錠された扉の先。冷たい風と、出口へ続く薄明かりが見える。
+    items: {}
+    exits: []
+
+goal: { kind: location_is, at: corridor }

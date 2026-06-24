@@ -23,4 +23,8 @@ pub enum HarnessError {
     /// Campaign file / モジュール scenario の読み込み・パース・整合性エラー (orchestration 層)。
     #[error("campaign の読み込み失敗 ({path}): {detail}")]
     CampaignLoad { path: String, detail: String },
+
+    /// パッケージ (配布フォルダ) の読み込み・パース・整合性エラー (package.yaml / entry / 自己完結検査)。
+    #[error("package の読み込み失敗 ({path}): {detail}")]
+    PackageLoad { path: String, detail: String },
 }

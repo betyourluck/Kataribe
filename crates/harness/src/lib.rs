@@ -11,12 +11,16 @@ mod campaign;
 mod error;
 mod loader;
 mod memoria;
+mod package;
 pub mod prompt;
 mod proposer;
 mod turn;
 
 pub use campaign::{
     advance_campaign, load_campaign, load_module, Advance, Campaign, CampaignEdge, ModuleId,
+};
+pub use package::{
+    inject_package, load_package, read_manifest, Globals, LoadedPackage, PackageManifest, PlayerDef,
 };
 pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};
@@ -39,7 +43,7 @@ mod tests {
 
     use super::*;
 
-    const LOCKED_ROOM: &str = include_str!("../../../scenarios/locked_room.yaml");
+    const LOCKED_ROOM: &str = include_str!("../fixtures/locked_room.yaml");
 
     fn scenario() -> Scenario {
         Scenario::from_yaml(LOCKED_ROOM).expect("locked_room.yaml がパースできること")
@@ -194,7 +198,7 @@ mod tests {
     fn trigger_fire_bridges_to_recalled_lore() {
         use gm_core::apply;
 
-        const TRIGGER_RECALL: &str = include_str!("../../../scenarios/trigger_recall.yaml");
+        const TRIGGER_RECALL: &str = include_str!("../fixtures/trigger_recall.yaml");
         let sc = Scenario::from_yaml(TRIGGER_RECALL).unwrap();
         let mut s = sc.initial_state(7);
 
@@ -217,7 +221,7 @@ mod tests {
         // 発火列の cue を Memoria で解決 → 伏線が語りに載る。
         let store = load_lore(std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../memoria"
+            "/fixtures/memoria"
         )))
         .unwrap();
         let beats = resolve_recall(&store, &out.fired);
@@ -372,10 +376,17 @@ mod tests {
     #[test]
     fn classroom_spine_fires_relationship_beats_and_reaches_confession() {
         use gm_core::apply;
-        let mut sc = Scenario::from_yaml(include_str!("../../../scenarios/classroom.yaml")).unwrap();
+        // 配布パッケージ houkago が classroom galge の正本。
+        let mut sc = Scenario::from_yaml(include_str!(
+            "../../../packages/houkago/scenarios/classroom.yaml"
+        ))
+        .unwrap();
         inject_cast(
             &mut sc,
-            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../characters")),
+            std::path::Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../packages/houkago/characters"
+            )),
         )
         .unwrap();
         assert!(sc.validate().is_empty(), "spine 込みでも整合");

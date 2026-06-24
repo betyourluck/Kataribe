@@ -78,10 +78,10 @@ pub fn inject_cast(scenario: &mut Scenario, dir: &Path) -> Result<(), HarnessErr
 mod tests {
     use super::*;
 
-    /// リポジトリの characters/ から alice が読め、ファイル名が EntityId になる。
+    /// fixtures の characters/ から alice が読め、ファイル名が EntityId になる。
     #[test]
     fn loads_alice_from_repo_characters_dir() {
-        let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../characters"));
+        let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/characters"));
         let chars = load_characters(dir).expect("characters/ をロードできる");
         let alice = chars.get("alice").expect("ファイル名 alice が EntityId になる");
         assert_eq!(alice.name, "アリス");
@@ -97,14 +97,15 @@ mod tests {
     }
 
     fn repo_chars_dir() -> std::path::PathBuf {
-        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../characters")).to_path_buf()
+        // alice 等 harness 統合テスト用のキャラ fixture (フラット characters/ から移行)。
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/characters")).to_path_buf()
     }
 
     /// 【cast 宣言】cast に挙げた entity だけが外部ファイルから注入される。
     #[test]
     fn inject_cast_loads_declared_only() {
         // 邂逅シナリオ (inline キャラ無し、cast: [alice])。
-        const HEROINE_MEET: &str = include_str!("../../../scenarios/heroine_meet.yaml");
+        const HEROINE_MEET: &str = include_str!("../fixtures/heroine_meet.yaml");
         let mut sc = Scenario::from_yaml(HEROINE_MEET).unwrap();
         assert!(sc.characters.is_empty(), "注入前は登場人物が居ない");
         inject_cast(&mut sc, &repo_chars_dir()).expect("cast の注入が成功する");
@@ -115,7 +116,7 @@ mod tests {
     /// (alice が密室脱出に混入する問題の回帰防止)。
     #[test]
     fn no_cast_means_no_injection() {
-        const LOCKED_ROOM: &str = include_str!("../../../scenarios/locked_room.yaml");
+        const LOCKED_ROOM: &str = include_str!("../fixtures/locked_room.yaml");
         let mut sc = Scenario::from_yaml(LOCKED_ROOM).unwrap();
         inject_cast(&mut sc, &repo_chars_dir()).expect("cast 空でも成功する");
         assert!(sc.characters.is_empty(), "cast 未宣言なら alice は混入しない");
@@ -125,9 +126,12 @@ mod tests {
     /// goal が参照する moka の 好感度 stat が初期化される (start≠location バグの回帰防止)。
     #[test]
     fn classroom_injects_moka_and_is_coherent() {
-        const CLASSROOM: &str = include_str!("../../../scenarios/classroom.yaml");
+        // 配布パッケージ houkago が classroom galge の正本 (フラット scenarios/ から移行済)。
+        const CLASSROOM: &str = include_str!("../../../packages/houkago/scenarios/classroom.yaml");
+        let houkago_chars =
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/houkago/characters"));
         let mut sc = Scenario::from_yaml(CLASSROOM).unwrap();
-        inject_cast(&mut sc, &repo_chars_dir()).expect("cast [moka] の注入が成功する");
+        inject_cast(&mut sc, houkago_chars).expect("cast [moka] の注入が成功する");
         assert!(sc.characters.contains_key("moka"), "moka が characters/moka.yaml から注入される");
         assert!(
             sc.location(&sc.start).is_some(),

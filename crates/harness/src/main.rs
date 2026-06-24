@@ -29,7 +29,8 @@ use harness::{
 use llm_client::{LlmClient, LlmConfig};
 
 /// 既定シナリオ (cwd 非依存: crate からの相対で解決)。
-const DEFAULT_SCENARIO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scenarios/locked_room.yaml");
+const DEFAULT_SCENARIO: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/houkago/scenarios/classroom.yaml");
 /// 1 ターンあたりの再生成上限。
 const MAX_ATTEMPTS: u32 = 4;
 
