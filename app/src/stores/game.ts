@@ -102,13 +102,23 @@ export const useGameStore = defineStore("game", {
       this.refreshPackages();
     },
 
+    // パッケージ一覧を同梱既定に戻す (設定ダイアログから)。
+    resetPackages() {
+      this.packagePaths = [...BUILTIN_PACKAGES];
+      savePaths(this.packagePaths);
+      this.packagePath = this.packagePaths[0];
+      this.refreshPackages();
+    },
+
     async newGame(packagePath?: string) {
       const path = packagePath ?? this.packagePath;
       if (!path) return;
       this.loading = true;
       this.error = null;
       try {
-        const view = await invoke<GameView>("new_game", { packagePath: path });
+        // 言語設定タブの選択 (localStorage) を backend へ。却下理由の localize に効く。
+        const lang = localStorage.getItem("kataribe.lang") || null;
+        const view = await invoke<GameView>("new_game", { packagePath: path, lang });
         this.started = true;
         this.packagePath = path;
         this.title = view.title;

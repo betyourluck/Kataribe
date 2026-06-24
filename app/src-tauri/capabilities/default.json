@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Kataribe メインウィンドウの権限。コア既定のみ (custom command new_game/play_turn は app 定義なので追加権限不要)。",
+  "description": "Kataribe メインウィンドウの権限。custom command (new_game/play_turn/list_packages) は app 定義ゆえ追加権限不要。decorations:false のカスタム TitleBar 用に window 操作権限を付与。",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:window:allow-toggle-maximize"
+  ]
 }

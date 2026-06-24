@@ -263,9 +263,97 @@ async fn list_packages(paths: Vec<String>) -> Vec<PackageEntry> {
         .collect()
 }
 
+/// LLM 接続設定の view (設定ダイアログの AIモデルタブ用)。ローカル app ゆえ api_key も返す
+/// (ユーザー自身の鍵を編集できるようにする)。
+#[derive(Serialize)]
+struct LlmConfigView {
+    base_url: String,
+    model: String,
+    api_key: String,
+    /// tool-use (function calling) を使うか。さくら等 tool_choice 非対応サーバはオフにする。
+    use_tools: bool,
+}
+
+/// `LLM_USE_TOOLS` を解釈する (既定 true。"false"/"0"/"no"/"off" のみ false)。config.rs と同基準。
+fn parse_use_tools() -> bool {
+    std::env::var("LLM_USE_TOOLS")
+        .ok()
+        .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
+        .unwrap_or(true)
+}
+
+/// 現在の LLM 設定 (プロセス env = 起動時 .env 由来) を返す。AIモデルタブの初期値。
+#[tauri::command]
+fn get_llm_config() -> LlmConfigView {
+    let opt = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    LlmConfigView {
+        base_url: opt("LLM_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into()),
+        model: opt("LLM_MODEL").unwrap_or_else(|| "gpt-4o-mini".into()),
+        api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
+        use_tools: parse_use_tools(),
+    }
+}
+
+/// LLM 設定を更新する: プロセス env を即時差し替え (次の new_game の from_env が反映) +
+/// .env file へ永続化 (repo root、dev ツール前提)。AIモデルタブの保存。
+#[tauri::command]
+fn set_llm_config(
+    base_url: String,
+    model: String,
+    api_key: String,
+    use_tools: bool,
+) -> Result<(), String> {
+    // 1) プロセス env を更新 (この後の new_game が拾う)。edition 2021 ゆえ set_var は safe。
+    let use_tools_s = if use_tools { "true" } else { "false" };
+    std::env::set_var("LLM_BASE_URL", &base_url);
+    std::env::set_var("LLM_MODEL", &model);
+    std::env::set_var("LLM_API_KEY", &api_key);
+    std::env::set_var("LLM_USE_TOOLS", use_tools_s);
+    // 2) .env file に永続化 (再起動後も効く)。
+    let updates = [
+        ("LLM_BASE_URL".to_string(), base_url),
+        ("LLM_MODEL".to_string(), model),
+        ("LLM_API_KEY".to_string(), api_key),
+        ("LLM_USE_TOOLS".to_string(), use_tools_s.to_string()),
+    ];
+    upsert_env(&repo_root().join(".env"), &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
+}
+
+/// `.env` の指定キーを upsert する。既存行は値だけ差し替え、無ければ末尾に追記。
+/// コメント行・他キー・順序は保つ (鍵以外の設定を壊さない)。
+fn upsert_env(path: &Path, updates: &[(String, String)]) -> std::io::Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for line in existing.lines() {
+        let t = line.trim_start();
+        let mut replaced = false;
+        if !t.starts_with('#') {
+            if let Some(eq) = t.find('=') {
+                let key = t[..eq].trim_end();
+                if let Some((k, v)) = updates.iter().find(|(k, _)| k.as_str() == key) {
+                    out.push(format!("{k}={v}"));
+                    seen.push(k.clone());
+                    replaced = true;
+                }
+            }
+        }
+        if !replaced {
+            out.push(line.to_string());
+        }
+    }
+    for (k, v) in updates {
+        if !seen.contains(k) {
+            out.push(format!("{k}={v}"));
+        }
+    }
+    std::fs::write(path, out.join("\n") + "\n")
+}
+
 #[tauri::command]
 async fn new_game(
     package_path: Option<String>,
+    lang: Option<String>,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<GameView, String> {
     let root = repo_root();
@@ -310,7 +398,12 @@ async fn new_game(
         pending_lore: Vec::new(),
         pending_checks: Vec::new(),
         last_narration: String::new(),
-        lang: lang_from_env(),
+        // 言語設定タブ由来の lang を優先、無ければ env 既定。
+        lang: match lang.as_deref() {
+            Some("en") | Some("En") | Some("EN") => Lang::En,
+            Some("ja") | Some("Ja") | Some("JA") => Lang::Ja,
+            _ => lang_from_env(),
+        },
     });
     Ok(view)
 }
@@ -414,7 +507,13 @@ async fn play_turn(
 pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
-        .invoke_handler(tauri::generate_handler![new_game, play_turn, list_packages])
+        .invoke_handler(tauri::generate_handler![
+            new_game,
+            play_turn,
+            list_packages,
+            get_llm_config,
+            set_llm_config
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
