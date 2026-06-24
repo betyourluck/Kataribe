@@ -2,14 +2,36 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import type { GameView, TurnView, StateView, LogEntry } from "../types/api";
 
-// 選択できるシナリオ (scenarios/ の相対パス)。
-export const SCENARIOS = [
-  { path: "scenarios/locked_room.yaml", label: "密室脱出" },
-  { path: "scenarios/strength_trial.yaml", label: "力の試練" },
-  { path: "scenarios/heroine_route.yaml", label: "邂逅 (好感度)" },
-  { path: "scenarios/trigger_recall_demo.yaml", label: "約束の想起 (反応ビート)" },
-  { path: "scenarios/classroom.yaml", label: "教室 (日常)" },
-];
+// localStorage キー: ユーザーが選べるパッケージフォルダのパス一覧 (配布物の置き場)。
+const PACKAGES_KEY = "kataribe.packagePaths";
+// 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。
+const BUILTIN_PACKAGES = ["packages/houkago", "packages/promise_demo", "packages/escape"];
+
+// backend `list_packages` が返す1項目 (フォルダ一覧表示用)。
+export interface PackageEntry {
+  path: string;
+  title: string;
+  description: string;
+  playable: boolean; // 単一シナリオ entry のみ今は playable (campaign-entry は後続)
+  error: string | null;
+}
+
+// localStorage からパス一覧を読む (壊れていれば同梱既定にフォールバック)。
+function loadPaths(): string[] {
+  try {
+    const raw = localStorage.getItem(PACKAGES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.every((p) => typeof p === "string")) return parsed;
+    }
+  } catch {
+    /* 壊れた localStorage は無視して既定へ */
+  }
+  return [...BUILTIN_PACKAGES];
+}
+function savePaths(paths: string[]) {
+  localStorage.setItem(PACKAGES_KEY, JSON.stringify(paths));
+}
 
 interface GameState {
   started: boolean;
@@ -18,19 +40,29 @@ interface GameState {
   state: StateView | null;
   loading: boolean;
   error: string | null;
-  scenarioPath: string;
+  // 選択中パッケージのパス。
+  packagePath: string;
+  // localStorage が保持するパッケージフォルダのパス一覧。
+  packagePaths: string[];
+  // 各パスの manifest を読んだ一覧 view (backend list_packages の結果)。
+  packages: PackageEntry[];
 }
 
 export const useGameStore = defineStore("game", {
-  state: (): GameState => ({
-    started: false,
-    title: "",
-    log: [],
-    state: null,
-    loading: false,
-    error: null,
-    scenarioPath: SCENARIOS[0].path,
-  }),
+  state: (): GameState => {
+    const paths = loadPaths();
+    return {
+      started: false,
+      title: "",
+      log: [],
+      state: null,
+      loading: false,
+      error: null,
+      packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
+      packagePaths: paths,
+      packages: [],
+    };
+  },
 
   getters: {
     // ゴール到達済みか (入力を締める判断に使う)。
@@ -38,14 +70,47 @@ export const useGameStore = defineStore("game", {
   },
 
   actions: {
-    async newGame(scenarioPath?: string) {
-      const path = scenarioPath ?? this.scenarioPath;
+    // localStorage のパス一覧から各 package.yaml の manifest を読み、一覧 view を更新する。
+    async refreshPackages() {
+      try {
+        this.packages = await invoke<PackageEntry[]>("list_packages", {
+          paths: this.packagePaths,
+        });
+        // 選択中パスが一覧から消えていたら先頭へ寄せる。
+        if (!this.packagePaths.includes(this.packagePath) && this.packagePaths.length) {
+          this.packagePath = this.packagePaths[0];
+        }
+      } catch (e) {
+        this.error = String(e);
+      }
+    },
+
+    // パッケージフォルダのパスを一覧に追加する (localStorage に永続化)。
+    addPackage(path: string) {
+      const p = path.trim();
+      if (!p || this.packagePaths.includes(p)) return;
+      this.packagePaths.push(p);
+      savePaths(this.packagePaths);
+      this.refreshPackages();
+    },
+
+    // パスを一覧から外す。
+    removePackage(path: string) {
+      this.packagePaths = this.packagePaths.filter((p) => p !== path);
+      savePaths(this.packagePaths);
+      if (this.packagePath === path) this.packagePath = this.packagePaths[0] ?? "";
+      this.refreshPackages();
+    },
+
+    async newGame(packagePath?: string) {
+      const path = packagePath ?? this.packagePath;
+      if (!path) return;
       this.loading = true;
       this.error = null;
       try {
-        const view = await invoke<GameView>("new_game", { scenarioPath: path });
+        const view = await invoke<GameView>("new_game", { packagePath: path });
         this.started = true;
-        this.scenarioPath = path;
+        this.packagePath = path;
         this.title = view.title;
         this.state = view.state;
         this.log = [{ kind: "opening", text: view.description }];

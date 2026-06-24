@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 
 use gm_core::{is_goal, CheckOutcome, GameState, Lang, Scenario, PLAYER};
 use harness::{
-    inject_cast, load_lore, resolve_recall, run_turn, LoreStore, MemoryFragment, TurnOutcome,
+    load_lore, load_package, read_manifest, resolve_recall, run_turn, LoreStore, MemoryFragment,
+    TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
 use serde::Serialize;
@@ -23,8 +24,8 @@ use tokio::sync::Mutex;
 const MAX_ATTEMPTS: u32 = 4;
 /// 初期 RNG seed (決定論再現。将来引数化)。
 const SEED: u64 = 42;
-/// 既定シナリオ (リポジトリ root からの相対)。
-const DEFAULT_SCENARIO: &str = "scenarios/locked_room.yaml";
+/// 既定パッケージ (リポジトリ root からの相対フォルダ)。
+const DEFAULT_PACKAGE: &str = "packages/houkago";
 
 // =============================================================================
 // frontend 向け view DTO (状態の真実ではなく、描画用スナップショット)
@@ -213,35 +214,86 @@ fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
 // Tauri commands
 // =============================================================================
 
+/// パッケージ一覧の1項目 (GUI のフォルダ一覧表示用)。frontend が localStorage に持つパスごとに作る。
+#[derive(Serialize)]
+struct PackageEntry {
+    /// localStorage が保持するパス (repo root 相対 or 絶対)。
+    path: String,
+    title: String,
+    description: String,
+    /// 単一シナリオ entry のみ今は playable (campaign-entry の load_package 対応は後続)。
+    playable: bool,
+    /// package.yaml が読めない等のエラー (一覧から外さず理由を表示する)。
+    error: Option<String>,
+}
+
+/// localStorage 由来のパス列について、各 `package.yaml` の manifest を読み一覧 view を返す。
+/// entry は解決しない (一覧は title/description だけ要る、campaign パッケージも一覧には出す)。
+#[tauri::command]
+async fn list_packages(paths: Vec<String>) -> Vec<PackageEntry> {
+    let root = repo_root();
+    paths
+        .into_iter()
+        .map(|p| {
+            let dir = if Path::new(&p).is_absolute() {
+                PathBuf::from(&p)
+            } else {
+                root.join(&p)
+            };
+            match read_manifest(&dir) {
+                Ok(m) => {
+                    let playable = !m.entry.contains("campaign");
+                    PackageEntry {
+                        path: p,
+                        title: m.title,
+                        description: m.description,
+                        playable,
+                        error: None,
+                    }
+                }
+                Err(e) => PackageEntry {
+                    path: p.clone(),
+                    title: p,
+                    description: String::new(),
+                    playable: false,
+                    error: Some(e.to_string()),
+                },
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
 async fn new_game(
-    scenario_path: Option<String>,
+    package_path: Option<String>,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<GameView, String> {
     let root = repo_root();
-    let rel = scenario_path.unwrap_or_else(|| DEFAULT_SCENARIO.to_string());
-    let scen_path = if Path::new(&rel).is_absolute() {
+    let rel = package_path.unwrap_or_else(|| DEFAULT_PACKAGE.to_string());
+    let pkg_dir = if Path::new(&rel).is_absolute() {
         PathBuf::from(&rel)
     } else {
         root.join(&rel)
     };
 
-    let yaml = std::fs::read_to_string(&scen_path)
-        .map_err(|e| format!("シナリオを読めません ({}): {e}", scen_path.display()))?;
-    let mut scenario = Scenario::from_yaml(&yaml).map_err(|e| format!("シナリオの解析失敗: {e}"))?;
-
-    // シナリオが cast 宣言した外部キャラだけを注入 (CLI と同経路、無差別注入しない)。
-    inject_cast(&mut scenario, &root.join("characters")).map_err(|e| e.to_string())?;
-    // 伏線 (memoria/) をロード。
-    let lore = load_lore(&root.join("memoria")).map_err(|e| e.to_string())?;
+    // パッケージを読む (entry シナリオ + player/globals 注入 + 自己完結検査)。
+    let loaded = load_package(&pkg_dir).map_err(|e| e.to_string())?;
+    // 伏線 (パッケージ内 memoria/) をロード。無ければ空。
+    let lore = load_lore(&pkg_dir.join("memoria")).map_err(|e| e.to_string())?;
 
     // LLM クライアント (.env は main で読み込み済)。
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
     let client = LlmClient::new(config).map_err(|e| e.to_string())?;
 
+    let scenario = loaded.scenario;
     let state = scenario.initial_state(SEED);
+    let title = if loaded.manifest.title.is_empty() {
+        scenario.title.clone()
+    } else {
+        loaded.manifest.title.clone()
+    };
     let view = GameView {
-        title: scenario.title.clone(),
+        title,
         location: state.location.clone(),
         description: scenario
             .location(&state.location)
@@ -362,7 +414,7 @@ async fn play_turn(
 pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
-        .invoke_handler(tauri::generate_handler![new_game, play_turn])
+        .invoke_handler(tauri::generate_handler![new_game, play_turn, list_packages])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
