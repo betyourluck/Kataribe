@@ -42,6 +42,8 @@ pub enum RejectReason {
     UnknownEntity { entity: String },
     /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
     UnknownChallenge { challenge: String },
+    /// challenge の前提条件 (`requires` Gate) が未達で、まだ挑めない (挑戦の解禁待ち)。
+    ChallengeLocked { challenge: String },
 }
 
 impl RejectReason {
@@ -88,6 +90,9 @@ impl RejectReason {
             RejectReason::UnknownChallenge { challenge } => {
                 format!("'{challenge}' という挑戦はこのシナリオに存在しない")
             }
+            RejectReason::ChallengeLocked { challenge } => {
+                format!("'{challenge}' にはまだ挑めない (前提条件が満たされていない)")
+            }
         }
     }
 
@@ -124,6 +129,9 @@ impl RejectReason {
             }
             RejectReason::UnknownEntity { entity } => {
                 format!("cannot give to '{entity}' because it does not exist in this scenario")
+            }
+            RejectReason::ChallengeLocked { challenge } => {
+                format!("'{challenge}' cannot be attempted yet (its prerequisite is unmet)")
             }
             RejectReason::UnknownChallenge { challenge } => {
                 format!("there is no challenge '{challenge}' in this scenario")

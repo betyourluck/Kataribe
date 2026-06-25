@@ -178,6 +178,14 @@ fn validate_ops(
                         challenge: challenge.clone(),
                     }),
                     Some(def) => {
+                        // 前提条件 (requires Gate) が未達なら、まだ挑めない (挑戦の解禁/封鎖)。
+                        if let Some(req) = &def.requires {
+                            if !req.eval(state) {
+                                reasons.push(RejectReason::ChallengeLocked {
+                                    challenge: challenge.clone(),
+                                });
+                            }
+                        }
                         // 判定の素性は authored。stat 修正を使う場合のみ、挑戦する entity が
                         // その stat を宣言済みであること (stat 無し = 能力に依らない純粋ダイス)。
                         if let Some(stat) = &def.stat {
@@ -373,7 +381,10 @@ fn apply_ops(
                 if let Some(def) = scenario.challenge(challenge) {
                     let roll = state.rng.roll(def.sides);
                     // stat 無し = 能力に依らない純粋ダイス (修正値 0)。
-                    let modifier = def.stat.as_ref().map_or(0, |s| state.stat_of(entity, s));
+                    let stat_mod = def.stat.as_ref().map_or(0, |s| state.stat_of(entity, s));
+                    // 条件付き修正: when (Gate) が真の分だけ bonus を加える (導師の教えで +5 等)。
+                    let cond_mod: i64 = def.modifiers.iter().filter(|m| m.when.eval(state)).map(|m| m.bonus).sum();
+                    let modifier = stat_mod + cond_mod;
                     let total = roll as i64 + modifier;
                     let success = total >= def.dc as i64;
                     // 通常成否の帰結フラグを直書き (allowed_flags 宣言済を validate が保証)。
@@ -1663,6 +1674,53 @@ locations:
         let o2 = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "luck".into() }])).unwrap();
         assert!(s.flag("luck_lose") && !s.flag("luck_win"), "stat 無し=修正0 → 失敗 → on_failure フラグ");
         assert_eq!(o2.checks[0].modifier, 0, "stat 無し = 修正 0 (能力に依らない純粋ダイス)");
+    }
+
+    /// 【挑戦の解禁(requires)と条件付き修正(modifiers)】導師の教え(flag)が無ければ秘奥義に挑めず
+    /// (ChallengeLocked)、教えを受ければ挑め、かつ +5 の有利が乗って勝ちやすくなる。
+    /// requires/when はいずれも純粋 Gate (flag/stat/attribute/skill どれでも可)。sides:1 で決定論。
+    #[test]
+    fn challenge_requires_gate_and_conditional_modifier() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { STR: 5 }
+allowed_flags: [taught, won]
+challenges:
+  secret:
+    description: 秘奥義
+    requires: { kind: flag_is, key: taught, value: true }
+    stat: STR
+    sides: 1
+    dc: 11
+    on_success: won
+    modifiers:
+      - { when: { kind: flag_is, key: taught, value: true }, bonus: 5 }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty());
+        let mut s = sc.initial_state(1);
+        let attempt = || d(vec![StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "secret".into() }]);
+
+        // B: 教えが無ければ requires 未達で挑めない (ChallengeLocked)。
+        match adjudicate(&s, &sc, &attempt()) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::ChallengeLocked { challenge } if challenge == "secret")),
+                "requires 未達なら ChallengeLocked: {reasons:?}"
+            ),
+            Verdict::Accept => panic!("requires 未達なら却下されるべき"),
+        }
+
+        // 教えを受ける。
+        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "taught".into(), value: true }])).unwrap();
+
+        // A: 1d1(=1) + STR5 + 教え5 = 11 >= 11 → 成功 (修正5無しなら 6 で DC11 に届かない)。
+        let o = apply(&mut s, &sc, &attempt()).unwrap();
+        assert_eq!(o.checks[0].modifier, 10, "STR5 + 教えボーナス5 = 修正10");
+        assert!(s.flag("won"), "教えの有利で DC を越えて成功 (修正が load-bearing)");
     }
 
     /// 【幻フラグ遮断】challenge の on_success/on_failure が立てるフラグも allowed_flags 宣言必須。

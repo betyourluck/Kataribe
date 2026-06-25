@@ -194,11 +194,27 @@ pub struct TierDef {
 
 /// authored challenge。**判定の素性と帰結を作者が握る閉じた定義**。
 /// LLM は [`StateOp::AttemptChallenge`] で challenge を**選ぶ**だけで、ここを author できない。
+/// challenge の条件付き修正: `when` (Gate) が真なら `bonus` を出目合計に加える。
+/// 「導師の教えが立っていれば +5」「傷を負っていれば −3」等。`bonus` は負も可 (ペナルティ)。
+/// `when` は純粋 Gate なので flag/stat/attribute/skill/all/any どれでも条件にできる。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChallengeMod {
+    pub when: Gate,
+    pub bonus: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChallengeDef {
     /// LLM への提示文 (どんな行動の判定か。`scenario_brief` に出して GM に選ばせる)。
     #[serde(default)]
     pub description: String,
+    /// この挑戦に挑める前提条件 (Gate)。`Some` で偽なら `attempt_challenge` を却下 (挑戦の解禁/封鎖)。
+    /// 「導師に会うまでは秘奥義に挑めない」等。`None` なら常に挑める。
+    #[serde(default)]
+    pub requires: Option<Gate>,
+    /// 条件付き修正 (有利/不利)。`when` が真の分だけ `bonus` を出目合計に加える (順不同・合算)。
+    #[serde(default)]
+    pub modifiers: Vec<ChallengeMod>,
     /// 修正に使う stat (挑戦する entity が宣言済みであること)。**省略可** —
     /// `None` なら能力に依らない純粋ダイス (修正値 0、運試し)。`Some` なら 1d{sides}+stat修正。
     #[serde(default)]

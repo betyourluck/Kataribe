@@ -139,7 +139,12 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
                 Some(stat) => format!("{stat} 判定"),
                 None => "運 (能力に依らない)".to_string(),
             };
-            s.push_str(&format!("- {label} (id: {id}): {basis}\n"));
+            // 前提条件 (requires) があれば明示 — 満たすまでこの挑戦は選べない。
+            let req = match &c.requires {
+                Some(g) => format!("【前提: {}】", gate_brief(g)),
+                None => String::new(),
+            };
+            s.push_str(&format!("- {label} (id: {id}): {basis}{req}\n"));
         }
     }
     if !scenario.goals.is_empty() {
