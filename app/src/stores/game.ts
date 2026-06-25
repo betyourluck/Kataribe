@@ -16,6 +16,12 @@ function assetUrl(path: string | null): string | null {
 
 // localStorage キー: ユーザーが選べるパッケージフォルダのパス一覧 (配布物の置き場)。
 const PACKAGES_KEY = "kataribe.packagePaths";
+// 背景の明るさ (0=暗幕最大で真っ暗 〜 100=暗幕なしで画像そのまま)。既定はやや明るめ。
+const BG_BRIGHTNESS_KEY = "kataribe.bgBrightness";
+function loadBgBrightness(): number {
+  const v = Number(localStorage.getItem(BG_BRIGHTNESS_KEY));
+  return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 35;
+}
 // 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。
 const BUILTIN_PACKAGES = ["packages/houkago", "packages/promise_demo", "packages/escape"];
 
@@ -54,6 +60,8 @@ interface GameState {
   error: string | null;
   // 現在の背景画像 (asset:// URL)。場所/イベントで差し替え。無ければ null。
   background: string | null;
+  // 背景の明るさ 0..100 (大きいほど画像が明るく見える=暗幕が薄い)。グラフィック設定。
+  bgBrightness: number;
   // 選択中パッケージのパス。
   packagePath: string;
   // localStorage が保持するパッケージフォルダのパス一覧。
@@ -73,6 +81,7 @@ export const useGameStore = defineStore("game", {
       loading: false,
       error: null,
       background: null,
+      bgBrightness: loadBgBrightness(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
       packagePaths: paths,
       packages: [],
@@ -83,10 +92,14 @@ export const useGameStore = defineStore("game", {
     // ゴール到達済みか (入力を締める判断に使う)。
     cleared: (s): boolean => s.state?.goal_reached ?? false,
     // 会話ペインに敷く背景スタイル (画像の上に暗幕を重ねて文字可読性を確保)。
+    // 暗幕の濃さは bgBrightness で可変 (明るいほど薄い暗幕)。
     backgroundStyle: (s): Record<string, string> => {
       if (!s.background) return {};
+      const base = Math.max(0, Math.min(1, (100 - s.bgBrightness) / 100));
+      const top = (base * 0.9).toFixed(3);
+      const bot = base.toFixed(3);
       return {
-        backgroundImage: `linear-gradient(rgba(20,16,12,0.74), rgba(20,16,12,0.84)), url("${s.background}")`,
+        backgroundImage: `linear-gradient(rgba(20,16,12,${top}), rgba(20,16,12,${bot})), url("${s.background}")`,
         backgroundSize: "cover",
         backgroundPosition: "center",
       };
@@ -94,6 +107,12 @@ export const useGameStore = defineStore("game", {
   },
 
   actions: {
+    // 背景の明るさを設定 (即時反映 + localStorage 永続化)。グラフィック設定タブから呼ぶ。
+    setBgBrightness(v: number) {
+      this.bgBrightness = Math.max(0, Math.min(100, Math.round(v)));
+      localStorage.setItem(BG_BRIGHTNESS_KEY, String(this.bgBrightness));
+    },
+
     // localStorage のパス一覧から各 package.yaml の manifest を読み、一覧 view を更新する。
     async refreshPackages() {
       try {

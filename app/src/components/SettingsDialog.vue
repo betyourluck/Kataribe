@@ -1,20 +1,24 @@
 <script setup lang="ts">
 /**
- * 設定ダイアログ (TitleBar の Cog ボタンから開く)。左ペインに4タブ:
+ * 設定ダイアログ (TitleBar の Cog ボタンから開く)。左ペインにタブ:
  * - 表示: UI フォントサイズ (localStorage、即時適用)
+ * - グラフィック: 背景画像の明るさ (暗幕の濃さ、localStorage、即時適用)
  * - 言語設定: 却下理由などの表示言語 ja/en (localStorage、次の新しいゲームから)
  * - AIモデル: .env の LLM 設定 (base_url/model/api_key) を編集 → backend が env 即時反映 + .env 永続化
  * - ヘルプ: 操作の手引き
  */
 import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { useGameStore } from "../stores/game";
 
 const emit = defineEmits<{ (e: "close"): void }>();
+const game = useGameStore();
 
-type Tab = "display" | "language" | "model" | "help";
+type Tab = "display" | "graphics" | "language" | "model" | "help";
 const tab = ref<Tab>("display");
 const tabs: { id: Tab; label: string }[] = [
   { id: "display", label: "表示" },
+  { id: "graphics", label: "グラフィック" },
   { id: "language", label: "言語設定" },
   { id: "model", label: "AIモデル" },
   { id: "help", label: "ヘルプ" },
@@ -110,6 +114,33 @@ onMounted(loadLlm);
               </select>
             </label>
             <p class="text-parchment/40 text-xs">UI 全体の基準フォントサイズを変えます（即時適用・localStorage に保存）。</p>
+          </section>
+
+          <!-- グラフィック -->
+          <section v-else-if="tab === 'graphics'" class="space-y-3">
+            <h3 class="text-parchment font-bold">グラフィック</h3>
+            <label class="block text-sm text-parchment/70">
+              背景の明るさ（{{ game.bgBrightness }}）
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="5"
+                :value="game.bgBrightness"
+                class="mt-2 block w-64 accent-ember"
+                @input="game.setBgBrightness(+($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <p class="text-parchment/40 text-xs">
+              背景画像にかける暗幕の濃さを調整します（右に動かすほど画像が明るく、左ほど暗く＝文字が読みやすく）。即時適用・localStorage に保存。
+            </p>
+            <!-- プレビュー: 現在の背景に暗幕を重ねたサンプル -->
+            <div
+              v-if="game.background"
+              class="mt-2 h-24 w-64 rounded border border-ash"
+              :style="game.backgroundStyle"
+            />
+            <p v-else class="text-parchment/40 text-xs">（ゲーム開始後、背景のあるパッケージでプレビューが出ます）</p>
           </section>
 
           <!-- 言語設定 -->
