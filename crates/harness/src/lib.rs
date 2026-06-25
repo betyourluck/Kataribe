@@ -466,4 +466,17 @@ mod tests {
             "narration は非検証=GM 自身が一貫性を守る旨を明示する"
         );
     }
+
+    /// 【NPC 数値の接地】GM_SYSTEM が「数値変化は adjust_stat で起こす」「NPC 数値は entity 明示」を
+    /// 刷り込む (好感度が上がらない = 数値を語りだけで済ます/entity 省略で player に当たり却下、の対策)。
+    #[test]
+    fn gm_system_grounds_numeric_stat_ops_and_entity() {
+        let s = prompt::GM_SYSTEM;
+        assert!(s.contains("adjust_stat"), "数値変化は adjust_stat op で起こす旨を刷り込む");
+        assert!(s.contains("好感度"), "好感度を例に接地する");
+        assert!(
+            s.contains("entity を省略") || s.contains("entity にその NPC"),
+            "NPC 数値は entity 明示 (省略すると主人公に当たる) 旨を刷り込む"
+        );
+    }
 }

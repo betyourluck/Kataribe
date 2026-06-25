@@ -29,7 +29,7 @@ pub enum RejectReason {
     NoExit { to: String },
     MoveGateUnmet { to: String },
     DiceSidesInvalid,
-    UnknownStat { key: String },
+    UnknownStat { entity: String, key: String },
     DivideByZero { key: String },
     /// このデルタは `entity` の硬い禁忌 (taboo) を破る (Phase B)。
     TabooViolated { entity: String },
@@ -69,8 +69,8 @@ impl RejectReason {
             RejectReason::NoExit { to } => format!("'{to}' への出口は存在しない"),
             RejectReason::MoveGateUnmet { to } => format!("'{to}' への移動条件が未達"),
             RejectReason::DiceSidesInvalid => "ダイスの面数は1以上でなければならない".to_string(),
-            RejectReason::UnknownStat { key } => {
-                format!("stat '{key}' はこのシナリオに宣言されていない")
+            RejectReason::UnknownStat { entity, key } => {
+                format!("{entity} は stat '{key}' を持っていない (NPC の数値なら entity にその NPC を指定すること)")
             }
             RejectReason::DivideByZero { key } => format!("stat '{key}' をゼロで割ることはできない"),
             RejectReason::TabooViolated { entity } => {
@@ -109,8 +109,8 @@ impl RejectReason {
             RejectReason::NoExit { to } => format!("there is no exit to '{to}'"),
             RejectReason::MoveGateUnmet { to } => format!("the condition to move to '{to}' is unmet"),
             RejectReason::DiceSidesInvalid => "a die must have at least 1 side".to_string(),
-            RejectReason::UnknownStat { key } => {
-                format!("stat '{key}' is not declared in this scenario")
+            RejectReason::UnknownStat { entity, key } => {
+                format!("{entity} has no stat '{key}' (for an NPC's stat, set entity to that NPC)")
             }
             RejectReason::DivideByZero { key } => format!("cannot divide stat '{key}' by zero"),
             RejectReason::TabooViolated { entity } => {

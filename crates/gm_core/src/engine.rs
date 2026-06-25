@@ -168,7 +168,7 @@ fn validate_ops(
                 }
                 // 修正に使う stat は宣言済みでなければならない (幻ステータスで判定を盛れない)。
                 if !scenario.knows_stat(entity, stat) {
-                    reasons.push(RejectReason::UnknownStat { key: stat.clone() });
+                    reasons.push(RejectReason::UnknownStat { entity: entity.clone(), key: stat.clone() });
                 }
             }
             StateOp::AttemptChallenge { entity, challenge } => {
@@ -180,7 +180,7 @@ fn validate_ops(
                     Some(def) => {
                         // 判定の素性は authored だが、挑戦する entity がその stat を宣言してなければ判定できない。
                         if !scenario.knows_stat(entity, &def.stat) {
-                            reasons.push(RejectReason::UnknownStat { key: def.stat.clone() });
+                            reasons.push(RejectReason::UnknownStat { entity: entity.clone(), key: def.stat.clone() });
                         }
                         if def.sides < 1 {
                             reasons.push(RejectReason::DiceSidesInvalid);
@@ -190,13 +190,13 @@ fn validate_ops(
             }
             StateOp::AdjustStat { entity, key, delta: _ } => {
                 if !scenario.knows_stat(entity, key) {
-                    reasons.push(RejectReason::UnknownStat { key: key.clone() });
+                    reasons.push(RejectReason::UnknownStat { entity: entity.clone(), key: key.clone() });
                 }
                 // 算術 (current + delta) と境界クランプは apply がエンジンとして行う。
             }
             StateOp::ScaleStat { entity, key, num: _, den } => {
                 if !scenario.knows_stat(entity, key) {
-                    reasons.push(RejectReason::UnknownStat { key: key.clone() });
+                    reasons.push(RejectReason::UnknownStat { entity: entity.clone(), key: key.clone() });
                 }
                 if *den == 0 {
                     reasons.push(RejectReason::DivideByZero { key: key.clone() });
@@ -651,7 +651,7 @@ mod tests {
         match v {
             Verdict::Reject { reasons } => assert!(reasons
                 .iter()
-                .any(|r| matches!(r, RejectReason::UnknownStat { key } if key == "mana"))),
+                .any(|r| matches!(r, RejectReason::UnknownStat { key, .. } if key == "mana"))),
             Verdict::Accept => panic!("未宣言 stat の判定を受理してはならない"),
         }
     }
@@ -1117,7 +1117,7 @@ locations:
         match v {
             Verdict::Reject { reasons } => assert!(reasons
                 .iter()
-                .any(|r| matches!(r, RejectReason::UnknownStat { key } if key == "mana"))),
+                .any(|r| matches!(r, RejectReason::UnknownStat { key, .. } if key == "mana"))),
             Verdict::Accept => panic!("未宣言 stat の操作を受理してはならない"),
         }
     }
@@ -1588,6 +1588,37 @@ locations:
             errs.iter().any(|e| matches!(e, crate::spine::ScenarioError::AttributeKeyUndeclared { key, .. } if key == "種族")),
             "未宣言キー '種族' への set_attribute を validate が弾く: {errs:?}"
         );
+    }
+
+    /// 【NPC 数値の entity 明示】NPC の stat を entity 省略 (既定 player) で動かそうとすると、
+    /// player はその stat を持たないので UnknownStat で却下され、理由が**どの entity か**を名指す
+    /// (self-repair が「player でなく moka」と気づける = 「NPC の好感度が上がらない」の接地)。
+    #[test]
+    fn unknown_stat_reason_names_the_entity() {
+        let yaml = r#"
+title: t
+start: room
+characters:
+  moka: { name: モカ, stats: { 好感度: { initial: 10, min: 0, max: 100 } } }
+allowed_flags: []
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let s = sc.initial_state(1);
+        // entity 省略 = player に好感度を当てる → player は持たない → UnknownStat(entity=player)。
+        let delta = d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "好感度".into(), delta: 5 }]);
+        match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::UnknownStat { entity, key } if entity == "player" && key == "好感度")),
+                "UnknownStat が entity=player を名指すべき: {reasons:?}"
+            ),
+            Verdict::Accept => panic!("player は好感度を持たないので却下されるべき"),
+        }
+        // entity=moka なら受理され、好感度が上がる。
+        let ok = d(vec![StateOp::AdjustStat { entity: "moka".into(), key: "好感度".into(), delta: 5 }]);
+        assert!(matches!(adjudicate(&s, &sc, &ok), Verdict::Accept), "entity=moka なら受理");
     }
 
     /// 【却下時は不発】不正 op を含むデルタは却下され、trigger も発火しない (原子性)。

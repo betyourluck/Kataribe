@@ -367,3 +367,22 @@ llm_client 14→16。
 【棄却した代替】prompt で「思考を書くな」と刷り込む案は推論モデルの CoT を確実には抑えられず
 (Gemma は構造的に thought を出す)、決定論的に掃除できる経路が在るのでソース後処理を採る (#28 同型・
 usage-over-extension)。タグ依存を補うため (b) の convention-free な balanced 抽出を安全網として併設。
+
+### 31. NPC のステータスが上がらない → 数値 op の entity 省略 (既定 player) で却下される (#23 同型)
+【実プレイ発見 (2026-06-25)】「どうも NPC のステータスが上がらない」。【原因 (engine 再現で切り分け)】
+houkago を load して engine で `adjust_stat{entity:moka, key:好感度, +30}` を直接当てると **15→45 で正常**
+(knows_stat=true / stat_bounds=(0,100) / Accept)。つまり**エンジンは無実**。一方 `entity` を**省略すると
+既定 player** に当たり、player は好感度を持たないので `UnknownStat` で**デルタ全体が却下**→好感度が動かない。
+GM(LLM) が NPC の好感度を上げるつもりで entity を省略 (or そもそも数値変化を narration だけで済ませ op を
+出さない) のが死因。`scenario_brief`/op schema の「entity 省略時は主人公」が**省略を促してしまう**。
+【核心】narration↔op の翻訳と entity の正しさは**エンジンのバックストップが効かない prompt 層の責務**
+(#23 と同型。数値が動かないのは「却下されて何も変わらない」か「op を出さない」のどちらか)。
+【解 (二層)】(a) prompt: GM_SYSTEM に「数値(好感度/HP)の変化は narration でなく必ず adjust_stat op で
+起こせ」「NPC 数値の adjust_stat/scale_stat/check は entity にその NPC を**必ず明示**(省略すると主人公に
+当たり、主人公がその数値を持たねば却下)」を刷り込む。(b) engine: `RejectReason::UnknownStat` に `entity`
+を載せ、文面を「{entity} は stat '{key}' を持っていない (NPC の数値なら entity にその NPC を指定)」へ。
+self-repair ループが「player でなく moka」と気づいて再生成で entity を補える (却下→理由還流の輪が
+収束する材料を与える)。【PoC】unknown_stat_reason_names_the_entity (entity 省略=player 却下で理由が
+entity を名指す / entity=moka なら受理) / gm_system_grounds_numeric_stat_ops_and_entity。gm_core 57→58、
+harness 41→42。【一般化】「正本>文章力」は op にしか効かない。op を**出させる**ことと**正しい宛先**に
+向けさせることは prompt の仕事で、engine は出された op の宛先が変なら**名指しで**却下して repair を助ける。
