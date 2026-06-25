@@ -1,0 +1,74 @@
+# 短編シナリオ「封印の祠」
+#
+# 見せ場 (新機能のサンプル):
+#  - クラス転職: 聖剣を手にすると trigger が set_attribute でクラスを 見習い→魔法剣士 にし、
+#    grant_skill で「魔法」を開花させる (LLM は転職を捏造できない＝authored 専権)。
+#  - HP0 の死を goal に: 魔に素手で挑めば GM が戦闘ダメージ(adjust_stat hp)を負わせ、
+#    hp が 0 になれば stat_at_most(hp,0) の defeated エンディングへ。
+#  - 分岐 named goal + 結末ナレーション: 死/封印/討伐の 3 つの結末。reached_goal がどれに
+#    達したかと結末の語りを提示層へ渡す。
+#
+# 閉世界: クラスの書き換えも能力の付与も authored トリガーの専権。封印(魔法)・討伐(魔法剣士)の
+# フラグは flag_rules ゲートで「聖剣を得た者」しか立てられない。
+
+title: 封印の祠
+start: gate
+
+# プレイヤーの数値(STR/AGI/MAG/SPD/hp)・スキル(剣術)・属性(クラス/種族)は package.player から注入。
+
+allowed_flags:
+  - door_open       # 祠の石扉が開いた
+  - 封印した         # 魔を封印し直した (魔法が要る)
+  - 斬り伏せた       # 魔を聖剣で斬り伏せた (魔法剣士が要る)
+
+# フラグを立てるための前提条件。ここに無いフラグは常に立てられる (Always)。
+flag_rules:
+  # 石扉は「祠の鍵」で開けるか、STR 12 以上で力ずくにこじ開ける (見習いの STR 8 では届かない＝鍵を探せ)。
+  door_open: { kind: any, of: [ { kind: has_item, item: 祠の鍵 }, { kind: stat_at_least, key: STR, value: 12 } ] }
+  # 封印し直すには魔法が要る (聖剣で魔法剣士になって初めて開花する)。
+  封印した: { kind: has_skill, skill: 魔法 }
+  # 聖剣で斬り伏せるには魔法剣士のクラスが要る。
+  斬り伏せた: { kind: attribute_is, key: クラス, value: 魔法剣士 }
+
+# 反応ビート: 聖剣を手にした瞬間、見習いが魔法剣士へ覚醒する (転職 + 魔法の開花)。
+triggers:
+  - id: awakening
+    when: { kind: has_item, entity: player, item: 聖剣 }
+    effects:
+      - { op: set_attribute, entity: player, key: クラス, value: 魔法剣士 }
+      - { op: grant_skill, entity: player, skill: 魔法 }
+    narration: 聖剣の柄を握った瞬間、忘れられていた魔力が血に巡った。見習いの体に、魔法剣士としての力が宿る。
+
+locations:
+  gate:
+    description: |
+      苔むした祠の入口。重い石の扉が固く閉ざされている。手前には、力尽きた先人の冒険者が壁に
+      もたれて事切れていた。その手は、錆びた「祠の鍵」と、小さな「回復薬」を握りしめている。
+    items:
+      祠の鍵:   { kind: always }   # 先人の遺品。これで石扉を開ける
+      回復薬:   { kind: always }   # 飲めば傷が癒える (HP 回復)
+    exits:
+      - { to: altar, gate: { kind: flag_is, key: door_open, value: true } }
+
+  altar:
+    description: |
+      崩れかけた祭壇の間。中央に、鎖と封印札に縛められた漆黒の魔がうごめいている。封印は今にも
+      解けそうだ。祭壇には、白く輝く一振りの「聖剣」が突き立っている。
+      ── 素手や生半可な剣で挑めば、魔の力に圧倒され、命を落とすだろう。だが聖剣を手にすれば、
+      封印し直すことも、斬り伏せることもできるはずだ。
+    items:
+      聖剣: { kind: always }   # 手にすると魔法剣士へ転職する (awakening トリガー)
+    exits:
+      - { to: gate, gate: { kind: always } }
+
+# クリア条件 (authored 順で最初に成立した結末へ＝死を最優先で判定)。
+goals:
+  - id: defeated
+    when: { kind: stat_at_most, entity: player, key: hp, value: 0 }
+    narration: 視界が黒い瘴気に呑まれ、力が抜けていく。見習いの冒険は、この祠で潰えた。
+  - id: sealed_ending
+    when: { kind: flag_is, key: 封印した, value: true }
+    narration: 魔法剣士となった君は、聖剣に魔力を込め、緩んだ封印を結び直した。祠に再び静寂が戻る。
+  - id: slain_ending
+    when: { kind: flag_is, key: 斬り伏せた, value: true }
+    narration: 君は聖剣を一閃させ、漆黒の魔を断ち斬った。瘴気は霧散し、森に朝の光が差し込んだ。
