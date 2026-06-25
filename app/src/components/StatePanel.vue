@@ -48,26 +48,6 @@ function initials(name: string): string {
         <div v-else class="text-parchment/30">なし</div>
       </div>
 
-      <div v-if="game.state.entities.length" class="mb-3">
-        <div class="text-parchment/40 mb-1">登場人物</div>
-        <div v-for="e in game.state.entities" :key="e.id" class="mb-1">
-          <div class="text-ember/70">{{ e.id }}</div>
-          <div v-if="e.stats.length" class="text-parchment pl-2">
-            <span v-for="s in e.stats" :key="s.key" class="mr-2">{{ s.key }}={{ s.value }}</span>
-          </div>
-          <div v-if="e.attributes.length" class="text-parchment/80 pl-2 text-xs">
-            <span v-for="a in e.attributes" :key="a.key" class="mr-2">{{ a.key }}: {{ a.value }}</span>
-          </div>
-          <div v-if="e.skills.length" class="text-glow/70 pl-2 text-xs">
-            能力: {{ e.skills.join("、") }}
-          </div>
-          <!-- NPC の所持物 (player の物は上段「所持品」に出るので重複させない)。 -->
-          <div v-if="e.id !== 'player' && e.items.length" class="text-parchment/70 pl-2 text-xs">
-            所持: {{ e.items.join("、") }}
-          </div>
-        </div>
-      </div>
-
       <div
         v-if="game.state.goal_reached"
         class="mt-2 rounded bg-ember/20 border border-ember/50 px-3 py-2 text-center text-glow"
@@ -75,7 +55,8 @@ function initials(name: string): string {
         goal 到達
       </div>
 
-      <!-- この場にいる NPC の顔アイコン行 (右ペイン下部)。クリックでステータス。 -->
+      <!-- この場にいる人物 (主人公 + NPC) の顔アイコン行。クリックでステータス。 -->
+      <!-- 居ない人物のパラメータは出さない (presence のみ可視)。 -->
       <div v-if="game.presentCharacters.length" class="mt-auto pt-4 border-t border-ash/60">
         <div class="text-parchment/40 mb-2">この場にいる</div>
         <div class="flex flex-wrap gap-3">
@@ -86,11 +67,12 @@ function initials(name: string): string {
             :title="c.name"
             @click="selectedId = c.id"
           >
+            <!-- アイコンは CSS background で描画 (asset protocol の MIME に寛容)。無ければ initials。 -->
             <span
-              class="w-12 h-12 rounded-full overflow-hidden border border-ash bg-ash/40 flex items-center justify-center text-parchment/70 group-hover:border-ember transition-colors"
+              class="w-12 h-12 rounded-full overflow-hidden border border-ash bg-ash/40 bg-cover bg-center flex items-center justify-center text-parchment/70 group-hover:border-ember transition-colors"
+              :style="c.icon ? { backgroundImage: `url(${c.icon})` } : {}"
             >
-              <img v-if="c.icon" :src="c.icon" class="w-full h-full object-cover" :alt="c.name" />
-              <span v-else class="text-xs">{{ initials(c.name) }}</span>
+              <span v-if="!c.icon" class="text-xs">{{ initials(c.name) }}</span>
             </span>
             <span class="text-[10px] text-parchment/60 max-w-[3.5rem] truncate">{{ c.name }}</span>
           </button>

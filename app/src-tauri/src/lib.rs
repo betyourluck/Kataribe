@@ -149,29 +149,41 @@ struct CharacterView {
     icon: Option<String>,
 }
 
-/// 現在地に「いる」NPC を顔アイコン行用に列挙する (presence)。
-/// 現在地の `present` が非空ならそれ、空なら全 characters。player は出さない (シーンに居る相手)。
+/// 現在地に「いる」キャラを顔アイコン行用に列挙する (presence)。
+/// 先頭に主人公 (player) を常に置き、続けて現在地の NPC (`present` が非空ならそれ、空なら全 characters)。
 fn present_characters(scenario: &Scenario, state: &GameState, root: &Path) -> Vec<CharacterView> {
+    let resolve_icon = |icon: &Option<String>| -> Option<String> {
+        icon.as_ref()
+            .and_then(|i| resolve_asset(root, AssetKind::Images, i))
+            .map(|p| p.to_string_lossy().into_owned())
+    };
+    // 主人公は常にこの場に居る。名前は protagonist.name (無ければ "あなた")。
+    let player_name = if scenario.protagonist.name.trim().is_empty() {
+        "あなた".to_string()
+    } else {
+        scenario.protagonist.name.clone()
+    };
+    let mut out = vec![CharacterView {
+        id: PLAYER.to_string(),
+        name: player_name,
+        icon: resolve_icon(&scenario.protagonist.icon),
+    }];
+    // 現在地の NPC。
     let here = scenario.location(&state.location).map(|l| &l.present);
     let ids: Vec<&String> = match here {
         Some(p) if !p.is_empty() => p.iter().collect(),
         _ => scenario.characters.keys().collect(),
     };
-    ids.into_iter()
-        .filter_map(|id| {
-            let def = scenario.characters.get(id)?;
-            let icon = def
-                .icon
-                .as_ref()
-                .and_then(|i| resolve_asset(root, AssetKind::Images, i))
-                .map(|p| p.to_string_lossy().into_owned());
-            Some(CharacterView {
+    for id in ids {
+        if let Some(def) = scenario.characters.get(id) {
+            out.push(CharacterView {
                 id: id.clone(),
                 name: if def.name.is_empty() { id.clone() } else { def.name.clone() },
-                icon,
-            })
-        })
-        .collect()
+                icon: resolve_icon(&def.icon),
+            });
+        }
+    }
+    out
 }
 
 /// 到達した名前付き goal の (id, 結末ナレーション) を view 用に取り出す。

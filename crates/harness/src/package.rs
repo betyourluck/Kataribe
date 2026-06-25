@@ -65,6 +65,9 @@ pub struct PlayerDef {
     /// 主人公の性向 = 語りの素材 (非検証、prompt 供給)。surfacing は後続。
     #[serde(default)]
     pub profile: String,
+    /// 主人公の顔アイコンのアセット ID (`images/` 配下)。presence 表示用。
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 /// パッケージ横断の宣言。
@@ -112,6 +115,9 @@ pub fn inject_package(scenario: &mut Scenario, manifest: &PackageManifest) {
         }
         if !p.profile.trim().is_empty() {
             scenario.protagonist.profile = p.profile.clone();
+        }
+        if p.icon.is_some() {
+            scenario.protagonist.icon = p.icon.clone();
         }
     }
     if let Some(g) = &manifest.globals {

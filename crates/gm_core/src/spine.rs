@@ -303,6 +303,9 @@ pub struct Protagonist {
     pub name: String,
     #[serde(default)]
     pub profile: String,
+    /// 主人公の顔アイコンのアセット ID (`images/` 配下)。提示層が presence 表示に使う不透明 string。
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 /// シナリオ全体。`scenarios/*.yaml` から読み込まれる。
