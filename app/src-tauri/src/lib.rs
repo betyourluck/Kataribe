@@ -13,11 +13,12 @@ use std::path::{Path, PathBuf};
 
 use gm_core::{is_goal, CheckOutcome, GameState, Lang, Scenario, PLAYER};
 use harness::{
-    load_lore, load_package, read_manifest, resolve_recall, run_turn, LoreStore, MemoryFragment,
-    TurnOutcome,
+    load_lore, load_package, read_manifest, resolve_asset, resolve_recall, run_turn, AssetKind,
+    LoreStore, MemoryFragment, TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
 use serde::Serialize;
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 /// 1 ターンあたりの再生成上限 (CLI `play` と同値)。
@@ -103,6 +104,8 @@ struct GameView {
     location: String,
     description: String,
     state: StateView,
+    /// 現在地の背景画像の絶対パス (frontend が convertFileSrc で URL 化)。無ければ None。
+    background: Option<String>,
 }
 
 /// 1 ターンの結果 view (play_turn の戻り)。
@@ -123,6 +126,15 @@ struct TurnView {
     goal_id: Option<String>,
     /// 到達 goal の結末ナレーション (authored)。空/未到達なら None。
     goal_narration: Option<String>,
+    /// 現在地の背景画像の絶対パス (frontend が convertFileSrc で URL 化)。無ければ None。
+    background: Option<String>,
+}
+
+/// 現在地の背景画像を解決して絶対パス文字列にする (frontend が convertFileSrc で URL 化)。
+/// gm_core は不透明 ID を持つだけ。ここ (提示層) が package_root を起点に解決する。
+fn background_for(scenario: &Scenario, state: &GameState, root: &Path) -> Option<String> {
+    let id = scenario.location(&state.location)?.image.as_ref()?;
+    resolve_asset(root, AssetKind::Images, id).map(|p| p.to_string_lossy().into_owned())
 }
 
 /// 到達した名前付き goal の (id, 結末ナレーション) を view 用に取り出す。
@@ -152,6 +164,8 @@ struct GameSession {
     /// 直前ターンの語り。次ターンに「続く情景」として渡し、既出描写の繰り返しを防ぐ (継続性)。
     last_narration: String,
     lang: Lang,
+    /// パッケージのフォルダ (アセット解決の起点)。`images/{id}` 等をここから解決する。
+    package_root: PathBuf,
 }
 
 /// new_game 前は None。
@@ -388,6 +402,7 @@ fn upsert_env(path: &Path, updates: &[(String, String)]) -> std::io::Result<()> 
 
 #[tauri::command]
 async fn new_game(
+    app: tauri::AppHandle,
     package_path: Option<String>,
     lang: Option<String>,
     session: tauri::State<'_, SharedSession>,
@@ -399,6 +414,12 @@ async fn new_game(
     } else {
         root.join(&rel)
     };
+
+    // アセット配信: このパッケージのフォルダだけを asset protocol scope に許可する
+    // (静的 allowlist でなくロード時に動的追加 = 任意パス対応かつ安全。spec 01 #2)。
+    app.asset_protocol_scope()
+        .allow_directory(&pkg_dir, true)
+        .map_err(|e| format!("アセット scope の許可に失敗: {e}"))?;
 
     // パッケージを読む (entry シナリオ + player/globals 注入 + 自己完結検査)。
     let loaded = load_package(&pkg_dir).map_err(|e| e.to_string())?;
@@ -424,6 +445,7 @@ async fn new_game(
             .map(|l| l.description.clone())
             .unwrap_or_default(),
         state: state_view(&state, &scenario),
+        background: background_for(&scenario, &state, &pkg_dir),
     };
 
     *session.lock().await = Some(GameSession {
@@ -433,6 +455,7 @@ async fn new_game(
         client,
         pending_lore: Vec::new(),
         pending_checks: Vec::new(),
+        package_root: pkg_dir,
         last_narration: String::new(),
         // 言語設定タブ由来の lang を優先、無ければ env 既定。
         lang: match lang.as_deref() {
@@ -526,6 +549,7 @@ async fn play_turn(
                 goal_reached: is_goal(&sess.state, &sess.scenario),
                 goal_id,
                 goal_narration,
+                background: background_for(&sess.scenario, &sess.state, &sess.package_root),
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -542,6 +566,7 @@ async fn play_turn(
             // 却下では state 不変ゆえ goal も変わらない。スナップショットとして同様に返す。
             goal_id: goal_view(&sess.state, &sess.scenario).0,
             goal_narration: goal_view(&sess.state, &sess.scenario).1,
+            background: background_for(&sess.scenario, &sess.state, &sess.package_root),
         },
     };
     Ok(view)

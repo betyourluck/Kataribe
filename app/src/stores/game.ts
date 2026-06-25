@@ -1,6 +1,18 @@
 import { defineStore } from "pinia";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import type { GameView, TurnView, StateView, LogEntry } from "../types/api";
+
+// アセット絶対パス → asset:// URL のメモ化 (convertFileSrc を毎回呼ばない。spec 01 小論点2)。
+const assetUrlCache = new Map<string, string>();
+function assetUrl(path: string | null): string | null {
+  if (!path) return null;
+  let url = assetUrlCache.get(path);
+  if (!url) {
+    url = convertFileSrc(path);
+    assetUrlCache.set(path, url);
+  }
+  return url;
+}
 
 // localStorage キー: ユーザーが選べるパッケージフォルダのパス一覧 (配布物の置き場)。
 const PACKAGES_KEY = "kataribe.packagePaths";
@@ -40,6 +52,8 @@ interface GameState {
   state: StateView | null;
   loading: boolean;
   error: string | null;
+  // 現在の背景画像 (asset:// URL)。場所/イベントで差し替え。無ければ null。
+  background: string | null;
   // 選択中パッケージのパス。
   packagePath: string;
   // localStorage が保持するパッケージフォルダのパス一覧。
@@ -58,6 +72,7 @@ export const useGameStore = defineStore("game", {
       state: null,
       loading: false,
       error: null,
+      background: null,
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
       packagePaths: paths,
       packages: [],
@@ -67,6 +82,15 @@ export const useGameStore = defineStore("game", {
   getters: {
     // ゴール到達済みか (入力を締める判断に使う)。
     cleared: (s): boolean => s.state?.goal_reached ?? false,
+    // 会話ペインに敷く背景スタイル (画像の上に暗幕を重ねて文字可読性を確保)。
+    backgroundStyle: (s): Record<string, string> => {
+      if (!s.background) return {};
+      return {
+        backgroundImage: `linear-gradient(rgba(20,16,12,0.74), rgba(20,16,12,0.84)), url("${s.background}")`,
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+      };
+    },
   },
 
   actions: {
@@ -123,6 +147,7 @@ export const useGameStore = defineStore("game", {
         this.packagePath = path;
         this.title = view.title;
         this.state = view.state;
+        this.background = assetUrl(view.background);
         this.log = [{ kind: "opening", text: view.description }];
       } catch (e) {
         this.error = String(e);
@@ -162,6 +187,8 @@ export const useGameStore = defineStore("game", {
           this.log.push({ kind: "reject", reasons: turn.reasons, attempts: turn.attempts });
         }
         this.state = turn.state;
+        // 背景は location 変化で差し替え (Phase 2 でイベント CG も同経路)。
+        this.background = assetUrl(turn.background);
       } catch (e) {
         this.error = String(e);
       } finally {

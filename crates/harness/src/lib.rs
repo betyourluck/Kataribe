@@ -7,6 +7,7 @@
 //! ループは [`DeltaProposer`] trait に対して書かれており、実 LLM ([`llm_client::LlmClient`]) と
 //! テスト用 scripted fake を差し替えられる。これで「却下→再生成」の正しさを実 API 無しで実証する。
 
+mod asset;
 mod campaign;
 mod error;
 mod loader;
@@ -16,6 +17,7 @@ pub mod prompt;
 mod proposer;
 mod turn;
 
+pub use asset::{resolve_asset, AssetKind};
 pub use campaign::{
     advance_campaign, load_campaign, load_module, Advance, Campaign, CampaignEdge, ModuleId,
 };

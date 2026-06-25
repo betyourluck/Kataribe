@@ -97,6 +97,10 @@ pub struct Exit {
 pub struct Location {
     #[serde(default)]
     pub description: String,
+    /// 背景画像のアセット ID (`images/` 配下のファイル名)。提示層が解決して背景にする。
+    /// **engine は解釈しない不透明 string** (description/narration と同じ語り素材カテゴリ、北極星)。
+    #[serde(default)]
+    pub image: Option<String>,
     /// 拾得可能なアイテム → それを拾うための gate。
     #[serde(default)]
     pub items: BTreeMap<ItemId, Gate>,

@@ -59,6 +59,8 @@ export interface GameView {
   location: string;
   description: string;
   state: StateView;
+  /** 現在地の背景画像の絶対パス (convertFileSrc で URL 化する)。無ければ null。 */
+  background: string | null;
 }
 
 export interface TurnView {
@@ -75,6 +77,8 @@ export interface TurnView {
   goal_id: string | null;
   /** 到達 goal の結末ナレーション (authored)。空/未到達なら null。 */
   goal_narration: string | null;
+  /** 現在地の背景画像の絶対パス (convertFileSrc で URL 化する)。無ければ null。 */
+  background: string | null;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

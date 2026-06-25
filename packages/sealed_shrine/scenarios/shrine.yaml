@@ -64,6 +64,7 @@ triggers:
 
 locations:
   gate:
+    image: gate.svg          # images/gate.svg を背景に
     description: |
       苔むした祠の入口。重い石の扉が固く閉ざされている。手前には、力尽きた先人の冒険者が壁に
       もたれて事切れていた。その手は、錆びた「祠の鍵」と、小さな「回復薬」を握りしめている。
@@ -75,6 +76,7 @@ locations:
       - { to: altar, gate: { kind: flag_is, key: door_open, value: true } }
 
   altar:
+    image: altar.svg         # images/altar.svg を背景に
     description: |
       崩れかけた祭壇の間。中央に、鎖と封印札に縛められた漆黒の魔がうごめいている。封印は今にも
       解けそうだ。祭壇には、白く輝く一振りの「聖剣」が突き立っている。

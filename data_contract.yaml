@@ -147,8 +147,15 @@ Reached:
 
 Location:
   description: string
+  image: String?                    # 背景画像のアセット ID (images/ 配下のファイル名)。engine は不解釈の不透明 string。提示層が resolve_asset で背景に (spec 01 Phase 1)
   items: { ItemId: Gate }           # 拾得可能なアイテム → 拾うための gate
   exits: [Exit]
+
+# --- パッケージ同梱アセット (画像/音声) の解決。gm_core は ID を運ぶだけ・解決は harness (spec 01) ---
+AssetResolution:
+  layout: "packages/<name>/images/ と audios/ に同梱 (zip で配布)。ID は images/ 配下のファイル名"
+  resolve_asset: "harness::resolve_asset(root, AssetKind::{Images|Audios}, id)->Option<PathBuf>。ID を ^[A-Za-z0-9._-]{1,64}$ かつ .|.. でないと検証(トラバーサル遮断)し root/{kind}/{id} が実在すれば Some。不正/不在は None(寛容)"
+  app_serving: "GameSession.package_root を起点に背景等を絶対パスへ解決し view DTO に載せる(GameView/TurnView.background)。frontend が convertFileSrc で asset:// URL 化(Map メモ化)。Tauri assetProtocol を enable し、new_game で当該パッケージ dir のみ scope.allow_directory(動的・任意パス対応・安全)。CSP は default-src 'self' ipc + img/media に asset: 許可"
 
 Exit:
   to: LocationId
