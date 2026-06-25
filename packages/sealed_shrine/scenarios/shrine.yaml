@@ -18,20 +18,41 @@ start: gate
 
 allowed_flags:
   - door_open       # 祠の石扉が開いた
+  - 罠作動           # 扉の落石の罠 (こじ開け判定の大失敗で作動)
   - 封印した         # 魔を封印し直した (魔法が要る)
   - 斬り伏せた       # 魔を聖剣で斬り伏せた (魔法剣士が要る)
 
 # フラグを立てるための前提条件。ここに無いフラグは常に立てられる (Always)。
 flag_rules:
-  # 石扉は「祠の鍵」で開けるか、STR 12 以上で力ずくにこじ開ける (見習いの STR 8 では届かない＝鍵を探せ)。
-  door_open: { kind: any, of: [ { kind: has_item, item: 祠の鍵 }, { kind: stat_at_least, key: STR, value: 12 } ] }
+  # 石扉は「祠の鍵」で開ける (LLM が鍵で解錠 → SetFlag)。力ずくは下の force_door 挑戦で。
+  door_open: { kind: has_item, item: 祠の鍵 }
   # 封印し直すには魔法が要る (聖剣で魔法剣士になって初めて開花する)。
   封印した: { kind: has_skill, skill: 魔法 }
   # 聖剣で斬り伏せるには魔法剣士のクラスが要る。
   斬り伏せた: { kind: attribute_is, key: クラス, value: 魔法剣士 }
 
-# 反応ビート: 聖剣を手にした瞬間、見習いが魔法剣士へ覚醒する (転職 + 魔法の開花)。
+# 挑戦 (技能判定): 鍵が無ければ力ずくで石扉をこじ開けられる。
+# 1d20 + STR vs DC16 (見習いの STR8 では出目8以上で成功 = 約65%)。
+# 成功で door_open、自然出目1(大失敗)で落石の罠が作動する。
+challenges:
+  force_door:
+    description: 石扉を力ずくでこじ開ける
+    stat: STR
+    sides: 20
+    dc: 16
+    on_success: door_open                       # 成功 → 扉が開く
+    tiers:
+      crit_fail: { natural: min, flag: 罠作動 }   # 自然出目1 = 落石の罠
+
+# 反応ビート。
 triggers:
+  # 扉の罠: こじ開け大失敗で天井が崩れ、致命傷を負う (hp 0 → defeated)。
+  - id: rockfall
+    when: { kind: flag_is, key: 罠作動, value: true }
+    effects:
+      - { op: adjust_stat, entity: player, key: hp, delta: -99 }
+    narration: 扉がきしんだ瞬間、古い仕掛けが弾けた。天井から岩塊が雪崩れ落ちる。
+  # 聖剣を手にした瞬間、見習いが魔法剣士へ覚醒する (転職 + 魔法の開花)。
   - id: awakening
     when: { kind: has_item, entity: player, item: 聖剣 }
     effects:
@@ -44,6 +65,7 @@ locations:
     description: |
       苔むした祠の入口。重い石の扉が固く閉ざされている。手前には、力尽きた先人の冒険者が壁に
       もたれて事切れていた。その手は、錆びた「祠の鍵」と、小さな「回復薬」を握りしめている。
+      ── 鍵を使えば静かに開く。鍵に頼らず力ずくでこじ開けることもできるが、古い罠が潜むかもしれない。
     items:
       祠の鍵:   { kind: always }   # 先人の遺品。これで石扉を開ける
       回復薬:   { kind: always }   # 飲めば傷が癒える (HP 回復)

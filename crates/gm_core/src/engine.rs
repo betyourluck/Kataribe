@@ -178,9 +178,15 @@ fn validate_ops(
                         challenge: challenge.clone(),
                     }),
                     Some(def) => {
-                        // 判定の素性は authored だが、挑戦する entity がその stat を宣言してなければ判定できない。
-                        if !scenario.knows_stat(entity, &def.stat) {
-                            reasons.push(RejectReason::UnknownStat { entity: entity.clone(), key: def.stat.clone() });
+                        // 判定の素性は authored。stat 修正を使う場合のみ、挑戦する entity が
+                        // その stat を宣言済みであること (stat 無し = 能力に依らない純粋ダイス)。
+                        if let Some(stat) = &def.stat {
+                            if !scenario.knows_stat(entity, stat) {
+                                reasons.push(RejectReason::UnknownStat {
+                                    entity: entity.clone(),
+                                    key: stat.clone(),
+                                });
+                            }
                         }
                         if def.sides < 1 {
                             reasons.push(RejectReason::DiceSidesInvalid);
@@ -366,10 +372,17 @@ fn apply_ops(
                 // ここに到達する challenge は必ず存在する (adjudicate 通過後)。
                 if let Some(def) = scenario.challenge(challenge) {
                     let roll = state.rng.roll(def.sides);
-                    let modifier = state.stat_of(entity, &def.stat);
+                    // stat 無し = 能力に依らない純粋ダイス (修正値 0)。
+                    let modifier = def.stat.as_ref().map_or(0, |s| state.stat_of(entity, s));
                     let total = roll as i64 + modifier;
+                    let success = total >= def.dc as i64;
+                    // 通常成否の帰結フラグを直書き (allowed_flags 宣言済を validate が保証)。
+                    let outcome_flag = if success { def.on_success.as_ref() } else { def.on_failure.as_ref() };
+                    if let Some(flag) = outcome_flag {
+                        state.flags.insert(flag.clone(), true);
+                    }
                     // 極 (tier): 自然出目が min(=1)/max(=sides) に該当する authored tier を引く。
-                    // 該当 tier に flag があれば engine が直書きする (allowed_flags 宣言済を validate が保証)。
+                    // 該当 tier に flag があれば engine が直書きする (通常成否フラグと併存)。
                     let hit = def.tiers.iter().find(|(_, t)| match t.natural {
                         crate::spine::Natural::Min => roll == 1,
                         crate::spine::Natural::Max => roll == def.sides,
@@ -382,13 +395,13 @@ fn apply_ops(
                     }
                     checks.push(CheckOutcome {
                         entity: entity.clone(),
-                        stat: def.stat.clone(),
+                        stat: def.stat.clone().unwrap_or_default(),
                         sides: def.sides,
                         roll,
                         modifier,
                         total,
                         dc: def.dc,
-                        success: total >= def.dc as i64,
+                        success,
                         tier,
                     });
                 }
@@ -1619,6 +1632,59 @@ locations:
         // entity=moka なら受理され、好感度が上がる。
         let ok = d(vec![StateOp::AdjustStat { entity: "moka".into(), key: "好感度".into(), delta: 5 }]);
         assert!(matches!(adjudicate(&s, &sc, &ok), Verdict::Accept), "entity=moka なら受理");
+    }
+
+    /// 【ダイス→フラグ】challenge の通常成否 (total>=dc) でフラグが立つ。stat 有り=修正が乗り、
+    /// stat 無し=修正0 の純粋ダイス (能力に依らない運試し)。sides:1 で出目を 1 に固定し決定論検証。
+    #[test]
+    fn challenge_outcomes_set_flags_with_and_without_stat() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { STR: 5 }
+allowed_flags: [won, lost, luck_win, luck_lose]
+challenges:
+  power: { description: 力で押す, stat: STR, sides: 1, dc: 6, on_success: won, on_failure: lost }
+  luck:  { description: 運任せ, sides: 1, dc: 6, on_success: luck_win, on_failure: luck_lose }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "on_success/on_failure フラグ宣言済で健全");
+        let mut s = sc.initial_state(1);
+
+        // 能力あり: 1d1(=1) + STR5 = 6 >= 6 → 成功 → won。
+        let o = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "power".into() }])).unwrap();
+        assert!(s.flag("won") && !s.flag("lost"), "stat 修正込みで成功 → on_success フラグ");
+        assert_eq!(o.checks[0].modifier, 5, "stat 修正が乗る");
+
+        // 能力なし: 1d1(=1) + 0 = 1 < 6 → 失敗 → luck_lose。
+        let o2 = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "luck".into() }])).unwrap();
+        assert!(s.flag("luck_lose") && !s.flag("luck_win"), "stat 無し=修正0 → 失敗 → on_failure フラグ");
+        assert_eq!(o2.checks[0].modifier, 0, "stat 無し = 修正 0 (能力に依らない純粋ダイス)");
+    }
+
+    /// 【幻フラグ遮断】challenge の on_success/on_failure が立てるフラグも allowed_flags 宣言必須。
+    #[test]
+    fn validate_rejects_undeclared_challenge_outcome_flag() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: []
+challenges:
+  c: { sides: 1, dc: 1, on_success: ghost }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::ChallengeFlagUndeclared { flag, tier, .. }
+                if flag == "ghost" && tier == "on_success")),
+            "未宣言の on_success フラグを validate が弾く: {:?}", sc.validate()
+        );
     }
 
     /// 【却下時は不発】不正 op を含むデルタは却下され、trigger も発火しない (原子性)。

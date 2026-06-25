@@ -88,16 +88,19 @@ Scenario:
 # LLM は AttemptChallenge で challenge を**選ぶ**だけ(tier/flag を author できない)。
 # 出目も tier 判定も帰結フラグの直書きも engine。= 「帰結は engine、LLM は意図だけ」の判定版。
 ChallengeDef:
-  stat:   "修正に使う stat (挑戦 entity が宣言済みであること)"
-  sides:  "u32。ダイス面数"
-  dc:     "u32。total>=dc で成功"
-  tiers:  "{ tier名: TierDef }。極(大失敗/大成功)の定義。tier名は CheckOutcome.tier に surface"
+  description: "LLM への提示文 (どんな行動の判定か)。scenario_brief の『## 挑戦』に出して GM に attempt_challenge で選ばせる"
+  stat:   "Option<StatKey>。修正に使う stat (挑戦 entity が宣言済みのこと)。**省略可** — None なら能力に依らない純粋ダイス(修正0=運試し)、Some なら 1d{sides}+stat修正"
+  sides:  "u32。ダイス面数 (sides:20 = 1d20、1〜20 が出る)"
+  dc:     "u32。難易度(目標値)。total(出目+修正)>=dc で成功。dc が大きいほど難しい"
+  on_success: "Option<FlagKey>。通常成功(total>=dc)で engine が直書きするフラグ。allowed_flags 宣言必須。これで『ダイス→フラグ』を作り when:all 等で読める"
+  on_failure: "Option<FlagKey>。通常失敗(total<dc)で engine が直書きするフラグ。allowed_flags 宣言必須"
+  tiers:  "{ tier名: TierDef }。極(大失敗/大成功)の定義。on_success/on_failure と併存。tier名は CheckOutcome.tier に surface"
 TierDef:
   natural: "Min|Max。発火する自然出目(修正前の素の roll)の極。sides 相対(Max は d6→6/d20→20)=die サイズ非依存。リテラル(20等)で端を焼かない"
   flag:    "任意。該当時に engine が直書きする帰結フラグ。allowed_flags 宣言必須(Scenario::validate が load 時に弾く)。flag 無しの tier は認識だけ(語り用)"
 ScenarioError:                    # 静的整合性の破れ (load 時検査。apply 中 panic でなく構造化エラー)
   validate: "Scenario::validate()->Vec<ScenarioError>。空なら健全。harness loader が from_yaml 直後に呼ぶ"
-  ChallengeFlagUndeclared: "challenge の tier flag が allowed_flags 未宣言(幻フラグを engine 直書き経路に乗せない)"
+  ChallengeFlagUndeclared: "challenge の帰結フラグ(tier / on_success / on_failure)が allowed_flags 未宣言(幻フラグを engine 直書き経路に乗せない)。tier 欄に該当ラベル(tier名/on_success/on_failure)"
   GlobalFlagUndeclared: "global_flags のフラグが allowed_flags 未宣言(幻の世界フラグを持ち越さない)"
   AttributeKeyUndeclared: "trigger の set_attribute が未宣言の属性キーに書こうとしている(幻属性遮断)。player=initial_attributes / NPC=CharacterDef.attributes で宣言"
   NoGoal: "goal も goals も無い(勝利条件不在=到達不能シナリオ)"

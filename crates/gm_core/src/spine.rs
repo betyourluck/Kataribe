@@ -196,11 +196,23 @@ pub struct TierDef {
 /// LLM は [`StateOp::AttemptChallenge`] で challenge を**選ぶ**だけで、ここを author できない。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChallengeDef {
-    /// 修正に使う stat (挑戦する entity が宣言済みであること)。
-    pub stat: StatKey,
+    /// LLM への提示文 (どんな行動の判定か。`scenario_brief` に出して GM に選ばせる)。
+    #[serde(default)]
+    pub description: String,
+    /// 修正に使う stat (挑戦する entity が宣言済みであること)。**省略可** —
+    /// `None` なら能力に依らない純粋ダイス (修正値 0、運試し)。`Some` なら 1d{sides}+stat修正。
+    #[serde(default)]
+    pub stat: Option<StatKey>,
     pub sides: u32,
     pub dc: u32,
-    /// 極 (tier) の定義。キー = tier 名 (`crit_fail` 等)。`CheckOutcome.tier` に surface する。
+    /// 通常成功 (`total >= dc`) で engine が直書きするフラグ (任意)。`allowed_flags` 宣言必須。
+    #[serde(default)]
+    pub on_success: Option<FlagKey>,
+    /// 通常失敗 (`total < dc`) で engine が直書きするフラグ (任意)。`allowed_flags` 宣言必須。
+    #[serde(default)]
+    pub on_failure: Option<FlagKey>,
+    /// 極 (tier) の定義。キー = tier 名 (`crit_fail` 等)。自然出目の min/max で発火。
+    /// 通常成否 (on_success/on_failure) と**併存**する。`CheckOutcome.tier` に surface する。
     #[serde(default)]
     pub tiers: BTreeMap<String, TierDef>,
 }
@@ -341,15 +353,20 @@ impl Scenario {
     pub fn validate(&self) -> Vec<ScenarioError> {
         let mut errs = Vec::new();
         for (cid, def) in &self.challenges {
-            for (tname, tier) in &def.tiers {
-                if let Some(flag) = &tier.flag {
-                    if !self.allowed_flags.contains(flag) {
-                        errs.push(ScenarioError::ChallengeFlagUndeclared {
-                            challenge: cid.clone(),
-                            tier: tname.clone(),
-                            flag: flag.clone(),
-                        });
-                    }
+            // tier (極) と通常成否 (on_success/on_failure) が立てるフラグは全て allowed_flags 宣言必須。
+            let outcome_flags = def
+                .tiers
+                .iter()
+                .filter_map(|(tname, tier)| tier.flag.as_ref().map(|f| (tname.as_str(), f)))
+                .chain(def.on_success.as_ref().map(|f| ("on_success", f)))
+                .chain(def.on_failure.as_ref().map(|f| ("on_failure", f)));
+            for (label, flag) in outcome_flags {
+                if !self.allowed_flags.contains(flag) {
+                    errs.push(ScenarioError::ChallengeFlagUndeclared {
+                        challenge: cid.clone(),
+                        tier: label.to_string(),
+                        flag: flag.clone(),
+                    });
                 }
             }
         }
