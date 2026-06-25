@@ -101,6 +101,10 @@ pub struct Location {
     /// **engine は解釈しない不透明 string** (description/narration と同じ語り素材カテゴリ、北極星)。
     #[serde(default)]
     pub image: Option<String>,
+    /// この場所に「いる」NPC (presence)。提示層が顔アイコン行に出す。
+    /// **空なら scenario.characters 全員**にフォールバック (後方互換)。engine は使わない不透明データ。
+    #[serde(default)]
+    pub present: BTreeSet<EntityId>,
     /// 拾得可能なアイテム → それを拾うための gate。
     #[serde(default)]
     pub items: BTreeMap<ItemId, Gate>,
@@ -139,6 +143,9 @@ pub struct CharacterDef {
     /// 初期所持品 (閉世界)。[`Scenario::initial_state`] でこの entity に seed される。
     #[serde(default)]
     pub inventory: BTreeSet<ItemId>,
+    /// 顔アイコンのアセット ID (`images/` 配下)。提示層が presence 表示に使う不透明 string。
+    #[serde(default)]
+    pub icon: Option<String>,
     /// 初期の文字列属性 (クラス/種族 等)。宣言したキーが閉世界の許可集合になり、トリガーの
     /// set_attribute はこのキーにしか書けない (未宣言キーは load 時 validate で弾く)。
     #[serde(default)]

@@ -1791,6 +1791,26 @@ locations:
         );
     }
 
+    /// 【アセット passthrough】Location.image/present・CharacterDef.icon が serde で読まれる
+    /// (engine は使わない不透明データ。提示層が背景/顔アイコン/presence に使う)。
+    #[test]
+    fn location_present_and_character_icon_parse() {
+        let yaml = r#"
+title: t
+start: room
+characters:
+  moka: { name: モカ, icon: moka.svg, stats: { 好感度: { initial: 10, min: 0, max: 100 } } }
+goal: { kind: always }
+locations:
+  room: { description: d, image: room.svg, present: [moka], items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert_eq!(sc.characters["moka"].icon.as_deref(), Some("moka.svg"), "NPC の顔アイコン ID");
+        let room = sc.location("room").unwrap();
+        assert_eq!(room.image.as_deref(), Some("room.svg"), "場所の背景 ID");
+        assert!(room.present.contains("moka"), "場所の presence");
+    }
+
     /// 【却下時は不発】不正 op を含むデルタは却下され、trigger も発火しない (原子性)。
     #[test]
     fn rejected_delta_fires_no_trigger() {

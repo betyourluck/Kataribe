@@ -106,6 +106,8 @@ struct GameView {
     state: StateView,
     /// 現在地の背景画像の絶対パス (frontend が convertFileSrc で URL 化)。無ければ None。
     background: Option<String>,
+    /// 現在地に居る NPC (顔アイコン行)。
+    present_characters: Vec<CharacterView>,
 }
 
 /// 1 ターンの結果 view (play_turn の戻り)。
@@ -128,6 +130,8 @@ struct TurnView {
     goal_narration: Option<String>,
     /// 現在地の背景画像の絶対パス (frontend が convertFileSrc で URL 化)。無ければ None。
     background: Option<String>,
+    /// 現在地に居る NPC (顔アイコン行)。
+    present_characters: Vec<CharacterView>,
 }
 
 /// 現在地の背景画像を解決して絶対パス文字列にする (frontend が convertFileSrc で URL 化)。
@@ -135,6 +139,39 @@ struct TurnView {
 fn background_for(scenario: &Scenario, state: &GameState, root: &Path) -> Option<String> {
     let id = scenario.location(&state.location)?.image.as_ref()?;
     resolve_asset(root, AssetKind::Images, id).map(|p| p.to_string_lossy().into_owned())
+}
+
+/// 顔アイコン行の 1 キャラ。`icon` は解決済み絶対パス (無ければ None → frontend が initials)。
+#[derive(Serialize)]
+struct CharacterView {
+    id: String,
+    name: String,
+    icon: Option<String>,
+}
+
+/// 現在地に「いる」NPC を顔アイコン行用に列挙する (presence)。
+/// 現在地の `present` が非空ならそれ、空なら全 characters。player は出さない (シーンに居る相手)。
+fn present_characters(scenario: &Scenario, state: &GameState, root: &Path) -> Vec<CharacterView> {
+    let here = scenario.location(&state.location).map(|l| &l.present);
+    let ids: Vec<&String> = match here {
+        Some(p) if !p.is_empty() => p.iter().collect(),
+        _ => scenario.characters.keys().collect(),
+    };
+    ids.into_iter()
+        .filter_map(|id| {
+            let def = scenario.characters.get(id)?;
+            let icon = def
+                .icon
+                .as_ref()
+                .and_then(|i| resolve_asset(root, AssetKind::Images, i))
+                .map(|p| p.to_string_lossy().into_owned());
+            Some(CharacterView {
+                id: id.clone(),
+                name: if def.name.is_empty() { id.clone() } else { def.name.clone() },
+                icon,
+            })
+        })
+        .collect()
 }
 
 /// 到達した名前付き goal の (id, 結末ナレーション) を view 用に取り出す。
@@ -446,6 +483,7 @@ async fn new_game(
             .unwrap_or_default(),
         state: state_view(&state, &scenario),
         background: background_for(&scenario, &state, &pkg_dir),
+        present_characters: present_characters(&scenario, &state, &pkg_dir),
     };
 
     *session.lock().await = Some(GameSession {
@@ -550,6 +588,7 @@ async fn play_turn(
                 goal_id,
                 goal_narration,
                 background: background_for(&sess.scenario, &sess.state, &sess.package_root),
+                present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -567,6 +606,7 @@ async fn play_turn(
             goal_id: goal_view(&sess.state, &sess.scenario).0,
             goal_narration: goal_view(&sess.state, &sess.scenario).1,
             background: background_for(&sess.scenario, &sess.state, &sess.package_root),
+            present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
         },
     };
     Ok(view)

@@ -54,6 +54,13 @@ export interface BeatView {
   recalled: string[];
 }
 
+/** 顔アイコン行の 1 キャラ。icon は backend 解決済みの絶対パス (store で asset URL 化)。 */
+export interface CharacterView {
+  id: string;
+  name: string;
+  icon: string | null;
+}
+
 export interface GameView {
   title: string;
   location: string;
@@ -61,6 +68,8 @@ export interface GameView {
   state: StateView;
   /** 現在地の背景画像の絶対パス (convertFileSrc で URL 化する)。無ければ null。 */
   background: string | null;
+  /** 現在地に居る NPC (顔アイコン行)。 */
+  present_characters: CharacterView[];
 }
 
 export interface TurnView {
@@ -79,6 +88,8 @@ export interface TurnView {
   goal_narration: string | null;
   /** 現在地の背景画像の絶対パス (convertFileSrc で URL 化する)。無ければ null。 */
   background: string | null;
+  /** 現在地に居る NPC (顔アイコン行)。 */
+  present_characters: CharacterView[];
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

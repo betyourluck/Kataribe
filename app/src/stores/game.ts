@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import type { GameView, TurnView, StateView, LogEntry } from "../types/api";
+import type { GameView, TurnView, StateView, LogEntry, CharacterView } from "../types/api";
 
 // アセット絶対パス → asset:// URL のメモ化 (convertFileSrc を毎回呼ばない。spec 01 小論点2)。
 const assetUrlCache = new Map<string, string>();
@@ -60,6 +60,8 @@ interface GameState {
   error: string | null;
   // 現在の背景画像 (asset:// URL)。場所/イベントで差し替え。無ければ null。
   background: string | null;
+  // 現在地に居る NPC (顔アイコン行)。icon は asset:// URL 化済み。
+  presentCharacters: CharacterView[];
   // 背景の明るさ 0..100 (大きいほど画像が明るく見える=暗幕が薄い)。グラフィック設定。
   bgBrightness: number;
   // 選択中パッケージのパス。
@@ -81,6 +83,7 @@ export const useGameStore = defineStore("game", {
       loading: false,
       error: null,
       background: null,
+      presentCharacters: [],
       bgBrightness: loadBgBrightness(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
       packagePaths: paths,
@@ -167,6 +170,7 @@ export const useGameStore = defineStore("game", {
         this.title = view.title;
         this.state = view.state;
         this.background = assetUrl(view.background);
+        this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
         this.log = [{ kind: "opening", text: view.description }];
       } catch (e) {
         this.error = String(e);
@@ -208,6 +212,7 @@ export const useGameStore = defineStore("game", {
         this.state = turn.state;
         // 背景は location 変化で差し替え (Phase 2 でイベント CG も同経路)。
         this.background = assetUrl(turn.background);
+        this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
       } catch (e) {
         this.error = String(e);
       } finally {

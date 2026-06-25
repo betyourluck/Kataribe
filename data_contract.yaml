@@ -122,6 +122,7 @@ CharacterDef:
   stats: { StatKey: StatDecl }      # このキャラが持つ stat の宣言。initial が entities の初期値
   skills: [SkillId]                 # 宣言された閉じた能力集合 (催眠/予知 等)。初期スキル。未宣言の能力は存在しない
   inventory: [ItemId]               # この NPC の初期所持品。initial_state が seed (閉世界)
+  icon: String?                     # 顔アイコンのアセット ID (images/ 配下)。提示層が presence 表示に使う不透明 string (spec 01 Phase 1.5)
   attributes: { AttrKey: string }   # この NPC の初期文字列属性 (クラス/種族 等)。宣言キーが閉世界許可集合。書き換えは trigger set_attribute のみ
   taboos: [Gate]                    # 硬い禁忌。これが true になる delta を却下 (Phase B で強制)
 
@@ -148,6 +149,7 @@ Reached:
 Location:
   description: string
   image: String?                    # 背景画像のアセット ID (images/ 配下のファイル名)。engine は不解釈の不透明 string。提示層が resolve_asset で背景に (spec 01 Phase 1)
+  present: [EntityId]                # この場に居る NPC (presence)。空なら全 characters。提示層が顔アイコン行に出す (spec 01 Phase 1.5)。engine 不使用
   items: { ItemId: Gate }           # 拾得可能なアイテム → 拾うための gate
   exits: [Exit]
 
