@@ -150,7 +150,13 @@ export const useGameStore = defineStore("game", {
             this.log.push({ kind: "system", text: `GM は ${turn.attempts} 回目の提案で筋を通した` });
           }
           if (turn.goal_reached) {
-            this.log.push({ kind: "system", text: "🎉 クリア。goal に到達した。" });
+            // 結末ナレーション (authored) があれば語りとして出す。
+            if (turn.goal_narration) {
+              this.log.push({ kind: "narration", text: turn.goal_narration });
+            }
+            // どの goal に達したか (複数 goal の識別)。
+            const label = turn.goal_id ? `🎉 結末「${turn.goal_id}」に到達した。` : "🎉 クリア。goal に到達した。";
+            this.log.push({ kind: "system", text: label });
           }
         } else {
           this.log.push({ kind: "reject", reasons: turn.reasons, attempts: turn.attempts });

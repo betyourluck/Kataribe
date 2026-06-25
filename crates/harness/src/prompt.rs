@@ -52,6 +52,9 @@ fn gate_brief(gate: &Gate) -> String {
         Gate::StatAtLeast { entity, key, value } => {
             format!("{entity} の能力「{key}」が {value} 以上であること")
         }
+        Gate::StatAtMost { entity, key, value } => {
+            format!("{entity} の能力「{key}」が {value} 以下であること")
+        }
         Gate::HasSkill { entity, skill } => format!("{entity} が能力「{skill}」を持っていること"),
         Gate::All { of } => {
             let parts: Vec<String> = of.iter().map(gate_brief).collect();

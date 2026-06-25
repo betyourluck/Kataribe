@@ -108,6 +108,21 @@ struct TurnView {
     reasons: Vec<String>,
     state: StateView,
     goal_reached: bool,
+    /// 到達した名前付き goal の id (複数 goal のどれに達したか)。単一 goal/未到達なら None。
+    goal_id: Option<String>,
+    /// 到達 goal の結末ナレーション (authored)。空/未到達なら None。
+    goal_narration: Option<String>,
+}
+
+/// 到達した名前付き goal の (id, 結末ナレーション) を view 用に取り出す。
+fn goal_view(state: &GameState, scenario: &Scenario) -> (Option<String>, Option<String>) {
+    match scenario.reached_goal(state) {
+        Some(g) => (
+            Some(g.id.clone()),
+            (!g.narration.trim().is_empty()).then(|| normalize(&g.narration)),
+        ),
+        None => (None, None),
+    }
 }
 
 // =============================================================================
@@ -468,6 +483,7 @@ async fn play_turn(
             // 次ターンの語りに還流する判定結果を持ち越す。
             sess.pending_checks = checks;
 
+            let (goal_id, goal_narration) = goal_view(&sess.state, &sess.scenario);
             TurnView {
                 accepted: true,
                 narration: normalize(&narration),
@@ -486,6 +502,8 @@ async fn play_turn(
                 reasons: Vec::new(),
                 state: state_view(&sess.state, &sess.scenario),
                 goal_reached: is_goal(&sess.state, &sess.scenario),
+                goal_id,
+                goal_narration,
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -499,6 +517,9 @@ async fn play_turn(
             // 却下では state 無傷。現状スナップショットを返す。
             state: state_view(&sess.state, &sess.scenario),
             goal_reached: is_goal(&sess.state, &sess.scenario),
+            // 却下では state 不変ゆえ goal も変わらない。スナップショットとして同様に返す。
+            goal_id: goal_view(&sess.state, &sess.scenario).0,
+            goal_narration: goal_view(&sess.state, &sess.scenario).1,
         },
     };
     Ok(view)

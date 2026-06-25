@@ -62,6 +62,10 @@ export interface TurnView {
   reasons: string[];
   state: StateView;
   goal_reached: boolean;
+  /** 到達した名前付き goal の id (複数 goal のどれに達したか)。単一 goal/未到達なら null。 */
+  goal_id: string | null;
+  /** 到達 goal の結末ナレーション (authored)。空/未到達なら null。 */
+  goal_narration: string | null;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

@@ -35,6 +35,15 @@ pub enum Gate {
         key: StatKey,
         value: i64,
     },
+    /// 指定キャラの stat が value 以下である ([`Gate::StatAtLeast`] の双対)。未設定は 0 扱い。
+    /// hp は 0 クランプなので `stat_at_most hp 0` が「気絶/死」を表せる (HP0 End を goal に書く経路)。
+    /// `entity` 省略時は主人公。
+    StatAtMost {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        key: StatKey,
+        value: i64,
+    },
     /// 指定キャラが能力を獲得済みである (能力条件)。閉世界: 宣言/開花した能力のみ true。`entity` 省略時は主人公。
     HasSkill {
         #[serde(default = "default_entity")]
@@ -55,6 +64,7 @@ impl Gate {
             Gate::FlagIs { key, value } => s.flag(key) == *value,
             Gate::LocationIs { at } => &s.location == at,
             Gate::StatAtLeast { entity, key, value } => s.stat_of(entity, key) >= *value,
+            Gate::StatAtMost { entity, key, value } => s.stat_of(entity, key) <= *value,
             Gate::HasSkill { entity, skill } => s.has_skill(entity, skill),
             Gate::All { of } => of.iter().all(|g| g.eval(s)),
             Gate::Any { of } => of.iter().any(|g| g.eval(s)),
@@ -204,6 +214,10 @@ pub enum ScenarioError {
 pub struct GoalDef {
     pub id: GoalId,
     pub when: Gate,
+    /// 到達時に語りへ注入する結末ナレーション (authored、非検証の語り素材)。
+    /// 複数 goal のどれに達したかを提示層が出すための文面。空なら結末の語りなし。
+    #[serde(default)]
+    pub narration: String,
 }
 
 /// 主人公(プレイヤー)の設定。**語りの素材** (非検証) — NPC がプレイヤーを認識・反応する材料。
@@ -346,6 +360,14 @@ impl Scenario {
                 .filter(|g| g.eval(state))
                 .map(|_| DEFAULT_GOAL.to_string())
         }
+    }
+
+    /// 到達した [`GoalDef`] (id + 結末ナレーション) を返す (`reached` の richer 版)。
+    /// 複数 goal の**どれに達したか**と**その語り**を提示層へ渡すための経路。
+    /// `goals` (名前付き) が非空のときのみ意味を持つ — 単一 `goal` (後方互換) は GoalDef を
+    /// 持たないので `None` (到達判定は `reached`/`is_goal` を使う)。authored 順で最初の一致。
+    pub fn reached_goal(&self, state: &GameState) -> Option<&GoalDef> {
+        self.goals.iter().find(|g| g.when.eval(state))
     }
 
     /// **状態を持ち越したまま次の骨格へ遷移する** (campaign keystone, PoC-2a)。

@@ -946,6 +946,45 @@ locations:
         assert!(is_goal(&s, &sc), "is_goal は reached 経由でも従来通り true");
     }
 
+    /// 【HP0=死を goal に / どの goal か + 結末ナレーション】`StatAtMost` で hp≤0 を勝敗条件に書け、
+    /// `reached_goal` が到達した GoalDef (id + narration) を返す。複数 goal の識別と結末の語り。
+    #[test]
+    fn stat_at_most_death_goal_surfaces_id_and_narration() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { hp: 10 }
+allowed_flags: [escaped]
+goals:
+  - id: defeated
+    when: { kind: stat_at_most, entity: player, key: hp, value: 0 }
+    narration: あなたは力尽き、視界が暗転した。
+  - id: escaped
+    when: { kind: flag_is, key: escaped, value: true }
+    narration: 扉を抜け、外の光を浴びた。
+locations:
+  room: { description: 部屋, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "death/escaped goal 込みで健全");
+        let mut s = sc.initial_state(1);
+        assert_eq!(sc.reached_goal(&s), None, "開始時はどの goal も未到達");
+
+        // hp を 0 へ削る (10 減 → 0 クランプ)。StatAtMost(hp,0) が真化。
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: PLAYER.into(),
+            key: "hp".into(),
+            delta: -10,
+        }])).unwrap();
+        assert_eq!(s.stat_of(PLAYER, "hp"), 0, "hp は 0 クランプ");
+
+        let g = sc.reached_goal(&s).expect("hp≤0 で defeated に到達");
+        assert_eq!(g.id, "defeated", "どの goal に達したか (StatAtMost が効く)");
+        assert_eq!(g.narration, "あなたは力尽き、視界が暗転した。", "結末のナレーション");
+        // reached (GoalId) も同じ goal を選ぶ (後方互換の selector)。
+        assert_eq!(sc.reached(&s).as_deref(), Some("defeated"));
+    }
+
     /// 【整合性】goal も goals も無いシナリオ (勝利条件不在) は validate で弾く。
     #[test]
     fn validate_rejects_scenario_with_no_goal() {
