@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use gm_core::{FlagKey, ItemId, Scenario, SkillId, StatKey};
+use gm_core::{AttrKey, FlagKey, ItemId, Scenario, SkillId, StatKey};
 use serde::Deserialize;
 
 use crate::error::HarnessError;
@@ -58,6 +58,10 @@ pub struct PlayerDef {
     /// 初期所持品 (閉世界)。各モジュールの `initial_inventory` へ union → initial_state で seed。
     #[serde(default)]
     pub items: BTreeSet<ItemId>,
+    /// 初期の文字列属性 (クラス/職業/種族 等)。各モジュールの `initial_attributes` へ merge
+    /// (package が勝つ)。宣言キーが player 属性の閉世界許可集合になる。
+    #[serde(default)]
+    pub attributes: BTreeMap<AttrKey, String>,
     /// 主人公の性向 = 語りの素材 (非検証、prompt 供給)。surfacing は後続。
     #[serde(default)]
     pub profile: String,
@@ -99,6 +103,9 @@ pub fn inject_package(scenario: &mut Scenario, manifest: &PackageManifest) {
         }
         scenario.initial_skills.extend(p.skills.iter().cloned());
         scenario.initial_inventory.extend(p.items.iter().cloned());
+        for (k, v) in &p.attributes {
+            scenario.initial_attributes.insert(k.clone(), v.clone()); // package が勝つ
+        }
         // 主人公の設定 (name/profile) を注入 → NPC がプレイヤーを認識する材料 (語りの素材)。
         if !p.name.trim().is_empty() {
             scenario.protagonist.name = p.name.clone();

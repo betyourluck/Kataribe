@@ -35,6 +35,9 @@ pub enum RejectReason {
     TabooViolated { entity: String },
     /// 能力の付与 (grant_skill) は LLM が提案できない (authored トリガーの専権)。メアリー・スー遮断。
     SkillGrantNotAllowed { entity: String, skill: String },
+    /// 文字列属性の書き換え (set_attribute) は LLM が提案できない (authored トリガーの専権)。
+    /// クラス/種族 等の捏造遮断 (SkillGrantNotAllowed と同型)。
+    AttributeSetNotAllowed { entity: String, key: String },
     /// 譲渡先がこのシナリオに存在しない entity (幻のキャラには渡せない)。
     UnknownEntity { entity: String },
     /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
@@ -76,6 +79,9 @@ impl RejectReason {
             RejectReason::SkillGrantNotAllowed { entity, skill } => {
                 format!("{entity} は能力 '{skill}' をその場で開花できない (能力は筋書きの出来事でのみ目覚める)")
             }
+            RejectReason::AttributeSetNotAllowed { entity, key } => {
+                format!("{entity} の '{key}' をその場で書き換えられない (属性は筋書きの出来事でのみ変わる)")
+            }
             RejectReason::UnknownEntity { entity } => {
                 format!("'{entity}' はこのシナリオに存在しないので渡せない")
             }
@@ -112,6 +118,9 @@ impl RejectReason {
             }
             RejectReason::SkillGrantNotAllowed { entity, skill } => {
                 format!("{entity} cannot awaken the skill '{skill}' on a whim (skills awaken only through authored events)")
+            }
+            RejectReason::AttributeSetNotAllowed { entity, key } => {
+                format!("{entity} cannot rewrite '{key}' on a whim (attributes change only through authored events)")
             }
             RejectReason::UnknownEntity { entity } => {
                 format!("cannot give to '{entity}' because it does not exist in this scenario")

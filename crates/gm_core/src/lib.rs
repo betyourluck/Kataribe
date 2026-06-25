@@ -23,6 +23,6 @@ pub use spine::{
     ScenarioError, StatDecl, TierDef, Trigger,
 };
 pub use state::{
-    default_entity, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId, RngState,
-    SkillId, StatKey, StateDelta, StateOp, TriggerId, DEFAULT_GOAL, PLAYER,
+    default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
+    RngState, SkillId, StatKey, StateDelta, StateOp, TriggerId, DEFAULT_GOAL, PLAYER,
 };

@@ -56,6 +56,9 @@ fn gate_brief(gate: &Gate) -> String {
             format!("{entity} の能力「{key}」が {value} 以下であること")
         }
         Gate::HasSkill { entity, skill } => format!("{entity} が能力「{skill}」を持っていること"),
+        Gate::AttributeIs { entity, key, value } => {
+            format!("{entity} の「{key}」が「{value}」であること")
+        }
         Gate::All { of } => {
             let parts: Vec<String> = of.iter().map(gate_brief).collect();
             format!("すべて満たす({})", parts.join(" / "))
@@ -179,9 +182,28 @@ pub fn state_brief(state: &GameState) -> String {
             .collect::<Vec<_>>()
             .join(" / ")
     };
+    // 各キャラの文字列属性 (クラス/職業/種族 等。可変。トリガーで書き換わる)。
+    let attributes = if state.attributes.values().all(|a| a.is_empty()) {
+        "なし".to_string()
+    } else {
+        state
+            .attributes
+            .iter()
+            .filter(|(_, a)| !a.is_empty())
+            .map(|(eid, a)| {
+                let kv = a
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{eid}: {kv}")
+            })
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
     format!(
-        "# 現在の状態 (turn {})\n- 現在地: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}\n- 使える能力: {}",
-        state.turn, state.location, inv, flags, entities, skills,
+        "# 現在の状態 (turn {})\n- 現在地: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}\n- 使える能力: {}\n- 属性: {}",
+        state.turn, state.location, inv, flags, entities, skills, attributes,
     )
 }
 

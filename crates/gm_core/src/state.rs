@@ -13,6 +13,9 @@ pub type EntityId = String;
 pub type TriggerId = String;
 /// 能力 (スキル) の識別子。閉世界 — 宣言された SkillId だけが存在する。
 pub type SkillId = String;
+/// 文字列属性のキー (クラス/職業/種族 等)。閉世界 — 初期宣言された AttrKey だけが存在する。
+/// 値は authored な自由文字列。トリガーの set_attribute でのみ書き換わる (LLM は不可)。
+pub type AttrKey = String;
 /// authored challenge の識別子。閉世界 — 宣言された ChallengeId にしか挑めない。
 pub type ChallengeId = String;
 /// 名前付き goal (エンディング) の識別子。`reached` が返し、次モジュールの分岐セレクタになる。
@@ -53,6 +56,11 @@ pub struct GameState {
     /// 未宣言の能力は存在しない (メアリー・スー遮断)。**セーブ対象**。
     #[serde(default)]
     pub skills: BTreeMap<EntityId, BTreeSet<SkillId>>,
+    /// キャラ別の**文字列属性** (クラス/職業/種族 等。第4の可変状態)。初期=宣言集合、
+    /// 書き換えは authored トリガーの set_attribute のみ (LLM は提案しても却下)。未宣言キーは
+    /// 存在しない (閉世界、load 時 validate)。値は authored な自由文字列。**セーブ対象**。
+    #[serde(default)]
+    pub attributes: BTreeMap<EntityId, BTreeMap<AttrKey, String>>,
 }
 
 impl GameState {
@@ -67,6 +75,7 @@ impl GameState {
             turn: 0,
             fired: BTreeSet::new(),
             skills: BTreeMap::new(),
+            attributes: BTreeMap::new(),
         }
     }
 
@@ -128,6 +137,22 @@ impl GameState {
             .entry(entity.to_string())
             .or_default()
             .insert(key.to_string(), value);
+    }
+
+    /// 指定キャラの文字列属性。未設定は空文字。`entity` 省略経路 (Gate/op) は既定で `"player"`。
+    pub fn attribute_of(&self, entity: &str, key: &str) -> &str {
+        self.attributes
+            .get(entity)
+            .and_then(|a| a.get(key))
+            .map_or("", |v| v.as_str())
+    }
+
+    /// 文字列属性を設定する (エンジン内部用。authored トリガーの set_attribute / 初期化からのみ)。
+    pub fn set_attribute(&mut self, entity: &str, key: &str, value: &str) {
+        self.attributes
+            .entry(entity.to_string())
+            .or_default()
+            .insert(key.to_string(), value.to_string());
     }
 }
 
@@ -237,5 +262,14 @@ pub enum StateOp {
         #[serde(default = "default_entity")]
         entity: EntityId,
         skill: SkillId,
+    },
+    /// 文字列属性の書き換え (クラス転職 等)。**authored トリガーの専権** — LLM が提案すると
+    /// `adjudicate` が却下する (クラス捏造 = メアリー・スー遮断、GrantSkill と同型)。trigger effects は
+    /// `apply_ops` 直行なので書き換えられる。未宣言キーは load 時 validate で弾く。`entity` 省略時は主人公。
+    SetAttribute {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        key: AttrKey,
+        value: String,
     },
 }

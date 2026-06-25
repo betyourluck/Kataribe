@@ -45,6 +45,15 @@ struct EntityView {
     skills: Vec<String>,
     /// 所持物 (閉世界)。NPC は譲渡 (GiveItem) でのみ受け取る。
     items: Vec<String>,
+    /// 文字列属性 (クラス/職業/種族 等。可変。トリガーで書き換わる)。
+    attributes: Vec<StatStrView>,
+}
+
+/// 文字列属性の 1 エントリ (key=value)。
+#[derive(Serialize)]
+struct StatStrView {
+    key: String,
+    value: String,
 }
 
 #[derive(Serialize)]
@@ -178,6 +187,7 @@ fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
         .keys()
         .chain(state.skills.keys())
         .chain(state.inventory.keys())
+        .chain(state.attributes.keys())
         .collect();
     let entities = ids
         .into_iter()
@@ -202,6 +212,15 @@ fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
                 .inventory
                 .get(id)
                 .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default(),
+            attributes: state
+                .attributes
+                .get(id)
+                .map(|a| {
+                    a.iter()
+                        .map(|(k, v)| StatStrView { key: k.clone(), value: v.clone() })
+                        .collect()
+                })
                 .unwrap_or_default(),
         })
         .collect();

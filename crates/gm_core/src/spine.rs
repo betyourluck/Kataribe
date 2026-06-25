@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{
-    default_entity, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId, SkillId,
-    StateOp, StatKey, TriggerId, DEFAULT_GOAL, PLAYER,
+    default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
+    SkillId, StateOp, StatKey, TriggerId, DEFAULT_GOAL, PLAYER,
 };
 
 /// state に対して評価される条件。
@@ -50,6 +50,14 @@ pub enum Gate {
         entity: EntityId,
         skill: SkillId,
     },
+    /// 指定キャラの文字列属性が value と一致する (クラス/職業条件)。未設定は空文字扱い。
+    /// 「魔法剣士なら〜」のように転職後の状態を縛れる。`entity` 省略時は主人公。
+    AttributeIs {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        key: AttrKey,
+        value: String,
+    },
     /// すべての子条件が通る (AND)。
     All { of: Vec<Gate> },
     /// いずれかの子条件が通る (OR)。
@@ -66,6 +74,7 @@ impl Gate {
             Gate::StatAtLeast { entity, key, value } => s.stat_of(entity, key) >= *value,
             Gate::StatAtMost { entity, key, value } => s.stat_of(entity, key) <= *value,
             Gate::HasSkill { entity, skill } => s.has_skill(entity, skill),
+            Gate::AttributeIs { entity, key, value } => s.attribute_of(entity, key) == value,
             Gate::All { of } => of.iter().all(|g| g.eval(s)),
             Gate::Any { of } => of.iter().any(|g| g.eval(s)),
         }
@@ -126,6 +135,10 @@ pub struct CharacterDef {
     /// 初期所持品 (閉世界)。[`Scenario::initial_state`] でこの entity に seed される。
     #[serde(default)]
     pub inventory: BTreeSet<ItemId>,
+    /// 初期の文字列属性 (クラス/種族 等)。宣言したキーが閉世界の許可集合になり、トリガーの
+    /// set_attribute はこのキーにしか書けない (未宣言キーは load 時 validate で弾く)。
+    #[serde(default)]
+    pub attributes: BTreeMap<AttrKey, String>,
     /// 硬い禁忌: これが true になる delta を却下する (Phase B でエンジン強制)。
     #[serde(default)]
     pub taboos: Vec<Gate>,
@@ -204,6 +217,13 @@ pub enum ScenarioError {
     },
     /// `global_flags` に挙げたフラグが `allowed_flags` に宣言されていない (幻の世界フラグ)。
     GlobalFlagUndeclared { flag: FlagKey },
+    /// トリガーの `set_attribute` が宣言されていない属性キーに書こうとしている (幻属性遮断)。
+    /// player は `initial_attributes`、NPC は `CharacterDef::attributes` でキーを宣言する。
+    AttributeKeyUndeclared {
+        trigger: TriggerId,
+        entity: EntityId,
+        key: AttrKey,
+    },
     /// 勝利条件が無い (`goal` も `goals` も未指定)。到達不能なシナリオ。
     NoGoal,
 }
@@ -261,6 +281,10 @@ pub struct Scenario {
     /// (場所から拾う/譲渡/持ち越し以外の「最初から所持」経路)。NPC は [`CharacterDef::inventory`]。
     #[serde(default)]
     pub initial_inventory: BTreeSet<ItemId>,
+    /// `"player"` の初期文字列属性 (クラス/職業/種族 等)。宣言キーが player の閉世界許可集合になり、
+    /// トリガーの set_attribute はこのキーにしか書けない。NPC は [`CharacterDef::attributes`]。
+    #[serde(default)]
+    pub initial_attributes: BTreeMap<AttrKey, String>,
     /// このシナリオに登場する外部キャラの宣言 (`characters/{id}.yaml` から注入する entity)。
     /// **空なら外部注入しない** — シナリオが宣言した登場人物だけが現れる (全シナリオ共有の混入を防ぐ)。
     /// inline `characters` に在る entity はそちらが優先。
@@ -335,6 +359,28 @@ impl Scenario {
                 errs.push(ScenarioError::GlobalFlagUndeclared { flag: flag.clone() });
             }
         }
+        // 属性の閉世界: トリガーの set_attribute は宣言済みキーにしか書けない (幻属性遮断)。
+        // player は initial_attributes、NPC は CharacterDef.attributes が許可キー集合。
+        for trig in &self.triggers {
+            for op in &trig.effects {
+                if let StateOp::SetAttribute { entity, key, .. } = op {
+                    let declared = if entity == PLAYER {
+                        self.initial_attributes.contains_key(key)
+                    } else {
+                        self.characters
+                            .get(entity)
+                            .is_some_and(|c| c.attributes.contains_key(key))
+                    };
+                    if !declared {
+                        errs.push(ScenarioError::AttributeKeyUndeclared {
+                            trigger: trig.id.clone(),
+                            entity: entity.clone(),
+                            key: key.clone(),
+                        });
+                    }
+                }
+            }
+        }
         // 勝利条件は最低一つ要る (goal 単一 or goals 名前付き)。
         if self.goal.is_none() && self.goals.is_empty() {
             errs.push(ScenarioError::NoGoal);
@@ -406,6 +452,12 @@ impl Scenario {
                 s.grant_skill(entity, skill);
             }
         }
+        // 文字列属性: 丸ごと持ち越し (転職等の結果は跨いで生きる。次モジュールの新規宣言を上書き)。
+        for (entity, attrs) in &prev.attributes {
+            for (key, value) in attrs {
+                s.set_attribute(entity, key, value);
+            }
+        }
         // フラグ: source が global と宣言したものだけ運ぶ (局所は捨てる)。
         for key in &prev_scenario.global_flags {
             if let Some(value) = prev.flags.get(key) {
@@ -448,6 +500,9 @@ impl Scenario {
         for item in &self.initial_inventory {
             s.add_to_inventory(PLAYER, item);
         }
+        for (k, v) in &self.initial_attributes {
+            s.set_attribute(PLAYER, k, v);
+        }
         // 登場人物の宣言。
         for (eid, def) in &self.characters {
             for (k, decl) in &def.stats {
@@ -458,6 +513,9 @@ impl Scenario {
             }
             for item in &def.inventory {
                 s.add_to_inventory(eid, item);
+            }
+            for (k, v) in &def.attributes {
+                s.set_attribute(eid, k, v);
             }
         }
         s

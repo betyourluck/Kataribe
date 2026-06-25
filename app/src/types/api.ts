@@ -6,11 +6,18 @@ export interface StatView {
   value: number;
 }
 
+/** 文字列属性 (クラス/職業/種族 等)。可変・トリガーで書き換わる。 */
+export interface StatStrView {
+  key: string;
+  value: string;
+}
+
 export interface EntityView {
   id: string;
   stats: StatView[];
   skills: string[];
   items: string[];
+  attributes: StatStrView[];
 }
 
 export interface StateView {

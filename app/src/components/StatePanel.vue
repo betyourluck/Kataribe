@@ -42,6 +42,9 @@ const game = useGameStore();
           <div v-if="e.stats.length" class="text-parchment pl-2">
             <span v-for="s in e.stats" :key="s.key" class="mr-2">{{ s.key }}={{ s.value }}</span>
           </div>
+          <div v-if="e.attributes.length" class="text-parchment/80 pl-2 text-xs">
+            <span v-for="a in e.attributes" :key="a.key" class="mr-2">{{ a.key }}: {{ a.value }}</span>
+          </div>
           <div v-if="e.skills.length" class="text-glow/70 pl-2 text-xs">
             能力: {{ e.skills.join("、") }}
           </div>

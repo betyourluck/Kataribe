@@ -210,6 +210,14 @@ fn validate_ops(
                     skill: skill.clone(),
                 });
             }
+            StateOp::SetAttribute { entity, key, .. } => {
+                // 属性の書き換えも authored トリガーの専権。LLM 提案は常に却下 (クラス捏造遮断)。
+                // trigger effects は apply_ops 直行なのでこの検証を通らず書き換えられる。
+                reasons.push(RejectReason::AttributeSetNotAllowed {
+                    entity: entity.clone(),
+                    key: key.clone(),
+                });
+            }
         }
     }
 }
@@ -400,6 +408,10 @@ fn apply_ops(
             StateOp::GrantSkill { entity, skill } => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
                 state.grant_skill(entity, skill);
+            }
+            StateOp::SetAttribute { entity, key, value } => {
+                // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
+                state.set_attribute(entity, key, value);
             }
         }
     }
@@ -1485,6 +1497,97 @@ locations:
         apply(&mut s, &sc, &d(vec![StateOp::Move { to: "beyond".into() }]))
             .expect("予知を得たので beyond へ出られる");
         assert!(is_goal(&s, &sc), "goal (beyond) 到達");
+    }
+
+    /// 【文字列属性の生成・転職・gate】player の初期属性 (クラス=戦士) が seed され、authored
+    /// トリガーが set_attribute で転職 (戦士→魔法剣士) し、AttributeIs gate がそれを縛る。
+    /// クラスは第4の可変状態 (flags/stats/skills の隣)。書き換えはトリガー専権。
+    #[test]
+    fn attribute_seed_trigger_rewrite_and_gate() {
+        let yaml = r#"
+title: t
+start: room
+initial_attributes: { クラス: 戦士 }
+allowed_flags: [awakened]
+triggers:
+  - id: awaken
+    when: { kind: flag_is, key: awakened, value: true }
+    effects: [ { op: set_attribute, entity: player, key: クラス, value: 魔法剣士 } ]
+    narration: 剣に魔力が宿った。
+goals:
+  - id: mage_knight
+    when: { kind: attribute_is, entity: player, key: クラス, value: 魔法剣士 }
+    narration: 魔法剣士として歩み出す。
+locations:
+  room: { description: 部屋, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "宣言済みキーへの set_attribute は健全");
+        let mut s = sc.initial_state(1);
+        assert_eq!(s.attribute_of(PLAYER, "クラス"), "戦士", "初期属性が seed される");
+        assert_eq!(sc.reached_goal(&s), None, "転職前は未到達");
+
+        // 覚醒フラグを立てる (LLM の正規 op) → トリガーが転職を起こす。
+        let out = apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "awakened".into(), value: true }]))
+            .expect("フラグは立てられる");
+        assert!(out.fired.iter().any(|f| f.id == "awaken"), "トリガーが転職を起こす");
+        assert_eq!(s.attribute_of(PLAYER, "クラス"), "魔法剣士", "トリガーで属性が書き換わる");
+        assert_eq!(sc.reached_goal(&s).map(|g| g.id.as_str()), Some("mage_knight"), "AttributeIs gate を越えて到達");
+    }
+
+    /// 【クラス捏造遮断】LLM が set_attribute でクラスをその場で書き換えようとしても却下される
+    /// (GrantSkill と同型のメアリー・スー遮断)。
+    #[test]
+    fn llm_proposed_set_attribute_is_rejected() {
+        let yaml = r#"
+title: t
+start: room
+initial_attributes: { クラス: 戦士 }
+allowed_flags: []
+goal: { kind: always }
+locations:
+  room: { description: 部屋, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        let delta = d(vec![StateOp::SetAttribute {
+            entity: PLAYER.into(),
+            key: "クラス".into(),
+            value: "勇者".into(),
+        }]);
+        match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::AttributeSetNotAllowed { key, .. } if key == "クラス")),
+                "AttributeSetNotAllowed で却下されるべき"
+            ),
+            Verdict::Accept => panic!("LLM の set_attribute は却下されるべき"),
+        }
+        assert!(apply(&mut s, &sc, &delta).is_err(), "却下デルタは適用されない");
+        assert_eq!(s.attribute_of(PLAYER, "クラス"), "戦士", "却下ならクラスは元のまま");
+    }
+
+    /// 【幻属性遮断】トリガーが未宣言の属性キーに set_attribute すると validate が load 時に弾く。
+    #[test]
+    fn validate_rejects_undeclared_attribute_key() {
+        let yaml = r#"
+title: t
+start: room
+initial_attributes: { クラス: 戦士 }
+allowed_flags: [x]
+triggers:
+  - id: bad
+    when: { kind: flag_is, key: x, value: true }
+    effects: [ { op: set_attribute, entity: player, key: 種族, value: エルフ } ]
+goal: { kind: always }
+locations:
+  room: { description: 部屋, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let errs = sc.validate();
+        assert!(
+            errs.iter().any(|e| matches!(e, crate::spine::ScenarioError::AttributeKeyUndeclared { key, .. } if key == "種族")),
+            "未宣言キー '種族' への set_attribute を validate が弾く: {errs:?}"
+        );
     }
 
     /// 【却下時は不発】不正 op を含むデルタは却下され、trigger も発火しない (原子性)。
