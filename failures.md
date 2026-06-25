@@ -343,3 +343,27 @@ config_defaults_to_tool_use。llm_client 11→14。
 【設定の正解】さくらを使うには .env を: LLM_BASE_URL=https://api.ai.sakura.ad.jp/v1 /
 LLM_MODEL=gpt-oss-120b (cpu プレビュー不可) / LLM_USE_TOOLS=false / LLM_API_KEY=<UUID>:<シークレット>
 (ペア形式)。同人配布の北極星(受領者は tool 非対応の安い/ローカルモデルを使う)に直結する機能。
+
+### 30. 推論モデルの `<thought>` CoT が no-tools の本体 JSON 抽出を壊す (#29 の続き)
+【実機発見 (2026-06-25, Gemma4 @ no-tools)】「提案者エラー: 構造化出力のパース失敗: expected value at
+line 1 column 1」。【原因 (生出力を現物トレースで特定)】Gemma は no-tools モードで `<thought>...
+</thought>` に chain-of-thought を吐き、**その中に `` `[{"op":"adjust_stat",...}]` `` という JSON 断片を
+書いてから** ```` ```json ```` フェンスで本体 StateDelta を出す。旧 content フォールバックは二重に破れる:
+(1) `strip_code_fence` は content が**先頭からフェンスで始まる時だけ**剥がす → `<thought>` が前置きなので
+フェンスが見つからず素通り → 直接 from_str が `<thought>` から始まって失敗 (= line 1 col 1)。
+(2) フォールバック `extract_json_object` の first `{` が **thought 内の断片**に釣られ、first `{`..last `}` が
+`{断片}]...</thought>...{本体}` という壊れた span になり parse 失敗 → 元の source エラーを返す。
+【さらに罠】`StateDelta` は narration/ops が `#[serde(default)]` なので、無関係な断片 `{"op":...}` すら
+**空デルタとして parse 成功**する。だから「最初に parse できた object」を採ると空の語りを拾う。
+【解】(a) `parse::strip_reasoning_blocks` で `<think>`/`<thought>`/`<thinking>` (大小無視・終了タグ無しは
+以降全切り) を抽出前に除去 → CoT のノイズと「フェンス前置き」を同時に消す。(b) フォールバックを first
+`{`..last `}` から **string-aware な balanced 波括弧抽出 `json_objects` の最後の object** に置換 (「答えは
+推論の後に来る」原則。空デルタ断片でなく本体を拾う)。どちらも提示層でなくソース(llm_client)に置き
+extract 経路全体に効く。#28 (narration の format token 漏れ) と同じ「推論モデルが構造化出力の周りに
+ノイズを足す」系だが、こちらは **no-tools で本体 JSON 自体が拾えなくなる**より重い破れ。
+【PoC】reasoning_block_then_fenced_json_resolves (Gemma 実出力を忠実再現: `<thought>`+断片+フェンス) /
+last_balanced_json_object_wins (タグ無しでも最後の object を採る=serde(default) の空拾い罠を固定)。
+llm_client 14→16。
+【棄却した代替】prompt で「思考を書くな」と刷り込む案は推論モデルの CoT を確実には抑えられず
+(Gemma は構造的に thought を出す)、決定論的に掃除できる経路が在るのでソース後処理を採る (#28 同型・
+usage-over-extension)。タグ依存を補うため (b) の convention-free な balanced 抽出を安全網として併設。

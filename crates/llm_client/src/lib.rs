@@ -230,6 +230,42 @@ mod tests {
         assert_eq!(d2.narration, "了解");
     }
 
+    /// 【推論モデルの no-tools 救済 (#30)】Gemma 等は `<thought>...</thought>` で CoT を吐き、
+    /// その中に JSON 断片 (`{"op":...}`) を書いてから ```json フェンスで本体を出す。旧コードは
+    /// (a) フェンスが先頭に無く strip_code_fence が効かない (b) first '{' が thought 内の断片に
+    /// 釣られる の二重欠陥で parse 失敗していた。推論ブロック除去で解決する。
+    #[test]
+    fn reasoning_block_then_fenced_json_resolves() {
+        let raw = "<thought>* Player asks for math materials.\n\
+                   * Ops: `[{\"op\": \"adjust_stat\", \"entity\": \"moka\", \"key\": \"好感度\", \"delta\": 1}]`\
+                   </thought>```json\n\
+                   { \"narration\": \"モカは教材棚を顎で指した。\", \"ops\": [ { \"op\": \"adjust_stat\", \"entity\": \"moka\", \"key\": \"好感度\", \"delta\": 1 } ] }\n\
+                   ```";
+        let resp = ChatResponse {
+            choices: vec![Choice {
+                message: ResponseMessage { content: Some(raw.into()), tool_calls: vec![] },
+            }],
+        };
+        let d: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        assert_eq!(d.narration, "モカは教材棚を顎で指した。");
+        assert_eq!(d.ops.len(), 1, "thought 内の断片でなく本体の ops を拾う");
+    }
+
+    /// 【最後の object を採る (#30)】StateDelta は narration/ops が serde(default) なので無関係な
+    /// 断片 `{...}` すら空デルタとして parse 成功する。タグ無しで前置き断片が混じっても、
+    /// 「答えは推論の後に来る」原則で **最後の balanced object** を採り本体を拾う (first '{' では空を拾う罠)。
+    #[test]
+    fn last_balanced_json_object_wins() {
+        let raw = "consider {\"op\":\"x\"} then answer:\n{\"narration\":\"本体\",\"ops\":[]}";
+        let resp = ChatResponse {
+            choices: vec![Choice {
+                message: ResponseMessage { content: Some(raw.into()), tool_calls: vec![] },
+            }],
+        };
+        let d: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        assert_eq!(d.narration, "本体", "前置き断片でなく最後の object を採る");
+    }
+
     /// 【JSON モード指示】json_instruction は schema (narration/ops) と「JSON だけ出せ」旨を含む。
     #[test]
     fn json_instruction_carries_schema_and_directive() {

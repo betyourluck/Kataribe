@@ -8,6 +8,73 @@ use serde::de::DeserializeOwned;
 use crate::error::LlmError;
 use crate::wire::ResponseMessage;
 
+/// ASCII の needle を大小無視で探し、haystack 内の **バイト位置**を返す。
+/// needle が ASCII なので一致位置は必ず char 境界 (UTF-8 継続バイトは >= 0x80)。
+fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+    if n.is_empty() || h.len() < n.len() {
+        return None;
+    }
+    (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+}
+
+/// 推論モデルが構造化出力の前に吐く chain-of-thought ブロックを中身ごと除去する。
+///
+/// Gemma の `<thought>` / DeepSeek・Qwen の `<think>` 等 (大小無視)。no-tools モードで
+/// CoT に JSON 断片 (`{"op":...}`) が混じると本体抽出を妨げる (`<thought>` がフェンスの前に
+/// 来るので [`strip_code_fence`] が効かず、first `{` が断片に釣られる) ため、抽出前に掃除する。
+/// 終了タグが無ければ開始タグ以降を全て CoT とみなして切る。
+pub fn strip_reasoning_blocks(raw: &str) -> String {
+    let mut out = raw.to_string();
+    for tag in ["think", "thought", "thinking"] {
+        let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+        while let Some(s) = find_ci(&out, &open) {
+            let end = match find_ci(&out[s..], &close) {
+                Some(rel) => s + rel + close.len(),
+                None => out.len(),
+            };
+            out.replace_range(s..end, "");
+        }
+    }
+    out
+}
+
+/// 文字列中の top-level な `{...}` (バランスした波括弧) を出現順に返す。
+/// JSON 文字列値の中の波括弧・エスケープは数えない (string-aware)。波括弧は ASCII なので
+/// スライス境界は常に char 境界。
+fn json_objects(s: &str) -> Vec<&str> {
+    let (mut objs, mut depth, mut start) = (Vec::new(), 0usize, 0usize);
+    let (mut in_str, mut escaped) = (false, false);
+    for (i, &b) in s.as_bytes().iter().enumerate() {
+        if in_str {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
+            }
+            b'}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    objs.push(&s[start..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    objs
+}
+
 /// ```/```json フェンスを剥がす。フェンスが無ければそのまま返す。
 pub fn strip_code_fence(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -70,25 +137,23 @@ pub fn extract<T: DeserializeOwned>(message: &ResponseMessage) -> Result<T, LlmE
     }
 
     if let Some(content) = message.content.as_deref() {
+        // 推論モデルの CoT ブロックを先に落とす (no-tools モードの堅牢化)。
+        let content = strip_reasoning_blocks(content);
         if !content.trim().is_empty() {
-            let cleaned = strip_code_fence(content);
-            // まず素直にパース。失敗したら prose に包まれた JSON を first '{'..last '}' で救済する
-            // (no-tools モードでモデルが前置きを付けても拾える堅牢性)。
+            let cleaned = strip_code_fence(&content);
+            // まず素直にパース。失敗したら prose に包まれた JSON を balanced な `{...}` から救済する。
+            // StateDelta は serde(default) で空 object すら通るので、**最後の** object を採る
+            // (答えは推論の後に来る = 前置きの断片でなく本体を拾う)。
             return match serde_json::from_str::<T>(&cleaned) {
                 Ok(v) => Ok(v),
-                Err(source) => extract_json_object(&cleaned)
-                    .and_then(|obj| serde_json::from_str::<T>(obj).ok())
+                Err(source) => json_objects(&content)
+                    .into_iter()
+                    .rev()
+                    .find_map(|obj| serde_json::from_str::<T>(obj).ok())
                     .ok_or(LlmError::Parse { source, raw: cleaned }),
             };
         }
     }
 
     Err(LlmError::NoStructuredOutput)
-}
-
-/// prose に包まれた JSON を救済する: 最初の `{` から最後の `}` までを返す (no-tools モード堅牢化)。
-fn extract_json_object(s: &str) -> Option<&str> {
-    let start = s.find('{')?;
-    let end = s.rfind('}')?;
-    (end > start).then(|| &s[start..=end])
 }
