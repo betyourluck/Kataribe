@@ -9,7 +9,7 @@
 //! - `new_game(scenario_path?)`: シナリオ + characters + 伏線をロードし初期 state を作って session に格納
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use gm_core::{is_goal, CheckOutcome, GameState, Lang, Scenario, PLAYER};
 use harness::{
@@ -230,6 +230,23 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
+}
+
+/// パスを字句的に正規化する (`.`/`..` を畳み、native 区切りに統一)。
+/// **Tauri asset protocol は `..` を含むパスを 403 で拒否する** (トラバーサル防止) ため、
+/// scope 許可・アセット解決の前に絶対パスを綺麗にしておく (repo_root が `../..` を残すのが原因)。
+fn normalize_path(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// 却下理由の表示言語。`KATARIBE_LANG=en` で英語、既定は日本語 (CLI と同値)。
@@ -463,6 +480,8 @@ async fn new_game(
     } else {
         root.join(&rel)
     };
+    // `..` を畳む (asset protocol は `..` 入りパスを 403 拒否。scope 許可・解決の前に必須)。
+    let pkg_dir = normalize_path(&pkg_dir);
 
     // アセット配信: このパッケージのフォルダだけを asset protocol scope に許可する
     // (静的 allowlist でなくロード時に動的追加 = 任意パス対応かつ安全。spec 01 #2)。
@@ -636,4 +655,26 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_path;
+    use std::path::{Path, PathBuf};
+
+    /// 【`..` 畳み】asset protocol が拒否する `..` をパスから除去する (403 の原因対策)。
+    #[test]
+    fn normalize_path_collapses_parent_dirs() {
+        #[cfg(windows)]
+        let p = Path::new(r"D:\Github\Kataribe\app\src-tauri\..\..\packages\houkago");
+        #[cfg(windows)]
+        let want = PathBuf::from(r"D:\Github\Kataribe\packages\houkago");
+        #[cfg(not(windows))]
+        let p = Path::new("/home/u/proj/app/src-tauri/../../packages/houkago");
+        #[cfg(not(windows))]
+        let want = PathBuf::from("/home/u/proj/packages/houkago");
+        let got = normalize_path(p);
+        assert_eq!(got, want, ".. が畳まれ '..' を含まない");
+        assert!(!got.to_string_lossy().contains(".."), "結果に '..' が残らない");
+    }
 }
