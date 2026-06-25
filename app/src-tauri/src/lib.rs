@@ -85,6 +85,8 @@ struct CheckView {
     total: i64,
     dc: u32,
     success: bool,
+    /// authored challenge の結末ナレーション (毎回・同ターン)。無ければ空。
+    narration: String,
 }
 
 /// 発火した反応ビート + recall された伏線 (語りに織り込む素材)。
@@ -497,6 +499,7 @@ async fn play_turn(
                     total: c.total,
                     dc: c.dc,
                     success: c.success,
+                    narration: normalize(&c.narration),
                 })
                 .collect();
             // 次ターンの語りに還流する判定結果を持ち越す。

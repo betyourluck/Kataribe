@@ -190,6 +190,22 @@ pub struct TierDef {
     /// 該当時に engine が直書きする帰結フラグ (任意)。`allowed_flags` 宣言必須 ([`Scenario::validate`])。
     #[serde(default)]
     pub flag: Option<FlagKey>,
+    /// 該当時の結末ナレーション (authored・任意)。`CheckOutcome.narration` に載り**毎回・同ターン**に出る
+    /// (トリガーと違い latch されないので、繰り返す判定でも毎回語れる)。フラグ無しの極でも語れる。
+    #[serde(default)]
+    pub narration: String,
+}
+
+/// challenge の通常成否 (total>=dc / 未満) の帰結。フラグと結末ナレーションを任意で持つ。
+/// narration は `CheckOutcome.narration` に載り**毎回・同ターン**に出る (非 latch=繰り返す失敗も毎回語れる)。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChallengeOutcome {
+    /// engine が直書きする帰結フラグ (任意)。`allowed_flags` 宣言必須。
+    #[serde(default)]
+    pub flag: Option<FlagKey>,
+    /// 結末ナレーション (authored・任意)。失敗を必ず描きたい時に使う (LLM 任せにしない)。
+    #[serde(default)]
+    pub narration: String,
 }
 
 /// authored challenge。**判定の素性と帰結を作者が握る閉じた定義**。
@@ -221,12 +237,12 @@ pub struct ChallengeDef {
     pub stat: Option<StatKey>,
     pub sides: u32,
     pub dc: u32,
-    /// 通常成功 (`total >= dc`) で engine が直書きするフラグ (任意)。`allowed_flags` 宣言必須。
+    /// 通常成功 (`total >= dc`) の帰結 (フラグ + 結末ナレーション、いずれも任意)。`flag` は `allowed_flags` 宣言必須。
     #[serde(default)]
-    pub on_success: Option<FlagKey>,
-    /// 通常失敗 (`total < dc`) で engine が直書きするフラグ (任意)。`allowed_flags` 宣言必須。
+    pub on_success: Option<ChallengeOutcome>,
+    /// 通常失敗 (`total < dc`) の帰結 (フラグ + 結末ナレーション、いずれも任意)。`flag` は `allowed_flags` 宣言必須。
     #[serde(default)]
-    pub on_failure: Option<FlagKey>,
+    pub on_failure: Option<ChallengeOutcome>,
     /// 極 (tier) の定義。キー = tier 名 (`crit_fail` 等)。自然出目の min/max で発火。
     /// 通常成否 (on_success/on_failure) と**併存**する。`CheckOutcome.tier` に surface する。
     #[serde(default)]
@@ -374,8 +390,8 @@ impl Scenario {
                 .tiers
                 .iter()
                 .filter_map(|(tname, tier)| tier.flag.as_ref().map(|f| (tname.as_str(), f)))
-                .chain(def.on_success.as_ref().map(|f| ("on_success", f)))
-                .chain(def.on_failure.as_ref().map(|f| ("on_failure", f)));
+                .chain(def.on_success.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_success", f)))
+                .chain(def.on_failure.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_failure", f)));
             for (label, flag) in outcome_flags {
                 if !self.allowed_flags.contains(flag) {
                     errs.push(ScenarioError::ChallengeFlagUndeclared {

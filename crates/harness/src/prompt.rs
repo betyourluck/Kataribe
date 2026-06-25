@@ -281,6 +281,9 @@ pub fn recent_narration_note(prev: &str) -> String {
 /// DC との差 (margin) と極 (tier) を渡すのは、後付けの強さを接地させるため — 大差なら決定的に、
 /// 僅差なら紙一重に、大失敗/大成功なら劇的に。出目・成否は覆してはならない。
 pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
+    // authored 結末ナレーション付きの判定は同ターンに語られ済み → LLM に再描写させない (二重語り回避)。
+    // narration の無い判定 (素の Check / 結末文なし challenge) だけを LLM に還流して語らせる。
+    let checks: Vec<&CheckOutcome> = checks.iter().filter(|c| c.narration.is_empty()).collect();
     if checks.is_empty() {
         return String::new();
     }

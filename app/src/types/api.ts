@@ -45,6 +45,8 @@ export interface CheckView {
   total: number;
   dc: number;
   success: boolean;
+  /** authored challenge の結末ナレーション (毎回・同ターン)。無ければ空。 */
+  narration: string;
 }
 
 export interface BeatView {

@@ -45,11 +45,15 @@ const game = useGameStore();
       </div>
 
       <!-- 技能判定 (出目 + 能力修正 vs DC) -->
-      <div v-else-if="entry.kind === 'checks'" class="space-y-0.5">
-        <p v-for="(c, j) in entry.checks" :key="j" class="text-sm text-parchment/70">
-          🎯 {{ c.entity }} の{{ c.stat }}判定: 1d{{ c.sides }}({{ c.roll }}){{ c.modifier >= 0 ? "+" + c.modifier : c.modifier }} = {{ c.total }} (DC {{ c.dc }}) →
-          <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ c.success ? "成功" : "失敗" }}</span>
-        </p>
+      <div v-else-if="entry.kind === 'checks'" class="space-y-1">
+        <template v-for="(c, j) in entry.checks" :key="j">
+          <p class="text-sm text-parchment/70">
+            🎯 {{ c.entity }} の{{ c.stat }}判定: 1d{{ c.sides }}({{ c.roll }}){{ c.modifier >= 0 ? "+" + c.modifier : c.modifier }} = {{ c.total }} (DC {{ c.dc }}) →
+            <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ c.success ? "成功" : "失敗" }}</span>
+          </p>
+          <!-- authored 結末ナレーション (毎回・同ターン)。失敗を必ず描く。 -->
+          <p v-if="c.narration" class="text-parchment/90 whitespace-pre-wrap">{{ c.narration }}</p>
+        </template>
       </div>
 
       <!-- 却下 (正本が嘘を弾いた) -->

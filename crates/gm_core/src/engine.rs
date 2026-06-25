@@ -43,6 +43,10 @@ pub struct CheckOutcome {
     /// 該当した極 (tier) 名 (authored challenge の大失敗/大成功)。素の判定や非クリティカルでは `None`。
     #[serde(default)]
     pub tier: Option<String>,
+    /// authored challenge の結末ナレーション (on_success/on_failure/tier の narration を解決したもの)。
+    /// **毎回・同ターン**に提示層が出す (非 latch=繰り返す失敗も毎回語れる)。無ければ空文字。
+    #[serde(default)]
+    pub narration: String,
 }
 
 /// 発火したトリガー (Phase C)。`narration` は語りへ注入する指示。
@@ -373,6 +377,7 @@ fn apply_ops(
                     dc: *dc,
                     success: total >= *dc as i64,
                     tier: None, // 素の判定は極を持たない (tier は authored challenge の専権)。
+                    narration: String::new(), // 素の Check は authored 結末文を持たない (LLM が次ターンに語る)。
                 });
             }
             StateOp::AttemptChallenge { entity, challenge } => {
@@ -387,9 +392,9 @@ fn apply_ops(
                     let modifier = stat_mod + cond_mod;
                     let total = roll as i64 + modifier;
                     let success = total >= def.dc as i64;
-                    // 通常成否の帰結フラグを直書き (allowed_flags 宣言済を validate が保証)。
-                    let outcome_flag = if success { def.on_success.as_ref() } else { def.on_failure.as_ref() };
-                    if let Some(flag) = outcome_flag {
+                    // 通常成否の帰結 (フラグ + 結末ナレーション)。フラグは直書き (validate が宣言保証)。
+                    let outcome = if success { def.on_success.as_ref() } else { def.on_failure.as_ref() };
+                    if let Some(flag) = outcome.and_then(|o| o.flag.as_ref()) {
                         state.flags.insert(flag.clone(), true);
                     }
                     // 極 (tier): 自然出目が min(=1)/max(=sides) に該当する authored tier を引く。
@@ -404,6 +409,13 @@ fn apply_ops(
                             state.flags.insert(flag.clone(), true);
                         }
                     }
+                    // 結末ナレーション: 極(tier)に narration があれば優先 (より具体的・劇的)、
+                    // 無ければ通常成否の narration。毎回・同ターンに提示層が出す (非 latch)。
+                    let narration = hit
+                        .map(|(_, t)| t.narration.clone())
+                        .filter(|n| !n.is_empty())
+                        .or_else(|| outcome.map(|o| o.narration.clone()))
+                        .unwrap_or_default();
                     checks.push(CheckOutcome {
                         entity: entity.clone(),
                         stat: def.stat.clone().unwrap_or_default(),
@@ -414,6 +426,7 @@ fn apply_ops(
                         dc: def.dc,
                         success,
                         tier,
+                        narration,
                     });
                 }
             }
@@ -1655,8 +1668,8 @@ start: room
 initial_stats: { STR: 5 }
 allowed_flags: [won, lost, luck_win, luck_lose]
 challenges:
-  power: { description: 力で押す, stat: STR, sides: 1, dc: 6, on_success: won, on_failure: lost }
-  luck:  { description: 運任せ, sides: 1, dc: 6, on_success: luck_win, on_failure: luck_lose }
+  power: { description: 力で押す, stat: STR, sides: 1, dc: 6, on_success: { flag: won }, on_failure: { flag: lost } }
+  luck:  { description: 運任せ, sides: 1, dc: 6, on_success: { flag: luck_win }, on_failure: { flag: luck_lose } }
 goal: { kind: always }
 locations:
   room: { description: d, items: {}, exits: [] }
@@ -1693,7 +1706,7 @@ challenges:
     stat: STR
     sides: 1
     dc: 11
-    on_success: won
+    on_success: { flag: won }
     modifiers:
       - { when: { kind: flag_is, key: taught, value: true }, bonus: 5 }
 goal: { kind: always }
@@ -1723,6 +1736,39 @@ locations:
         assert!(s.flag("won"), "教えの有利で DC を越えて成功 (修正が load-bearing)");
     }
 
+    /// 【インライン結末ナレーション】challenge の on_failure/on_success/tier に authored narration を
+    /// 付けると `CheckOutcome.narration` に載り、**繰り返す失敗でも毎回**出る (トリガーと違い latch しない)。
+    /// フラグ無しの失敗でも語れる。極(tier)の narration は通常成否より優先。
+    #[test]
+    fn challenge_outcome_narration_surfaces_every_attempt() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { STR: 0 }
+allowed_flags: [opened]
+challenges:
+  pick:
+    stat: STR
+    sides: 1
+    dc: 6
+    on_success: { flag: opened, narration: 錠が外れた。 }
+    on_failure: { narration: 工具が滑る。 }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        let pick = || d(vec![StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "pick".into() }]);
+        // 1d1(=1)+STR0 = 1 < 6 → 失敗。フラグ無しでも narration が出る。
+        let o1 = apply(&mut s, &sc, &pick()).unwrap();
+        assert!(!o1.checks[0].success);
+        assert_eq!(o1.checks[0].narration, "工具が滑る。", "失敗のナレーションが出る");
+        // 二度目の失敗でも**毎回**出る (latch されない = トリガーとの違い)。
+        let o2 = apply(&mut s, &sc, &pick()).unwrap();
+        assert_eq!(o2.checks[0].narration, "工具が滑る。", "繰り返す失敗でも毎回出る");
+    }
+
     /// 【幻フラグ遮断】challenge の on_success/on_failure が立てるフラグも allowed_flags 宣言必須。
     #[test]
     fn validate_rejects_undeclared_challenge_outcome_flag() {
@@ -1731,7 +1777,7 @@ title: t
 start: room
 allowed_flags: []
 challenges:
-  c: { sides: 1, dc: 1, on_success: ghost }
+  c: { sides: 1, dc: 1, on_success: { flag: ghost } }
 goal: { kind: always }
 locations:
   room: { description: d, items: {}, exits: [] }

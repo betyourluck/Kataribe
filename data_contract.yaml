@@ -94,15 +94,19 @@ ChallengeDef:
   stat:   "Option<StatKey>。修正に使う stat (挑戦 entity が宣言済みのこと)。**省略可** — None なら能力に依らない純粋ダイス(修正0=運試し)、Some なら 1d{sides}+stat修正"
   sides:  "u32。ダイス面数 (sides:20 = 1d20、1〜20 が出る)"
   dc:     "u32。難易度(目標値)。total(出目+修正)>=dc で成功。dc が大きいほど難しい"
-  on_success: "Option<FlagKey>。通常成功(total>=dc)で engine が直書きするフラグ。allowed_flags 宣言必須。これで『ダイス→フラグ』を作り when:all 等で読める"
-  on_failure: "Option<FlagKey>。通常失敗(total<dc)で engine が直書きするフラグ。allowed_flags 宣言必須"
+  on_success: "Option<ChallengeOutcome>。通常成功(total>=dc)の帰結(フラグ+結末ナレーション、任意)。『ダイス→フラグ』を作り when:all で読める"
+  on_failure: "Option<ChallengeOutcome>。通常失敗(total<dc)の帰結(フラグ+結末ナレーション、任意)"
   tiers:  "{ tier名: TierDef }。極(大失敗/大成功)の定義。on_success/on_failure と併存。tier名は CheckOutcome.tier に surface"
+ChallengeOutcome:
+  flag: "Option<FlagKey>。engine が直書きする帰結フラグ。allowed_flags 宣言必須"
+  narration: "authored 結末ナレーション(任意)。CheckOutcome.narration に載り**毎回・同ターン**に出る(非 latch=繰り返す失敗も毎回語れる/フラグ無しでも語れる)。失敗を LLM 任せにせず必ず描きたい時に使う"
 ChallengeMod:
   when:  "Gate(純粋述語)。真ならこの修正が乗る。flag/stat/attribute/skill/all/any どれでも"
   bonus: "i64。出目合計に加える値(負も可=ペナルティ)。apply 時に when を評価して合算"
 TierDef:
   natural: "Min|Max。発火する自然出目(修正前の素の roll)の極。sides 相対(Max は d6→6/d20→20)=die サイズ非依存。リテラル(20等)で端を焼かない"
   flag:    "任意。該当時に engine が直書きする帰結フラグ。allowed_flags 宣言必須(Scenario::validate が load 時に弾く)。flag 無しの tier は認識だけ(語り用)"
+  narration: "任意。該当時の結末ナレーション。CheckOutcome.narration に載り毎回・同ターンに出る(フラグ無しの極でも語れる)"
 ScenarioError:                    # 静的整合性の破れ (load 時検査。apply 中 panic でなく構造化エラー)
   validate: "Scenario::validate()->Vec<ScenarioError>。空なら健全。harness loader が from_yaml 直後に呼ぶ"
   ChallengeFlagUndeclared: "challenge の帰結フラグ(tier / on_success / on_failure)が allowed_flags 未宣言(幻フラグを engine 直書き経路に乗せない)。tier 欄に該当ラベル(tier名/on_success/on_failure)"

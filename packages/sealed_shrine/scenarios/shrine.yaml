@@ -40,9 +40,11 @@ challenges:
     stat: STR
     sides: 20
     dc: 16
-    on_success: door_open                       # 成功 → 扉が開く
+    # 成功: 扉が開く + 結末文。失敗: フラグ無しで毎回・同ターンに語る (繰り返し挑める)。
+    on_success: { flag: door_open, narration: 渾身の力で、石扉が軋みながらゆっくりと押し開いた。 }
+    on_failure: { narration: 扉はびくともせず、肩に鈍い痛みだけが残った。 }
     tiers:
-      crit_fail: { natural: min, flag: 罠作動 }   # 自然出目1 = 落石の罠
+      crit_fail: { natural: min, flag: 罠作動 }   # 自然出目1 = 落石の罠 (致命傷は rockfall トリガーが語る)
 
 # 反応ビート。
 triggers:

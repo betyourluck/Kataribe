@@ -328,6 +328,7 @@ mod tests {
             dc: 15,
             success: true,
             tier: None,
+            narration: String::new(),
         }];
 
         run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "").await.unwrap();
@@ -346,6 +347,7 @@ mod tests {
         let win = vec![CheckOutcome {
             entity: "player".into(), stat: "話術".into(), sides: 20,
             roll: 18, modifier: 3, total: 21, dc: 15, success: true, tier: None,
+            narration: String::new(),
         }];
         let note = prompt::check_outcome_note(&win);
         assert!(note.contains("なぜ"), "なぜその結果になったかの後付けを要求する");
@@ -356,10 +358,29 @@ mod tests {
         let fumble = vec![CheckOutcome {
             entity: "player".into(), stat: "str".into(), sides: 20,
             roll: 1, modifier: 2, total: 3, dc: 6, success: false, tier: Some("crit_fail".into()),
+            narration: String::new(),
         }];
         let note2 = prompt::check_outcome_note(&fumble);
         assert!(note2.contains("DC に 3 届かなかった"), "失敗 margin (-3) を surface する");
         assert!(note2.contains("crit_fail"), "極 (tier) を surface して劇的な後付けを促す");
+    }
+
+    /// 【二重語り回避】authored 結末ナレーション付きの判定は同ターンに語られ済みなので、
+    /// 次ターンの check_outcome_note から除外される (LLM に再描写させない)。narration 無しは還流する。
+    #[test]
+    fn check_note_skips_checks_with_authored_narration() {
+        use gm_core::CheckOutcome;
+        let mk = |narration: &str| CheckOutcome {
+            entity: "player".into(), stat: "STR".into(), sides: 20,
+            roll: 5, modifier: 0, total: 5, dc: 15, success: false,
+            tier: None, narration: narration.into(),
+        };
+        // authored 文ありの判定だけ → note は空 (再描写不要)。
+        assert!(prompt::check_outcome_note(&[mk("扉はびくともしない。")]).is_empty(),
+            "authored narration 付きは LLM 還流から除外");
+        // narration 無しの判定 → 従来どおり還流する。
+        assert!(!prompt::check_outcome_note(&[mk("")]).is_empty(),
+            "narration 無しは LLM に語らせるため還流する");
     }
 
     /// GM_SYSTEM が「判定結果の後付け（なぜ成功/失敗したか）」を刷り込む。
