@@ -967,6 +967,25 @@ locations:
     // 数値ステータス PoC: 四則演算をエンジンが代行する (LLM は値を持てない)
     // =========================================================================
 
+    /// 【初期所持品】initial_inventory(主人公) と CharacterDef.inventory(NPC) が
+    /// initial_state で seed される (「最初から所持」経路。場所から拾う/譲渡/持ち越し以外)。
+    #[test]
+    fn initial_state_seeds_inventory_for_player_and_npc() {
+        let yaml = concat!(
+            "title: t\nstart: room\n",
+            "initial_inventory: [chalk, textbook]\n",
+            "allowed_flags: []\n",
+            "characters:\n  moka:\n    name: モカ\n    inventory: [smartphone]\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        );
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let s = sc.initial_state(1);
+        assert!(s.has_item(PLAYER, "chalk") && s.has_item(PLAYER, "textbook"), "主人公の初期所持");
+        assert!(s.has_item("moka", "smartphone"), "NPC の初期所持");
+        assert!(!s.has_item(PLAYER, "smartphone"), "NPC の所持は player に混ざらない");
+    }
+
     /// 初期 stat はシナリオから読まれる。
     #[test]
     fn stats_load_from_scenario() {

@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use gm_core::{FlagKey, Scenario, SkillId, StatKey};
+use gm_core::{FlagKey, ItemId, Scenario, SkillId, StatKey};
 use serde::Deserialize;
 
 use crate::error::HarnessError;
@@ -55,6 +55,9 @@ pub struct PlayerDef {
     /// 初期スキル (閉世界)。各モジュールへ union。
     #[serde(default)]
     pub skills: BTreeSet<SkillId>,
+    /// 初期所持品 (閉世界)。各モジュールの `initial_inventory` へ union → initial_state で seed。
+    #[serde(default)]
+    pub items: BTreeSet<ItemId>,
     /// 主人公の性向 = 語りの素材 (非検証、prompt 供給)。surfacing は後続。
     #[serde(default)]
     pub profile: String,
@@ -95,6 +98,7 @@ pub fn inject_package(scenario: &mut Scenario, manifest: &PackageManifest) {
             scenario.initial_stats.insert(k.clone(), *v); // package が勝つ
         }
         scenario.initial_skills.extend(p.skills.iter().cloned());
+        scenario.initial_inventory.extend(p.items.iter().cloned());
         // 主人公の設定 (name/profile) を注入 → NPC がプレイヤーを認識する材料 (語りの素材)。
         if !p.name.trim().is_empty() {
             scenario.protagonist.name = p.name.clone();
@@ -236,6 +240,7 @@ mod tests {
                 name: "先生".into(),
                 profile: "高校教師。".into(),
                 stats: BTreeMap::from([("hp".to_string(), 10)]),
+                items: BTreeSet::from(["chalk".to_string()]),
                 ..Default::default()
             }),
             globals: Some(Globals { flags: BTreeSet::from(["w".to_string()]) }),
@@ -243,6 +248,8 @@ mod tests {
         };
         inject_package(&mut sc, &manifest);
         assert_eq!(sc.initial_stats.get("hp"), Some(&10), "package が勝つ (8→10)");
+        assert!(sc.initial_inventory.contains("chalk"), "package の player.items が initial_inventory へ注入");
+        assert!(sc.initial_state(1).has_item("player", "chalk"), "initial_state で player に seed される");
         assert!(
             sc.allowed_flags.contains("w") && sc.global_flags.contains("w"),
             "globals は allowed_flags と global_flags の両方へ union"

@@ -7,7 +7,7 @@ title: 放課後の教室
 start: classroom
 
 initial_stats:
-  hp: 0
+  hp: 10
 
 cast: [moka]
 
@@ -16,16 +16,18 @@ cast: [moka]
 allowed_flags:
   - moka_opened_up      # 好感度20: 素を見せた
   - domestic_problem    # 好感度40: 家庭問題を打ち明けた
+  - moka_love_me        # 好感度60: 告白を受け入れた
 
 locations:
   classroom:
-    description: 放課後の教室。机の上には生徒たちの教科書やノートが散らばっている。窓からは夕日が差し込み、教室内はオレンジ色に染まっている。モカは机に座ってスマホをいじっている。彼女はあなたに気づくと、少し驚いた表情を見せる。
-    items: {}
+    description: 放課後の教室。机の上には生徒たちの教科書やノートが散らばっている。黒板の横の台には、数学の教材（math_teaching_materials）が置かれている。窓からは夕日が差し込み、教室内はオレンジ色に染まっている。モカは机に座ってスマホをいじっている。彼女はあなたに気づくと、少し驚いた表情を見せる。
+    items:
+      math_teaching_materials: { kind: always }   # 黒板横の台。取得条件なし
     exits: []
 
 # 好感度の閾値で authored ビートを焚く = 漂いを段に変える
 triggers:
-  - id: opens_up           # 好感度20: 素を見せる（小さな転機）
+  - id: opens_up # 好感度20: 素を見せる（小さな転機）
     when: { kind: stat_at_least, entity: moka, key: 好感度, value: 20 }
     effects: [ { op: set_flag, key: moka_opened_up, value: true } ]
     narration: モカがふと声のトーンを落とし、モデルの仕事の本音をこぼし始めた。
@@ -33,11 +35,15 @@ triggers:
     when: { kind: stat_at_least, entity: moka, key: 好感度, value: 40 }
     effects: [ { op: set_flag, key: domestic_problem, value: true } ]
     narration: モカがふと黙り込み、抱えている家庭の事情を、ぽつりと打ち明けはじめた。
+  - id: love_arousal    # 
+    when: { kind: stat_at_least, entity: moka, key: 好感度, value: 60 }
+    effects: [ { op: set_flag, key: moka_love_me, value: true } ]
+    narration: モカはあなたの目をじっと見つめ、頬を赤らめながら、心の奥底に秘めた思いを感じた。
 
 # 告白 (single エンド)。家庭問題を打ち明けるほど心を開いた上で好感度50。
 # 閾値トリガー(domestic_problem は40で自動発火)ゆえ50到達時には必ず立つ → 「打ち明けを飛ばす」枝は
 # threshold 設計では構造的に出ない。本物の分岐にするには踏み段をプレイヤーの選択フラグにする(後続)。
 goals:
-  - id: confession
-    when: { kind: all, of: [ {kind: flag_is, key: domestic_problem, value: true},
-                             {kind: stat_at_least, entity: moka, key: 好感度, value: 50} ] }
+  - id: her_love_me
+    when: { kind: all, of: [ {kind: flag_is, key: moka_love_me, value: true}, 
+                             {kind: stat_at_least, entity: moka, key: 好感度, value: 65 }] }

@@ -73,6 +73,7 @@ Scenario:
   flag_rules: { FlagKey: Gate }     # 記載なければ Always
   initial_stats: { StatKey: i64 }   # "player" の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い
   initial_skills: [SkillId]         # "player" の初期スキル糖衣 (閉世界宣言)。NPC は CharacterDef.skills
+  initial_inventory: [ItemId]       # "player" の初期所持品。initial_state が seed (場所拾い/譲渡/持ち越し以外の「最初から所持」)。NPC は CharacterDef.inventory
   cast: [EntityId]                  # このシナリオに登場する外部キャラの宣言。**空なら外部注入なし** (全シナリオ共有の混入を防ぐ)。harness::inject_cast が characters/{id}.yaml から cast 分だけ注入 (inline 優先)
   characters: { EntityId: CharacterDef }  # 登場人物(player以外)。inline 宣言 + cast 指定の外部 characters/*.yaml 注入
   triggers: [Trigger]               # 反応ビート (Phase C)。when 成立で effects 原子適用 + narration 注入
@@ -103,6 +104,7 @@ CharacterDef:
   profile: string                   # 設定・背景・性格・性向 (柔らかい。語りに供給、可変世界状態は持たない)
   stats: { StatKey: StatDecl }      # このキャラが持つ stat の宣言。initial が entities の初期値
   skills: [SkillId]                 # 宣言された閉じた能力集合 (催眠/予知 等)。初期スキル。未宣言の能力は存在しない
+  inventory: [ItemId]               # この NPC の初期所持品。initial_state が seed (閉世界)
   taboos: [Gate]                    # 硬い禁忌。これが true になる delta を却下 (Phase B で強制)
 
 StatDecl:
@@ -291,12 +293,13 @@ PlayerDef:
   name: String?
   stats: { StatKey: i64 }           # 主人公の初期数値。各モジュールの initial_stats へ merge(package が勝つ=分裂防止)
   skills: [SkillId]                 # 主人公の初期スキル。各モジュールの initial_skills へ union
+  items: [ItemId]                   # 主人公の初期所持品。各モジュールの initial_inventory へ union → initial_state で seed
   profile: String?                  # 主人公の性向 = 語りの素材 (非検証、prompt 供給)。surfacing は後続
 Globals:
   flags: [FlagKey]                  # 宣言のみ。load 時に各モジュールの allowed_flags(使える) と global_flags(跨いで生きる) の両方へ union
 PackageLoad:                        # harness 層の駆動 (gm_core 無改修)
   load_package: "load_package(dir)->LoadedPackage。dir/package.yaml を読み、entry を load+inject_cast+inject_package(player/globals 注入)+validate。package.yaml 不在/entry 不在はエラー(自己完結 = フォルダ内参照の load 時保証)"
-  inject_package: "inject_package(&mut Scenario, &PackageManifest)。player.stats を initial_stats へ merge(package 優先=モジュール跨ぎの HP 分裂を防ぐ)、player.skills を initial_skills へ union、globals.flags を allowed_flags+global_flags へ union。これで「一度宣言→全モジュールで使える&跨いで生きる」が閉世界検査も通る"
+  inject_package: "inject_package(&mut Scenario, &PackageManifest)。player.stats を initial_stats へ merge(package 優先=モジュール跨ぎの HP 分裂を防ぐ)、player.skills を initial_skills へ union、player.items を initial_inventory へ union、globals.flags を allowed_flags+global_flags へ union。これで「一度宣言→全モジュールで使える&跨いで生きる」が閉世界検査も通る"
   deferred: "campaign-entry(entry が campaign.yaml の時の複数モジュール束ね) / world・player.profile の prompt surfacing / engine semver 検証 / GUI フォルダ列挙 は後続。B-core は engine 状態の注入(stats/skills/flags)を Red→Green で固める"
 
 # --- Campaign file (PoC-2c。authored モジュールグラフ = orchestration の正本) ----

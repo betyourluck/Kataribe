@@ -138,8 +138,8 @@ mod tests {
             "start が指す場所が定義されている (start={} ≠ location の不整合を防ぐ)",
             sc.start
         );
-        let s = sc.initial_state(1);
-        assert_eq!(s.stat_of("moka", "好感度"), 0, "goal が参照する moka の 好感度 が初期化される");
+        // goal が参照する moka の 好感度 stat が宣言されている (初期値は作者が変えうるので値は固定しない)。
+        assert!(sc.knows_stat("moka", "好感度"), "moka の 好感度 stat が宣言されている");
         assert!(sc.validate().is_empty(), "整合性チェックが通る");
     }
 

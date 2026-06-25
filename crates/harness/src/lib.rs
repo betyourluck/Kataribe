@@ -370,26 +370,27 @@ mod tests {
         assert!(s.contains("なぜ") && s.contains("原因"), "なぜ成功/失敗したかを物語内の原因として語らせる");
     }
 
-    /// 【galge spine】classroom の好感度閾値トリガーが関係の「段」を刻む: 20→素を見せる、
-    /// 40→家庭問題を打ち明ける、50→告白(confession)。漂いを段に変える authored ビートで、
-    /// 告白は「打ち明け(domestic_problem)を経た好感度50」を要求する。
+    /// 【galge spine の機構】好感度の閾値トリガーが関係の「段」を刻み、名前付き goal に至る:
+    /// 20→素を見せる、40→打ち明ける、50(+打ち明け)→告白。**インライン安定シナリオ**で機構を固定する
+    /// (houkago の authored 内容は作者が随時いじるので、テストは配布コンテンツに依存させない)。
     #[test]
-    fn classroom_spine_fires_relationship_beats_and_reaches_confession() {
+    fn galge_spine_fires_threshold_beats_and_reaches_named_goal() {
         use gm_core::apply;
-        // 配布パッケージ houkago が classroom galge の正本。
-        let mut sc = Scenario::from_yaml(include_str!(
-            "../../../packages/houkago/scenarios/classroom.yaml"
+        let sc = Scenario::from_yaml(concat!(
+            "title: spine\nstart: room\nallowed_flags: [opened, confided]\n",
+            "characters:\n  moka:\n    name: モカ\n    stats: { 好感度: { initial: 0, min: 0, max: 100 } }\n",
+            "triggers:\n",
+            "  - { id: opens_up, when: { kind: stat_at_least, entity: moka, key: 好感度, value: 20 },",
+            "      effects: [ { op: set_flag, key: opened, value: true } ], narration: 素 }\n",
+            "  - { id: confide, when: { kind: stat_at_least, entity: moka, key: 好感度, value: 40 },",
+            "      effects: [ { op: set_flag, key: confided, value: true } ], narration: 打ち明け }\n",
+            "goals:\n",
+            "  - { id: confession, when: { kind: all, of: [ {kind: flag_is, key: confided, value: true},",
+            "      {kind: stat_at_least, entity: moka, key: 好感度, value: 50} ] } }\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n"
         ))
         .unwrap();
-        inject_cast(
-            &mut sc,
-            std::path::Path::new(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../packages/houkago/characters"
-            )),
-        )
-        .unwrap();
-        assert!(sc.validate().is_empty(), "spine 込みでも整合");
+        assert!(sc.validate().is_empty());
         let mut s = sc.initial_state(1);
         let bump = |n: i64| {
             StateDelta::new(
@@ -398,19 +399,14 @@ mod tests {
             )
         };
 
-        // 好感度20 → 素を見せる。
         let o1 = apply(&mut s, &sc, &bump(20)).unwrap();
         assert!(o1.fired.iter().any(|f| f.id == "opens_up"), "20 で素を見せるビート");
-        assert_eq!(s.flags.get("moka_opened_up"), Some(&true));
-        assert_eq!(sc.reached(&s), None, "20 では告白に至らない");
+        assert_eq!(sc.reached(&s), None, "20 では未到達");
 
-        // 好感度40 → 家庭問題を打ち明ける。
         let o2 = apply(&mut s, &sc, &bump(20)).unwrap();
-        assert!(o2.fired.iter().any(|f| f.id == "confide_problem"), "40 で打ち明けビート");
-        assert_eq!(s.flags.get("domestic_problem"), Some(&true));
-        assert_eq!(sc.reached(&s), None, "打ち明けただけでは告白に至らない");
+        assert!(o2.fired.iter().any(|f| f.id == "confide"), "40 で打ち明けビート");
+        assert_eq!(sc.reached(&s), None, "打ち明けただけでは未到達");
 
-        // 好感度50 → 告白 (confession)。
         apply(&mut s, &sc, &bump(10)).unwrap();
         assert_eq!(sc.reached(&s).as_deref(), Some("confession"), "打ち明けを経て50で告白");
     }

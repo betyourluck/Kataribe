@@ -113,6 +113,9 @@ pub struct CharacterDef {
     /// (メアリー・スー遮断)。開花は authored トリガーの grant_skill 効果のみ。
     #[serde(default)]
     pub skills: BTreeSet<SkillId>,
+    /// 初期所持品 (閉世界)。[`Scenario::initial_state`] でこの entity に seed される。
+    #[serde(default)]
+    pub inventory: BTreeSet<ItemId>,
     /// 硬い禁忌: これが true になる delta を却下する (Phase B でエンジン強制)。
     #[serde(default)]
     pub taboos: Vec<Gate>,
@@ -240,6 +243,10 @@ pub struct Scenario {
     /// `"player"` の初期スキル糖衣 (閉世界宣言)。NPC は [`CharacterDef::skills`]。
     #[serde(default)]
     pub initial_skills: BTreeSet<SkillId>,
+    /// `"player"` の初期所持品。[`Scenario::initial_state`] で player に seed される
+    /// (場所から拾う/譲渡/持ち越し以外の「最初から所持」経路)。NPC は [`CharacterDef::inventory`]。
+    #[serde(default)]
+    pub initial_inventory: BTreeSet<ItemId>,
     /// このシナリオに登場する外部キャラの宣言 (`characters/{id}.yaml` から注入する entity)。
     /// **空なら外部注入しない** — シナリオが宣言した登場人物だけが現れる (全シナリオ共有の混入を防ぐ)。
     /// inline `characters` に在る entity はそちらが優先。
@@ -416,6 +423,9 @@ impl Scenario {
         for skill in &self.initial_skills {
             s.grant_skill(PLAYER, skill);
         }
+        for item in &self.initial_inventory {
+            s.add_to_inventory(PLAYER, item);
+        }
         // 登場人物の宣言。
         for (eid, def) in &self.characters {
             for (k, decl) in &def.stats {
@@ -423,6 +433,9 @@ impl Scenario {
             }
             for skill in &def.skills {
                 s.grant_skill(eid, skill);
+            }
+            for item in &def.inventory {
+                s.add_to_inventory(eid, item);
             }
         }
         s
