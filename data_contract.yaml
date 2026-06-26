@@ -88,6 +88,18 @@ Scenario:
 # fumble-as-trigger の土台。判定の大失敗/大成功(tier)とその帰結フラグを **作者が定義**し、
 # LLM は AttemptChallenge で challenge を**選ぶ**だけ(tier/flag を author できない)。
 # 出目も tier 判定も帰結フラグの直書きも engine。= 「帰結は engine、LLM は意図だけ」の判定版。
+#
+# 【authoring 指針: 山場を 1 回の判定で潰させない (2026-06-27, 実プレイ発見)】
+# LLM は Check op で自分の裁量でダイスを振り、1 回の成功を「魔王撃破」へ飛躍させうる
+# (= あっけない決着)。エンジンは触らず **シナリオの書き方** で防ぐのが無難:
+#   (1) 決定的な勝敗 (撃破/クリア) は narration でなく **named goal / flag** に接地する
+#       — engine が記録しない決着は起きない (例: slain_ending の when に必須フラグを束ねる)。
+#   (2) 大敵の撃破 challenge に `requires`(前提 Gate) を付け、前段ビート (弱体化/転職/儀式) の
+#       フラグが揃うまで attempt_challenge を ChallengeLocked で封鎖する = 段組み。
+#   (3) 一撃で終わらせず、challenge の on_success フラグ → 次の challenge の requires、と
+#       数珠つなぎにして複数ビートを経させる。
+# prompt 層も GM_SYSTEM が「態勢では振らない/1 判定を決着へ飛躍させない/ゴール未達は未発生」を刷り込む
+# (gm_system_grounds_dice_timing_and_no_one_shot_climax)。二層 (#23 同型: narration の砦は prompt のみ)。
 ChallengeDef:
   description: "LLM への提示文 (どんな行動の判定か)。scenario_brief の『## 挑戦』に出して GM に attempt_challenge で選ばせる"
   requires: "Option<Gate>。挑める前提条件。Some で偽なら attempt_challenge を却下(ChallengeLocked)=挑戦の解禁/封鎖。『導師に会うまで秘奥義に挑めない』等。scenario_brief に【前提: ...】で surface。None なら常に挑める"

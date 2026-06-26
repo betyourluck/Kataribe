@@ -395,6 +395,19 @@ mod tests {
         assert!(s.contains("なぜ") && s.contains("原因"), "なぜ成功/失敗したかを物語内の原因として語らせる");
     }
 
+    /// 【判定の射程 / 山場の保護】GM_SYSTEM が「態勢では振らない」「1 回の判定を決着へ飛躍させない」
+    /// 「大敵の撃破は authored 条件でのみ・ゴール未達は未発生」を刷り込む (魔王あっけなく撃破の対策)。
+    #[test]
+    fn gm_system_grounds_dice_timing_and_no_one_shot_climax() {
+        let s = prompt::GM_SYSTEM;
+        assert!(s.contains("態勢"), "構える/身構えるは態勢であって決着でない旨を刷り込む");
+        assert!(s.contains("決着へ飛躍") || s.contains("決着へ飛躍させてはならない"), "1 回の判定を山場の決着へ拡大させない");
+        assert!(
+            s.contains("ゴール未達") && s.contains("まだ起きていない"),
+            "engine 未記録の決着 (ゴール未達) は未発生 = ungrounded な大敵撃破を narration に書かせない"
+        );
+    }
+
     /// 【galge spine の機構】好感度の閾値トリガーが関係の「段」を刻み、名前付き goal に至る:
     /// 20→素を見せる、40→打ち明ける、50(+打ち明け)→告白。**インライン安定シナリオ**で機構を固定する
     /// (houkago の authored 内容は作者が随時いじるので、テストは配布コンテンツに依存させない)。
