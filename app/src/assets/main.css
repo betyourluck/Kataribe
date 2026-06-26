@@ -21,3 +21,13 @@
 ::-webkit-scrollbar-thumb {
   @apply bg-ash rounded-full;
 }
+
+/* ネイティブ <select> のドロップリストを暗色テーマに揃える。
+   option に明示色が無いと WebView2 が既定の灰背景に落ち、parchment 文字が白に近く読みにくい。
+   暗色背景 + parchment 文字で十分なコントラストにする (全 select 共通)。 */
+select option {
+  @apply bg-ink text-parchment;
+}
+select option:disabled {
+  @apply text-parchment/40;
+}

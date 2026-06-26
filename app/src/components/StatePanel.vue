@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import { useGameStore } from "../stores/game";
+import Icon from "./Icon.vue";
 
 const game = useGameStore();
 
@@ -22,18 +23,18 @@ function initials(name: string): string {
     <h2 class="text-ember font-bold tracking-wide mb-3">正本の状態</h2>
 
     <template v-if="game.state">
-      <div class="mb-3">
-        <span class="text-parchment/40">ターン</span>
+      <div class="mb-3 flex items-center">
+        <span class="text-parchment/40 flex items-center gap-1.5"><Icon name="turn" />ターン</span>
         <span class="ml-2 text-parchment">{{ game.state.turn }}</span>
       </div>
 
       <div class="mb-3">
-        <div class="text-parchment/40">現在地</div>
+        <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="location" />現在地</div>
         <div class="text-parchment">{{ game.state.location }}</div>
       </div>
 
       <div class="mb-3">
-        <div class="text-parchment/40">所持品</div>
+        <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="bag" />所持品</div>
         <div v-if="game.state.inventory.length" class="text-parchment">
           {{ game.state.inventory.join("、") }}
         </div>
@@ -41,7 +42,7 @@ function initials(name: string): string {
       </div>
 
       <div class="mb-3">
-        <div class="text-parchment/40">立っている状態</div>
+        <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="flag" />フラグ</div>
         <div v-if="game.state.flags.length" class="text-parchment">
           {{ game.state.flags.join("、") }}
         </div>
