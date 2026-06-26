@@ -186,6 +186,16 @@ pub struct Trigger {
     /// イベント CG の出し方 (既定 [`ImageMode::Background`])。engine は使わない不透明データ。
     #[serde(default)]
     pub image_mode: Option<ImageMode>,
+    /// **繰り返し発火**するか (既定 false = edge-triggered once)。
+    ///
+    /// `false`: 一度発火すると [`GameState::fired`] に latch され二度と発火しない (伏線・覚醒など一回性のビート)。
+    /// `true`: 永続 latch しない。`when` が再び真化すれば将来のターンで再発火する
+    /// (カウンタ閾値→効果→リセットのループ等)。リセットは authored 効果で書く
+    /// (`scale_stat` num:0 でハードリセット / `adjust_stat` 負で繰り越し)。
+    /// **停止性**: repeatable でも 1 回の `apply` (settle) 内では高々 1 回しか発火しない
+    /// (効果が `when` を真のままにしても無限ループしない)。複数閾値を一度に跨いでも発火は次ターンへ繰り越す。
+    #[serde(default)]
+    pub repeatable: bool,
 }
 
 /// イベント CG の表示モード。`Trigger.image` をどう出すか (提示層が解釈する)。

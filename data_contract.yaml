@@ -248,14 +248,15 @@ Trigger:                          # ✅Phase C (Scenario.triggers): エンジン
   when: Gate                      # 発火条件 (好感度>=30 等)
   effects: "[StateOp] 機械的効果 (フラグ・stat・解放) をエンジンが原子適用。authored=信頼済で validate しない (LLM提案でない)"
   narration: "語りの指示。FiredTrigger として apply の戻り (ApplyOutcome.fired) に載り、harness が Accepted で注入"
-  once: "edge-triggered once。GameState.fired: Set<TriggerId> で latch (セーブ対象)。when が真のままでも再発火しない"
+  once: "(既定) edge-triggered once。非 repeatable は GameState.fired: Set<TriggerId> で latch (セーブ対象)。when が真のままでも再発火しない"
+  repeatable: "bool(既定 false)。true=永続 latch しない → when 再真化で将来ターン再発火(カウンタ閾値→効果→リセットのループ等)。リセットは authored 効果(scale_stat num:0 でハードリセット / adjust_stat 負で繰り越し)。停止性: settle 内 fired_this_settle で高々1回 → 効果が when を真のまま残しても無限ループしない(複数閾値跨ぎは次ターンへ繰り越す)"
   evaluation: "受理・適用後の実 state で fire_triggers が発火判定。adjudicate(純粋)は発火させない"
-  cascade: "効果が別 trigger の when を真化させる連鎖は settle まで回す (各 trigger 高々1回=必ず停止, authored 順で決定論)"
+  cascade: "効果が別 trigger の when を真化させる連鎖は settle まで回す。停止性は二層: 永続 latch(非 repeatable のみ) + settle 内 once(全 trigger) = 必ず停止, authored 順で決定論"
   mechanism: "fire_triggers: 禁忌(check_taboos)の双対。却下せず発火し、effects を apply_ops で原子適用"
   recall: "✅memoria_bridge: Trigger.recall(cue) を発火時 passthrough → FiredTrigger.recall。harness が Memoria で解決"
   memoria_bridge: "✅実装済: 条件成立→発火(cue 運搬)→harness resolve_recall(Memoria)→伏線を語りに注入"
   image: "String? 発火時のイベント CG アセット ID (images/ 配下)。engine 不解釈の不透明 string → FiredTrigger.image → FiredBeat.image。提示層が resolve_asset で背景に (spec 01 Phase 2)"
-  image_mode: "ImageMode?(background|overlay) CG の出し方。既定 background=背景上書き・持続。overlay は予約。省略=None。engine 不使用"
+  image_mode: "ImageMode?(background|overlay) CG の出し方。既定 background=発火ターンに場所背景を上書き(瞬間=次の受理ターンで場所背景へ復帰、spec 01 #3 改訂)。overlay は予約。省略=None。engine 不使用"
 
 # --- Memoria 脚 (crate harness::memoria。三権分立の「Memoria が覚える」) ------
 # 伏線・キャラ性格の recall。**可変世界状態は絶対に持たない** (HP/所持品/フラグ/位置/数値は
@@ -278,7 +279,7 @@ FiredBeat:                        # 発火ビート + recall 解決 (FiredTrigge
   narration: "authored な静的語り"
   recalled: "[MemoryFragment] cue を Memoria で解決した伏線 (無ければ空)"
   image: "String? イベント CG アセット ID を passthrough (解決は app)。app BeatView が resolve_asset で絶対パス化 → frontend が背景上書き (spec 01 Phase 2)"
-  image_mode: "ImageMode? CG の表示モード passthrough (background 持続=案A / overlay 予約)"
+  image_mode: "ImageMode? CG の表示モード passthrough (background=瞬間表示・次の受理で場所背景へ復帰 / overlay 予約)。frontend は受理ターンのみ background 更新(却下は保持)"
 
 # --- デスクトップ UI (app/src-tauri = Tauri2 backend, app/src = Vue3 frontend) ----
 # LocalAI prompt 殻 (Tauri2+Vue3+Vite+Tailwind+Pinia) の足場を移植。chat/project/MCP/SSE は捨て、

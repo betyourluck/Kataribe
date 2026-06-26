@@ -60,10 +60,6 @@ interface GameState {
   error: string | null;
   // 現在の背景画像 (asset:// URL)。場所/イベントで差し替え。無ければ null。
   background: string | null;
-  // 持続中のイベント CG (background モード, asset URL)。場所が変わるまで場所背景を上書き (spec 01 Phase 2 案A)。
-  eventCg: string | null;
-  // eventCg が属する場所 id (シーン切替で解除する判定用)。
-  cgLocation: string | null;
   // 現在地に居る NPC (顔アイコン行)。icon は asset:// URL 化済み。
   presentCharacters: CharacterView[];
   // 背景の明るさ 0..100 (大きいほど画像が明るく見える=暗幕が薄い)。グラフィック設定。
@@ -87,8 +83,6 @@ export const useGameStore = defineStore("game", {
       loading: false,
       error: null,
       background: null,
-      eventCg: null,
-      cgLocation: null,
       presentCharacters: [],
       bgBrightness: loadBgBrightness(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
@@ -175,9 +169,6 @@ export const useGameStore = defineStore("game", {
         this.packagePath = path;
         this.title = view.title;
         this.state = view.state;
-        // 新規ゲームは持続 CG をリセット (前回プレイの CG を持ち越さない)。
-        this.eventCg = null;
-        this.cgLocation = null;
         this.background = assetUrl(view.background);
         this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
         this.log = [{ kind: "opening", text: view.description }];
@@ -231,34 +222,18 @@ export const useGameStore = defineStore("game", {
           this.log.push({ kind: "reject", reasons: turn.reasons, attempts: turn.attempts });
         }
         this.state = turn.state;
-        const locId = turn.state.location;
-        if (turn.transition) {
-          // campaign 遷移: 新モジュールの背景に切り替え、前章の持続 CG は解除する
-          // (この turn の発火 CG は前章のものなので持ち越さない)。
-          this.eventCg = null;
-          this.cgLocation = locId;
-          this.background = assetUrl(turn.background);
-        } else {
-          // イベント CG (spec 01 Phase 2 案A): background モードの発火 CG は場所背景を上書きし、
-          // 場所が変わるまで持続する (currentBackground = lastTrigger.image ?? location.image)。
-          // 場所が変わったら持続中の CG を解除 (シーン切替)。
-          if (this.cgLocation !== null && this.cgLocation !== locId) {
-            this.eventCg = null;
-            this.cgLocation = null;
-          }
-          // この turn に background モードの CG が発火したら最後の 1 枚を採用し持続させる
-          // (overlay モードは予約: 背景を上書きしない)。
-          const cgBeat = [...turn.beats]
-            .reverse()
-            .find((b) => b.image && (b.image_mode ?? "background") === "background");
-          if (cgBeat?.image) {
-            this.eventCg = assetUrl(cgBeat.image);
-            this.cgLocation = locId;
-          }
-          // 有効背景 = 持続 CG ?? 場所背景。
-          this.background = this.eventCg ?? assetUrl(turn.background);
-        }
         this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
+        // 背景は受理ターンのみ更新する。却下 = 物語が進んでいないので現在の背景 (=直前の CG) を保つ。
+        // イベント CG は瞬間 (spec 01 #3): 発火ターンに出て、次の受理ターンで場所背景へ復帰する。
+        // campaign 遷移は前章の CG を持ち越さず遷移先の場所背景にする。
+        if (turn.accepted) {
+          const cgBeat = turn.transition
+            ? undefined
+            : [...turn.beats]
+                .reverse()
+                .find((b) => b.image && (b.image_mode ?? "background") === "background");
+          this.background = cgBeat?.image ? assetUrl(cgBeat.image) : assetUrl(turn.background);
+        }
       } catch (e) {
         this.error = String(e);
       } finally {

@@ -1,5 +1,7 @@
 //! 正本の裁定者。LLM の提案を裁き、受理時のみ原子的に state を更新する。
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::reason::RejectReason;
@@ -297,9 +299,13 @@ pub fn apply(
 ///
 /// 禁忌 (`check_taboos`) の双対: 禁忌が「真化を却下」するのに対し、トリガーは「真化で発火」する。
 /// 発火は authored な `effects` を **検証せず** 原子適用し (シナリオ作者の信頼済データ、LLM 提案でない)、
-/// [`GameState::fired`] に latch して二度目の発火を抑止する (edge-triggered once)。
-/// 効果が別トリガーの `when` を真化させる連鎖は、新たな発火が無くなるまで settle する
-/// (各トリガーは高々 1 回発火するので必ず停止)。authored 順に評価して決定論を保つ。
+/// 非 repeatable は [`GameState::fired`] に latch して二度目の発火を抑止する (edge-triggered once)。
+/// 効果が別トリガーの `when` を真化させる連鎖は、新たな発火が無くなるまで settle する。authored 順で決定論。
+///
+/// **停止性 (二層管理)**: `fired_this_settle` (この apply 内の局所集合) に毎発火 id を入れ、
+/// 同じトリガーは settle 内で二度選ばない → 1 回の apply で発火は高々 (トリガー数) 回 = **必ず停止**
+/// (repeatable で効果が `when` を真のまま残しても無限ループしない)。永続 latch (`state.fired`) は
+/// **非 repeatable のみ**に入れる。よって repeatable は次ターン以降 (新しい settle) で `when` 再真化時に再発火する。
 fn fire_triggers(
     state: &mut GameState,
     scenario: &Scenario,
@@ -307,19 +313,23 @@ fn fire_triggers(
     checks: &mut Vec<CheckOutcome>,
 ) -> Vec<FiredTrigger> {
     let mut fired = Vec::new();
+    // この apply (settle) 内で発火済みの id。repeatable も含め settle 内は高々 1 回 → 停止保証。
+    let mut fired_this_settle: BTreeSet<TriggerId> = BTreeSet::new();
     loop {
-        // 未発火かつ発火条件成立の最初のトリガー (authored 順)。
-        let next = scenario
-            .triggers
-            .iter()
-            .find(|t| !state.fired.contains(&t.id) && t.when.eval(state));
+        // この settle で未発火・永続 latch されておらず・発火条件成立の最初のトリガー (authored 順)。
+        let next = scenario.triggers.iter().find(|t| {
+            !fired_this_settle.contains(&t.id) && !state.fired.contains(&t.id) && t.when.eval(state)
+        });
         let Some(t) = next else { break };
 
         // 効果は authored・信頼済なので validate せず原子適用する。
         let effect_delta = StateDelta::new(String::new(), t.effects.clone());
         apply_ops(state, scenario, &effect_delta, rolls, checks);
 
-        state.fired.insert(t.id.clone());
+        fired_this_settle.insert(t.id.clone());
+        if !t.repeatable {
+            state.fired.insert(t.id.clone()); // 非 repeatable のみ永続 latch (once)。
+        }
         fired.push(FiredTrigger {
             id: t.id.clone(),
             narration: t.narration.clone(),
@@ -1401,6 +1411,72 @@ locations:
         // さらに好感度を上げても (when は依然真) 再発火しない。
         let out = apply(&mut s, &sc, &raise_affection(5)).expect("好感度上昇は合法");
         assert!(out.fired.is_empty(), "latch 済みなので再発火しない");
+    }
+
+    /// 【repeatable / 閾値ループ】`repeatable: true` のトリガーは latch されず、
+    /// カウンタが閾値に達するたびに発火する。効果でカウンタをリセットして繰り返す
+    /// (0→10 で他 stat を +1 しカウンタを 0 に戻す = ループ)。
+    #[test]
+    fn repeatable_trigger_loops_on_threshold_with_reset() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\ninitial_stats: { charge: 0, level: 0 }\n",
+            "allowed_flags: []\ngoal: { kind: always }\n",
+            "triggers:\n",
+            "  - id: levelup\n",
+            "    repeatable: true\n",
+            "    when: { kind: stat_at_least, entity: player, key: charge, value: 10 }\n",
+            "    effects:\n",
+            "      - { op: adjust_stat, entity: player, key: level, delta: 1 }\n",
+            "      - { op: scale_stat, entity: player, key: charge, num: 0, den: 1 }\n", // charge を 0 にリセット
+            "    narration: レベルアップ\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n"
+        ))
+        .unwrap();
+        let charge = |n: i64| {
+            d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "charge".into(), delta: n }])
+        };
+
+        // 1 回目: charge 0→10 で発火 → level +1、charge は 0 にリセット。
+        let mut s = sc.initial_state(1);
+        let o1 = apply(&mut s, &sc, &charge(10)).expect("charge 加算は合法");
+        assert!(o1.fired.iter().any(|f| f.id == "levelup"), "閾値到達で発火");
+        assert_eq!(s.stat("level"), 1, "効果で level +1");
+        assert_eq!(s.stat("charge"), 0, "効果で charge を 0 にリセット");
+        assert!(s.fired.is_empty(), "repeatable は永続 latch されない");
+
+        // 2 回目: 再び charge を 10 まで上げると **また発火** する (once との違い)。
+        let o2 = apply(&mut s, &sc, &charge(10)).expect("charge 加算は合法");
+        assert!(o2.fired.iter().any(|f| f.id == "levelup"), "repeatable は閾値再到達で再発火");
+        assert_eq!(s.stat("level"), 2, "2 周目で level +1");
+        assert_eq!(s.stat("charge"), 0);
+    }
+
+    /// 【停止性】自己リセットしない repeatable トリガー (`when: always`) でも、1 回の apply (settle)
+    /// 内では高々 1 回しか発火しない = 無限ループしない。永続 latch しないので次ターンで再発火する。
+    #[test]
+    fn repeatable_trigger_fires_once_per_apply_and_terminates() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\ninitial_stats: { ticks: 0 }\n",
+            "allowed_flags: []\ngoal: { kind: always }\n",
+            "triggers:\n",
+            "  - id: tick\n",
+            "    repeatable: true\n",
+            "    when: { kind: always }\n", // 効果は when を偽化しない (常に真) = 無限ループの危険
+            "    effects:\n",
+            "      - { op: adjust_stat, entity: player, key: ticks, delta: 1 }\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n"
+        ))
+        .unwrap();
+        let mut s = sc.initial_state(1);
+
+        // 空デルタでも apply は settle を回す。when=always だが settle 内は 1 回で停止する。
+        let o1 = apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
+        assert_eq!(o1.fired.iter().filter(|f| f.id == "tick").count(), 1, "settle 内は高々 1 回 = 停止");
+        assert_eq!(s.stat("ticks"), 1);
+
+        // 次の apply (新しい settle) でまた 1 回発火する (永続 latch しない)。
+        apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
+        assert_eq!(s.stat("ticks"), 2, "次ターンで再発火 (repeatable)");
     }
 
     /// 【純粋性】adjudicate は trigger を発火させない (state を一切変えない)。
