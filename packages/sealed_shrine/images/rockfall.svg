@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="rfbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1410"/>
+      <stop offset="1" stop-color="#0a0706"/>
+    </linearGradient>
+    <radialGradient id="dust" cx="0.5" cy="0.2" r="0.7">
+      <stop offset="0" stop-color="#6b5a48" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#0a0706" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#rfbg)"/>
+  <!-- 崩落の砂塵 -->
+  <rect width="1600" height="900" fill="url(#dust)"/>
+  <!-- 雪崩れ落ちる岩塊 -->
+  <g fill="#2c2620" stroke="#0a0706" stroke-width="3">
+    <polygon points="300,0 470,0 520,180 360,230 250,120"/>
+    <polygon points="700,-20 900,-10 980,160 840,260 660,150"/>
+    <polygon points="1150,0 1340,0 1380,210 1200,250 1090,110"/>
+    <polygon points="520,300 700,340 660,520 470,500"/>
+    <polygon points="980,360 1180,400 1120,580 940,540"/>
+  </g>
+  <!-- 亀裂 -->
+  <g stroke="#b03a2a" stroke-width="4" opacity="0.6" fill="none">
+    <path d="M0,560 L380,600 L520,540 L900,640 L1280,580 L1600,650"/>
+  </g>
+  <text x="800" y="130" font-family="serif" font-size="44" fill="#c98b6a" text-anchor="middle" opacity="0.7">落石</text>
+</svg>

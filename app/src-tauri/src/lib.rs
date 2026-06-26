@@ -11,10 +11,11 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use gm_core::{is_goal, CheckOutcome, GameState, Lang, Scenario, PLAYER};
+use gm_core::{is_goal, CheckOutcome, GameState, ImageMode, Lang, Scenario, PLAYER};
 use harness::{
-    load_lore, load_package, read_manifest, resolve_asset, resolve_recall, run_turn, AssetKind,
-    LoreStore, MemoryFragment, TurnOutcome,
+    advance_campaign_injected, is_campaign_entry, load_campaign_package, load_lore, load_package,
+    read_manifest, resolve_asset, resolve_recall, run_turn, AssetKind, Campaign, LoreStore,
+    MemoryFragment, ModuleId, PackageManifest, TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
 use serde::Serialize;
@@ -95,6 +96,10 @@ struct CheckView {
 struct BeatView {
     narration: String,
     recalled: Vec<String>,
+    /// 発火時のイベント CG の絶対パス (frontend が convertFileSrc で URL 化)。無ければ None。
+    image: Option<String>,
+    /// イベント CG の表示モード ("background" | "overlay")。未指定なら None (=background 扱い)。
+    image_mode: Option<String>,
 }
 
 /// 開幕 view (new_game の戻り)。
@@ -132,6 +137,20 @@ struct TurnView {
     background: Option<String>,
     /// 現在地に居る NPC (顔アイコン行)。
     present_characters: Vec<CharacterView>,
+    /// campaign で次モジュールへ遷移したとき、遷移先モジュールの開幕情報。単発/未遷移なら None。
+    /// このとき state/background/present_characters は**遷移先**を指す (goal_* は遷移元の結末)。
+    transition: Option<TransitionView>,
+}
+
+/// campaign のモジュール遷移 (前モジュールの goal 到達 → 次モジュールへ state を糸通しして差し替え)。
+#[derive(Serialize)]
+struct TransitionView {
+    /// 遷移先モジュールのタイトル。
+    module_title: String,
+    /// 遷移先の開始ロケーション id。
+    location: String,
+    /// 遷移先の開幕描写。
+    description: String,
 }
 
 /// 現在地の背景画像を解決して絶対パス文字列にする (frontend が convertFileSrc で URL 化)。
@@ -215,6 +234,12 @@ struct GameSession {
     lang: Lang,
     /// パッケージのフォルダ (アセット解決の起点)。`images/{id}` 等をここから解決する。
     package_root: PathBuf,
+    /// campaign-entry パッケージなら地図 (モジュール接続トポロジ)。単発シナリオなら None。
+    campaign: Option<Campaign>,
+    /// 現在のモジュール id (campaign 時のみ意味を持つ)。advance の `from`。
+    current_module: ModuleId,
+    /// package manifest (campaign 前進で遷移先モジュールへ player/globals/world を継承させるのに要る)。
+    manifest: PackageManifest,
 }
 
 /// new_game 前は None。
@@ -337,7 +362,7 @@ struct PackageEntry {
     path: String,
     title: String,
     description: String,
-    /// 単一シナリオ entry のみ今は playable (campaign-entry の load_package 対応は後続)。
+    /// プレイ可能か (manifest が読めれば true。単発・campaign-entry 双方対応)。読込エラー時のみ false。
     playable: bool,
     /// package.yaml が読めない等のエラー (一覧から外さず理由を表示する)。
     error: Option<String>,
@@ -358,7 +383,8 @@ async fn list_packages(paths: Vec<String>) -> Vec<PackageEntry> {
             };
             match read_manifest(&dir) {
                 Ok(m) => {
-                    let playable = !m.entry.contains("campaign");
+                    // 単発シナリオも campaign-entry も playable (new_game が entry を分岐)。
+                    let playable = true;
                     PackageEntry {
                         path: p,
                         title: m.title,
@@ -489,8 +515,16 @@ async fn new_game(
         .allow_directory(&pkg_dir, true)
         .map_err(|e| format!("アセット scope の許可に失敗: {e}"))?;
 
-    // パッケージを読む (entry シナリオ + player/globals 注入 + 自己完結検査)。
-    let loaded = load_package(&pkg_dir).map_err(|e| e.to_string())?;
+    // entry が campaign.yaml なら開始モジュールを、単発なら entry シナリオを読む。
+    // どちらも package の player/globals/world を注入する (campaign は各モジュールへ継承)。
+    let manifest = read_manifest(&pkg_dir).map_err(|e| e.to_string())?;
+    let (scenario, campaign, current_module, manifest) = if is_campaign_entry(&manifest.entry) {
+        let loaded = load_campaign_package(&pkg_dir).map_err(|e| e.to_string())?;
+        (loaded.scenario, Some(loaded.campaign), loaded.start_module, loaded.manifest)
+    } else {
+        let loaded = load_package(&pkg_dir).map_err(|e| e.to_string())?;
+        (loaded.scenario, None, ModuleId::new(), loaded.manifest)
+    };
     // 伏線 (パッケージ内 memoria/) をロード。無ければ空。
     let lore = load_lore(&pkg_dir.join("memoria")).map_err(|e| e.to_string())?;
 
@@ -498,12 +532,11 @@ async fn new_game(
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
     let client = LlmClient::new(config).map_err(|e| e.to_string())?;
 
-    let scenario = loaded.scenario;
     let state = scenario.initial_state(SEED);
-    let title = if loaded.manifest.title.is_empty() {
+    let title = if manifest.title.is_empty() {
         scenario.title.clone()
     } else {
-        loaded.manifest.title.clone()
+        manifest.title.clone()
     };
     let view = GameView {
         title,
@@ -526,6 +559,9 @@ async fn new_game(
         pending_checks: Vec::new(),
         package_root: pkg_dir,
         last_narration: String::new(),
+        campaign,
+        current_module,
+        manifest,
         // 言語設定タブ由来の lang を優先、無ければ env 既定。
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
@@ -564,7 +600,7 @@ async fn play_turn(
     .await
     .map_err(|e| e.to_string())?;
 
-    let view = match outcome {
+    let mut view = match outcome {
         TurnOutcome::Accepted { narration, rolls, checks, fired, attempts } => {
             // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止)。
             sess.last_narration = narration.clone();
@@ -575,6 +611,15 @@ async fn play_turn(
                 .map(|b| BeatView {
                     narration: normalize(&b.narration),
                     recalled: b.recalled.iter().map(|f| normalize(&f.text)).collect(),
+                    // イベント CG の ID を package_root 起点に解決 (背景と同経路)。
+                    image: b.image.as_ref().and_then(|id| {
+                        resolve_asset(&sess.package_root, AssetKind::Images, id)
+                            .map(|p| p.to_string_lossy().into_owned())
+                    }),
+                    image_mode: b.image_mode.map(|m| match m {
+                        ImageMode::Background => "background".to_string(),
+                        ImageMode::Overlay => "overlay".to_string(),
+                    }),
                 })
                 .collect();
             // 次ターンの語りに織り込ませる伏線を持ち越す。
@@ -620,6 +665,7 @@ async fn play_turn(
                 goal_narration,
                 background: background_for(&sess.scenario, &sess.state, &sess.package_root),
                 present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
+                transition: None,
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -638,8 +684,57 @@ async fn play_turn(
             goal_narration: goal_view(&sess.state, &sess.scenario).1,
             background: background_for(&sess.scenario, &sess.state, &sess.package_root),
             present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
+            transition: None,
         },
     };
+
+    // --- campaign 前進 (reached → transition の結線、CLI play と同型) ---
+    // goal 到達 + campaign パッケージなら、発火 GoalId で次モジュールへ state を糸通しして遷移する。
+    // 駆動は LLM 非依存 (engine が決める GoalId と作者の地図だけ)。
+    if view.accepted && view.goal_reached {
+        if let Some(campaign) = sess.campaign.clone() {
+            let from = sess.current_module.clone();
+            let advance = advance_campaign_injected(
+                &campaign,
+                &sess.package_root,
+                &sess.manifest,
+                &from,
+                &sess.scenario,
+                &sess.state,
+            )
+            .map_err(|e| e.to_string())?;
+            // 辺が在る = 次モジュールへ (骨格だけ差し替え、状態は transition で持ち越し済)。
+            // 辺が無い (advance=None) = 終端エンディング → goal_reached=true のまま = キャンペーン完了。
+            if let Some(adv) = advance {
+                sess.current_module = adv.module_id;
+                sess.scenario = adv.scenario;
+                sess.state = adv.state;
+                // 新モジュール = 新しい情景。継続文脈・伏線・判定の持ち越しをリセット。
+                sess.last_narration = String::new();
+                sess.pending_lore.clear();
+                sess.pending_checks.clear();
+
+                let description = sess
+                    .scenario
+                    .location(&sess.state.location)
+                    .map(|l| normalize(&l.description))
+                    .unwrap_or_default();
+                view.transition = Some(TransitionView {
+                    module_title: sess.scenario.title.clone(),
+                    location: sess.state.location.clone(),
+                    description,
+                });
+                // パネル類は遷移先を指す (goal_* は遷移元の結末のまま残す)。
+                view.state = state_view(&sess.state, &sess.scenario);
+                view.background = background_for(&sess.scenario, &sess.state, &sess.package_root);
+                view.present_characters =
+                    present_characters(&sess.scenario, &sess.state, &sess.package_root);
+                // キャンペーンは続くので入力を締めない (終端は advance=None で締まる)。
+                view.goal_reached = false;
+            }
+        }
+    }
+
     Ok(view)
 }
 

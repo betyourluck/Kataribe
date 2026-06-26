@@ -57,7 +57,7 @@ onMounted(() => {
             :value="p.path"
             :disabled="!p.playable || !!p.error"
           >
-            {{ p.error ? `⚠ ${p.path}` : p.title }}{{ !p.playable && !p.error ? "（campaign 後続）" : "" }}
+            {{ p.error ? `⚠ ${p.path}` : p.title }}
           </option>
         </select>
         <button

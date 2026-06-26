@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use crate::error::HarnessError;
 use crate::loader::inject_cast;
+use crate::package::{inject_package, PackageManifest};
 
 /// モジュール (= 自己完結 scenario) の識別子。campaign 内で一意。
 pub type ModuleId = String;
@@ -96,6 +97,31 @@ pub fn load_campaign(path: &Path) -> Result<Campaign, HarnessError> {
 /// load 時に弾く = 幻フラグ/幻 goal を実行経路に乗せない)。`root` は repo root
 /// (scenarios/ characters/ memoria/ が在る所)。
 pub fn load_module(campaign: &Campaign, root: &Path, id: &str) -> Result<Scenario, HarnessError> {
+    build_module(campaign, root, id, None)
+}
+
+/// [`load_module`] の **package 注入版**。campaign-entry パッケージで使う。
+///
+/// `load_module` との差は `inject_package` を `inject_cast` の後・`validate` の前に挟むこと
+/// (package の player/globals/world が各モジュールへ継承され、`global_flags ⊆ allowed_flags`
+/// 閉世界検査を inject 後に走らせるので幻フラグ扱いされない順序)。
+pub fn load_module_injected(
+    campaign: &Campaign,
+    root: &Path,
+    manifest: &PackageManifest,
+    id: &str,
+) -> Result<Scenario, HarnessError> {
+    build_module(campaign, root, id, Some(manifest))
+}
+
+/// モジュール scenario の組み立て本体。`manifest` を渡すと package を注入する
+/// (`inject_cast` → (任意)`inject_package` → `validate` の順 = 注入後に閉世界検査)。
+fn build_module(
+    campaign: &Campaign,
+    root: &Path,
+    id: &str,
+    manifest: Option<&PackageManifest>,
+) -> Result<Scenario, HarnessError> {
     let rel = campaign
         .module_path(id)
         .ok_or_else(|| HarnessError::CampaignLoad {
@@ -112,6 +138,9 @@ pub fn load_module(campaign: &Campaign, root: &Path, id: &str) -> Result<Scenari
         detail: e.to_string(),
     })?;
     inject_cast(&mut scenario, &root.join("characters"))?;
+    if let Some(m) = manifest {
+        inject_package(&mut scenario, m); // player/globals/world を各モジュールへ継承
+    }
     let errs = scenario.validate();
     if !errs.is_empty() {
         return Err(HarnessError::CampaignLoad {
@@ -140,6 +169,31 @@ pub fn advance_campaign(
     scenario: &Scenario,
     state: &GameState,
 ) -> Result<Option<Advance>, HarnessError> {
+    advance_with(campaign, root, None, current_module, scenario, state)
+}
+
+/// [`advance_campaign`] の **package 注入版**。campaign-entry パッケージで使う
+/// (遷移先モジュールにも package の player/globals/world を継承させる)。
+pub fn advance_campaign_injected(
+    campaign: &Campaign,
+    root: &Path,
+    manifest: &PackageManifest,
+    current_module: &str,
+    scenario: &Scenario,
+    state: &GameState,
+) -> Result<Option<Advance>, HarnessError> {
+    advance_with(campaign, root, Some(manifest), current_module, scenario, state)
+}
+
+/// goal 到達後の前進本体。`manifest` を渡すと遷移先モジュールへ package を注入する。
+fn advance_with(
+    campaign: &Campaign,
+    root: &Path,
+    manifest: Option<&PackageManifest>,
+    current_module: &str,
+    scenario: &Scenario,
+    state: &GameState,
+) -> Result<Option<Advance>, HarnessError> {
     // どのエンディングに着いたか (engine が決定論的に決める)。未到達なら前進しない。
     let Some(goal) = scenario.reached(state) else {
         return Ok(None);
@@ -150,7 +204,7 @@ pub fn advance_campaign(
     };
     let next_id = next_id.clone();
     // 次モジュールの骨格を load し、状態を持ち越して糸通しする (骨格だけ差し替え)。
-    let next_scenario = load_module(campaign, root, &next_id)?;
+    let next_scenario = build_module(campaign, root, &next_id, manifest)?;
     let next_state = next_scenario.transition(state, scenario);
     Ok(Some(Advance {
         module_id: next_id,

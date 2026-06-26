@@ -19,10 +19,12 @@ mod turn;
 
 pub use asset::{resolve_asset, AssetKind};
 pub use campaign::{
-    advance_campaign, load_campaign, load_module, Advance, Campaign, CampaignEdge, ModuleId,
+    advance_campaign, advance_campaign_injected, load_campaign, load_module, load_module_injected,
+    Advance, Campaign, CampaignEdge, ModuleId,
 };
 pub use package::{
-    inject_package, load_package, read_manifest, Globals, LoadedPackage, PackageManifest, PlayerDef,
+    inject_package, is_campaign_entry, load_campaign_package, load_package, read_manifest, Globals,
+    LoadedCampaignPackage, LoadedPackage, PackageManifest, PlayerDef,
 };
 pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};

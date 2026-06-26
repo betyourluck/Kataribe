@@ -179,6 +179,23 @@ pub struct Trigger {
     /// 解決は上位 (harness) の責務。`None` なら recall しない静的な反応ビート。
     #[serde(default)]
     pub recall: Option<String>,
+    /// 発火時のイベント CG (画像 ID)。**engine は解釈しない不透明 string** (背景/narration と同類)。
+    /// 提示層が `images/{id}` を解決して描画する。`None` なら CG 差し替え無し。
+    #[serde(default)]
+    pub image: Option<String>,
+    /// イベント CG の出し方 (既定 [`ImageMode::Background`])。engine は使わない不透明データ。
+    #[serde(default)]
+    pub image_mode: Option<ImageMode>,
+}
+
+/// イベント CG の表示モード。`Trigger.image` をどう出すか (提示層が解釈する)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageMode {
+    /// 背景を上書き・持続 (シーン切替)。既定。
+    Background,
+    /// 既存背景の上に重ねる (予約・提示層の実装は将来)。
+    Overlay,
 }
 
 /// tier がどの**自然出目** (修正前の素の `1d{sides}`) で発火するか。

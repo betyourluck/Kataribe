@@ -176,6 +176,44 @@ pub fn load_package(dir: &Path) -> Result<LoadedPackage, HarnessError> {
     Ok(LoadedPackage { manifest, scenario })
 }
 
+/// entry が campaign 型 (複数モジュールを束ねる) か。エントリ名に `campaign` を含むかで判定。
+/// 単一シナリオ entry (`scenarios/xxx.yaml`) は `false`、`campaign.yaml` は `true`。
+pub fn is_campaign_entry(entry: &str) -> bool {
+    entry.contains("campaign")
+}
+
+/// campaign-entry パッケージのロード結果。**開始モジュール**を package 注入済・検証済で返す。
+/// `campaign`/`start_module` は以後の [`advance_campaign_injected`](crate::advance_campaign_injected) 駆動に使う。
+#[derive(Debug, Clone)]
+pub struct LoadedCampaignPackage {
+    pub manifest: PackageManifest,
+    /// authored モジュール接続トポロジ (campaign.yaml)。
+    pub campaign: crate::campaign::Campaign,
+    /// 開始モジュール id (`campaign.start`)。
+    pub start_module: crate::campaign::ModuleId,
+    /// 開始モジュールの骨格 (`inject_cast` + `inject_package` + `validate` 済)。
+    pub scenario: Scenario,
+}
+
+/// entry が `campaign.yaml` のパッケージを読む (campaign 地図 + 開始モジュール)。
+///
+/// [`load_package`] の campaign 版。`root` はパッケージ dir = 自己完結ゆえ module path も
+/// フォルダ相対。開始モジュールには [`inject_package`] で player/globals/world を継承させる
+/// (単発 entry の `load_package` と同じ注入を、campaign の各モジュールにも効かせる)。
+pub fn load_campaign_package(dir: &Path) -> Result<LoadedCampaignPackage, HarnessError> {
+    let manifest = read_manifest(dir)?;
+    let entry_path = dir.join(&manifest.entry);
+    let campaign = crate::campaign::load_campaign(&entry_path)?;
+    let start = campaign.start.clone();
+    let scenario = crate::campaign::load_module_injected(&campaign, dir, &manifest, &start)?;
+    Ok(LoadedCampaignPackage {
+        manifest,
+        campaign,
+        start_module: start,
+        scenario,
+    })
+}
+
 // =============================================================================
 // PoC: 配布単位フォルダのロードと注入 (Red→Green)
 // 「package で一度宣言 → 各モジュールへ注入」を実証。gm_core 無改修。
@@ -234,6 +272,28 @@ mod tests {
         let escape = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/escape"));
         let me = read_manifest(escape).expect("campaign パッケージの manifest も読める");
         assert_eq!(me.entry, "campaign.yaml");
+    }
+
+    /// 【campaign-entry のロード】entry=campaign.yaml のパッケージを開始モジュール込みで読む。
+    /// 開始モジュールは package 注入済 (world が継承) かつ campaign 地図が以後の前進に使える。
+    #[test]
+    fn load_campaign_package_loads_start_module_with_injection() {
+        assert!(is_campaign_entry("campaign.yaml"), "campaign entry を判定");
+        assert!(!is_campaign_entry("scenarios/classroom.yaml"), "単発 entry は false");
+
+        let escape = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/escape"));
+        let loaded = load_campaign_package(escape).expect("campaign パッケージをロードできる");
+
+        assert_eq!(loaded.manifest.entry, "campaign.yaml");
+        assert_eq!(loaded.start_module, "study", "campaign.start が開始モジュール");
+        assert_eq!(loaded.scenario.title, "書斎の引き出し", "開始モジュールの骨格が解決される");
+        // package の world (語り素材) が開始モジュールへ継承される (単発 load_package と同じ注入)。
+        assert!(
+            loaded.scenario.world.contains("洋館"),
+            "package.world が開始モジュールへ注入される"
+        );
+        // campaign 地図が以後の advance に使える (発火 GoalId → 次モジュール)。
+        assert_eq!(loaded.campaign.next("study", "jammed_ending").map(String::as_str), Some("cellar"));
     }
 
     /// 【merge 規則】scenario が player stat を宣言していても package が勝つ (分裂を防ぐ)。

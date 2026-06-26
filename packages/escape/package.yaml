@@ -1,6 +1,7 @@
 # package.yaml — 「書斎からの脱出」配布パッケージ。
 # entry が campaign.yaml = 複数モジュール (study→cellar/forest) を束ねるキャンペーン型。
-# (campaign-entry の load_package 対応は後続。現状 campaign は load_campaign 経路でロード。)
+# GUI 対応済: load_campaign_package が開始モジュールを package 注入込みで読み、goal 到達ごとに
+# advance_campaign_injected が次モジュールへ state を糸通しして遷移する。
 
 title: 書斎からの脱出
 description: 引き出しの技能判定で結末が分岐する短編キャンペーン。大失敗なら地下へ、成功なら森へ。

@@ -54,6 +54,7 @@ triggers:
     effects:
       - { op: adjust_stat, entity: player, key: hp, delta: -99 }
     narration: 扉がきしんだ瞬間、古い仕掛けが弾けた。天井から岩塊が雪崩れ落ちる。
+    image: rockfall.svg        # 落石のイベント CG (背景上書き・持続)
   # 聖剣を手にした瞬間、見習いが魔法剣士へ覚醒する (転職 + 魔法の開花)。
   - id: awakening
     when: { kind: has_item, entity: player, item: 聖剣 }
@@ -61,6 +62,7 @@ triggers:
       - { op: set_attribute, entity: player, key: クラス, value: 魔法剣士 }
       - { op: grant_skill, entity: player, skill: 魔法 }
     narration: 聖剣の柄を握った瞬間、忘れられていた魔力が血に巡った。見習いの体に、魔法剣士としての力が宿る。
+    image: awakening.svg       # 覚醒のイベント CG (背景上書き・持続)
 
 locations:
   gate:

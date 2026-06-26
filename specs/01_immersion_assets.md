@@ -90,7 +90,7 @@ ID は `^[A-Za-z0-9._-]{1,64}$` のファイル名のみ。gm_core は ID を解
 - **Phase 0 — 基盤**: `GameSession.package_root` 追加 / `resolve_asset`（ID サニタイズ込み） / `tauri.conf` の assetProtocol enable + CSP 締め / ランタイム scope 動的追加。
 - **Phase 1 — 場所背景**: `Location.image` → 背景。最小で没入が一気に上がる。
 - **Phase 1.5 — 顔アイコン**: `CharacterDef.icon`/`Protagonist.icon` + `Location.cast` + 顔アイコン行 + クリック→ステータス（engine 改修ゼロの見せ場）。
-- **Phase 2 — イベント CG**: `Trigger.image` + `image_mode`（background 持続／overlay 予約）。
+- **Phase 2 — イベント CG ✅**: `Trigger.image` + `ImageMode`（background 持続／overlay 予約）→ `FiredTrigger`/`FiredBeat`/`BeatView` を passthrough。frontend は案A（`eventCg ?? location.image`・場所が変わるまで持続）。gm_core 純粋維持・PoC `trigger_image_passthrough_to_fired`/`trigger_image_mode_defaults_to_none`。ドッグフード= `sealed_shrine` の `awakening`/`rockfall` に CG。
 - **Phase 3 — 音声**: `Location.bgm`（ループ・フェード）/ `Trigger.sound`（SE）。
 
 ---

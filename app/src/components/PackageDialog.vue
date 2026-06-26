@@ -39,7 +39,6 @@ function add() {
             <div class="flex items-center gap-2">
               <span class="font-bold text-parchment truncate">{{ p.error ? p.path : p.title }}</span>
               <span v-if="p.error" class="shrink-0 rounded bg-red-900/60 px-1.5 text-xs text-red-200">読込失敗</span>
-              <span v-else-if="!p.playable" class="shrink-0 rounded bg-ash/60 px-1.5 text-xs text-parchment/60">campaign（後続）</span>
             </div>
             <div class="text-xs text-parchment/45 truncate">{{ p.path }}</div>
             <div v-if="p.description && !p.error" class="text-xs text-parchment/60 mt-0.5">{{ p.description }}</div>

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::reason::RejectReason;
-use crate::spine::Scenario;
+use crate::spine::{ImageMode, Scenario};
 use crate::state::{GameState, StateDelta, StateOp, TriggerId, PLAYER};
 
 /// 裁定結果。`Reject` は**構造化された**理由を含む (文面は提示層が言語ごとに生成)。
@@ -58,6 +58,10 @@ pub struct FiredTrigger {
     pub id: TriggerId,
     pub narration: String,
     pub recall: Option<String>,
+    /// 発火時のイベント CG (画像 ID)。`Trigger.image` を passthrough (engine は解釈しない)。
+    pub image: Option<String>,
+    /// イベント CG の表示モード。`Trigger.image_mode` を passthrough。
+    pub image_mode: Option<ImageMode>,
 }
 
 /// デルタ受理時の適用結果。ダイスの出目と、その適用が連鎖発火させたトリガー群。
@@ -320,6 +324,8 @@ fn fire_triggers(
             id: t.id.clone(),
             narration: t.narration.clone(),
             recall: t.recall.clone(), // cue を passthrough。解釈は harness。
+            image: t.image.clone(),   // イベント CG を passthrough。解決は提示層。
+            image_mode: t.image_mode,
         });
     }
     fired
@@ -1809,6 +1815,61 @@ locations:
         let room = sc.location("room").unwrap();
         assert_eq!(room.image.as_deref(), Some("room.svg"), "場所の背景 ID");
         assert!(room.present.contains("moka"), "場所の presence");
+    }
+
+    /// 【イベント CG passthrough (Phase 2)】`Trigger.image`/`image_mode` が serde で読まれ、
+    /// 発火時に `FiredTrigger` へそのまま載る (engine は解釈しない不透明データ。解決は提示層)。
+    #[test]
+    fn trigger_image_passthrough_to_fired() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [done]
+goal: { kind: flag_is, key: done, value: true }
+locations:
+  room: { description: d, exits: [] }
+triggers:
+  - id: cg_beat
+    when: { kind: always }
+    effects:
+      - { op: set_flag, key: done, value: true }
+    narration: 光が祭壇を満たす。
+    image: awakening.svg
+    image_mode: overlay
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        let out = apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
+
+        let beat = out.fired.iter().find(|f| f.id == "cg_beat").expect("発火する");
+        assert_eq!(beat.image.as_deref(), Some("awakening.svg"), "イベント CG ID を passthrough");
+        assert_eq!(beat.image_mode, Some(ImageMode::Overlay), "表示モードを passthrough");
+    }
+
+    /// 【既定モード】`image_mode` 省略時は `None` のまま (提示層が Background と解釈する)。
+    #[test]
+    fn trigger_image_mode_defaults_to_none() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [done]
+goal: { kind: flag_is, key: done, value: true }
+locations:
+  room: { description: d, exits: [] }
+triggers:
+  - id: cg_beat
+    when: { kind: always }
+    effects:
+      - { op: set_flag, key: done, value: true }
+    image: scene.svg
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        let out = apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
+
+        let beat = out.fired.iter().find(|f| f.id == "cg_beat").expect("発火する");
+        assert_eq!(beat.image.as_deref(), Some("scene.svg"));
+        assert_eq!(beat.image_mode, None, "省略時は None (既定 Background は提示層の解釈)");
     }
 
     /// 【却下時は不発】不正 op を含むデルタは却下され、trigger も発火しない (原子性)。

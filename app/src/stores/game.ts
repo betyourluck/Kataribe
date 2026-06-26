@@ -30,7 +30,7 @@ export interface PackageEntry {
   path: string;
   title: string;
   description: string;
-  playable: boolean; // 単一シナリオ entry のみ今は playable (campaign-entry は後続)
+  playable: boolean; // manifest が読めれば true (単発・campaign-entry 双方)。読込エラー時のみ false
   error: string | null;
 }
 
@@ -60,6 +60,10 @@ interface GameState {
   error: string | null;
   // 現在の背景画像 (asset:// URL)。場所/イベントで差し替え。無ければ null。
   background: string | null;
+  // 持続中のイベント CG (background モード, asset URL)。場所が変わるまで場所背景を上書き (spec 01 Phase 2 案A)。
+  eventCg: string | null;
+  // eventCg が属する場所 id (シーン切替で解除する判定用)。
+  cgLocation: string | null;
   // 現在地に居る NPC (顔アイコン行)。icon は asset:// URL 化済み。
   presentCharacters: CharacterView[];
   // 背景の明るさ 0..100 (大きいほど画像が明るく見える=暗幕が薄い)。グラフィック設定。
@@ -83,6 +87,8 @@ export const useGameStore = defineStore("game", {
       loading: false,
       error: null,
       background: null,
+      eventCg: null,
+      cgLocation: null,
       presentCharacters: [],
       bgBrightness: loadBgBrightness(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
@@ -169,6 +175,9 @@ export const useGameStore = defineStore("game", {
         this.packagePath = path;
         this.title = view.title;
         this.state = view.state;
+        // 新規ゲームは持続 CG をリセット (前回プレイの CG を持ち越さない)。
+        this.eventCg = null;
+        this.cgLocation = null;
         this.background = assetUrl(view.background);
         this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
         this.log = [{ kind: "opening", text: view.description }];
@@ -197,21 +206,58 @@ export const useGameStore = defineStore("game", {
           if (turn.attempts > 1) {
             this.log.push({ kind: "system", text: `GM は ${turn.attempts} 回目の提案で筋を通した` });
           }
-          if (turn.goal_reached) {
-            // 結末ナレーション (authored) があれば語りとして出す。
+          // goal 到達: 単発/終端なら goal_reached、campaign 継続なら transition で signal。
+          if (turn.goal_reached || turn.transition) {
+            // 結末ナレーション (authored) があれば語りとして出す (遷移元モジュールの結末)。
             if (turn.goal_narration) {
               this.log.push({ kind: "narration", text: turn.goal_narration });
             }
-            // どの goal に達したか (複数 goal の識別)。
-            const label = turn.goal_id ? `🎉 結末「${turn.goal_id}」に到達した。` : "🎉 クリア。goal に到達した。";
-            this.log.push({ kind: "system", text: label });
+            if (turn.transition) {
+              // campaign: この章の結末 → 次モジュールへ。入力は締めず続行。
+              const end = turn.goal_id ? `結末「${turn.goal_id}」` : "この章の結末";
+              this.log.push({
+                kind: "system",
+                text: `${end}に到達。次の章『${turn.transition.module_title}』へ。`,
+              });
+              // 遷移先モジュールの開幕描写。
+              this.log.push({ kind: "opening", text: turn.transition.description });
+            } else {
+              // 単発シナリオ/キャンペーン終端 = クリア。
+              const label = turn.goal_id ? `🎉 結末「${turn.goal_id}」に到達した。` : "🎉 クリア。goal に到達した。";
+              this.log.push({ kind: "system", text: label });
+            }
           }
         } else {
           this.log.push({ kind: "reject", reasons: turn.reasons, attempts: turn.attempts });
         }
         this.state = turn.state;
-        // 背景は location 変化で差し替え (Phase 2 でイベント CG も同経路)。
-        this.background = assetUrl(turn.background);
+        const locId = turn.state.location;
+        if (turn.transition) {
+          // campaign 遷移: 新モジュールの背景に切り替え、前章の持続 CG は解除する
+          // (この turn の発火 CG は前章のものなので持ち越さない)。
+          this.eventCg = null;
+          this.cgLocation = locId;
+          this.background = assetUrl(turn.background);
+        } else {
+          // イベント CG (spec 01 Phase 2 案A): background モードの発火 CG は場所背景を上書きし、
+          // 場所が変わるまで持続する (currentBackground = lastTrigger.image ?? location.image)。
+          // 場所が変わったら持続中の CG を解除 (シーン切替)。
+          if (this.cgLocation !== null && this.cgLocation !== locId) {
+            this.eventCg = null;
+            this.cgLocation = null;
+          }
+          // この turn に background モードの CG が発火したら最後の 1 枚を採用し持続させる
+          // (overlay モードは予約: 背景を上書きしない)。
+          const cgBeat = [...turn.beats]
+            .reverse()
+            .find((b) => b.image && (b.image_mode ?? "background") === "background");
+          if (cgBeat?.image) {
+            this.eventCg = assetUrl(cgBeat.image);
+            this.cgLocation = locId;
+          }
+          // 有効背景 = 持続 CG ?? 場所背景。
+          this.background = this.eventCg ?? assetUrl(turn.background);
+        }
         this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
       } catch (e) {
         this.error = String(e);

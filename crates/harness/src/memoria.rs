@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use gm_core::{FiredTrigger, TriggerId};
+use gm_core::{FiredTrigger, ImageMode, TriggerId};
 use serde::{Deserialize, Serialize};
 
 use crate::error::HarnessError;
@@ -198,6 +198,10 @@ pub struct FiredBeat {
     pub narration: String,
     /// `recall` cue を Memoria で解決して得た伏線。cue が無い/該当無しなら空。
     pub recalled: Vec<MemoryFragment>,
+    /// 発火時のイベント CG (画像 ID)。`FiredTrigger.image` を passthrough (解決は提示層)。
+    pub image: Option<String>,
+    /// イベント CG の表示モード。`FiredTrigger.image_mode` を passthrough。
+    pub image_mode: Option<ImageMode>,
 }
 
 /// 発火トリガー列の `recall` cue を Memoria で解決し [`FiredBeat`] 列にする。
@@ -215,6 +219,8 @@ pub fn resolve_recall<M: Memoria>(memoria: &M, fired: &[FiredTrigger]) -> Vec<Fi
                 .as_deref()
                 .map(|cue| memoria.recall(cue))
                 .unwrap_or_default(),
+            image: f.image.clone(),
+            image_mode: f.image_mode,
         })
         .collect()
 }
@@ -292,6 +298,8 @@ mod tests {
             id: id.into(),
             narration: "（反応ビートの語り）".into(),
             recall: recall.map(|s| s.into()),
+            image: None,
+            image_mode: None,
         }
     }
 

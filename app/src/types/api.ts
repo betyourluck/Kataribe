@@ -52,6 +52,10 @@ export interface CheckView {
 export interface BeatView {
   narration: string;
   recalled: string[];
+  /** 発火時のイベント CG の絶対パス (convertFileSrc で URL 化する)。無ければ null。 */
+  image: string | null;
+  /** イベント CG の表示モード ("background" | "overlay")。未指定なら null (=background 扱い)。 */
+  image_mode: string | null;
 }
 
 /** 顔アイコン行の 1 キャラ。icon は backend 解決済みの絶対パス (store で asset URL 化)。 */
@@ -72,6 +76,13 @@ export interface GameView {
   present_characters: CharacterView[];
 }
 
+/** campaign のモジュール遷移 (前モジュールの結末 → 次モジュールへ state を糸通しして差し替え)。 */
+export interface TransitionView {
+  module_title: string;
+  location: string;
+  description: string;
+}
+
 export interface TurnView {
   accepted: boolean;
   narration: string;
@@ -90,6 +101,9 @@ export interface TurnView {
   background: string | null;
   /** 現在地に居る NPC (顔アイコン行)。 */
   present_characters: CharacterView[];
+  /** campaign で次モジュールへ遷移したときの遷移先開幕情報。単発/未遷移なら null。
+   *  このとき state/background/present_characters は**遷移先**を指す (goal_* は遷移元の結末)。 */
+  transition: TransitionView | null;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。
