@@ -242,6 +242,14 @@ fn validate_ops(
                     key: key.clone(),
                 });
             }
+            StateOp::RecordTurn { entity, key } => {
+                // ターンの刻みも authored トリガーの専権。LLM 提案は常に却下 (タイマー詐称遮断)。
+                // trigger effects は apply_ops 直行なのでこの検証を通らず刻める。
+                reasons.push(RejectReason::TurnRecordNotAllowed {
+                    entity: entity.clone(),
+                    key: key.clone(),
+                });
+            }
         }
     }
 }
@@ -461,6 +469,12 @@ fn apply_ops(
             StateOp::GrantSkill { entity, skill } => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
                 state.grant_skill(entity, skill);
+            }
+            StateOp::RecordTurn { entity, key } => {
+                // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
+                // 現在ターンを生値で刻む (stat 境界で clamp しない = タイムスタンプ)。
+                let t = i64::from(state.turn);
+                state.set_stat(entity, key, t);
             }
             StateOp::SetAttribute { entity, key, value } => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
@@ -1477,6 +1491,78 @@ locations:
         // 次の apply (新しい settle) でまた 1 回発火する (永続 latch しない)。
         apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
         assert_eq!(s.stat("ticks"), 2, "次ターンで再発火 (repeatable)");
+    }
+
+    /// 【スケジュール発火】record_turn で「〇〇したターン」を刻み、turns_since gate で
+    /// 「そこから N ターン後」に別イベントを発火する (遅延イベントのプリミティブ)。
+    #[test]
+    fn record_turn_and_turns_since_schedule_delayed_event() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\ninitial_stats: { trigger_x: 0, x_turn: 0 }\n",
+            "allowed_flags: [x_done, event_done]\n",
+            "goal: { kind: flag_is, key: event_done, value: true }\n",
+            "triggers:\n",
+            "  - id: mark_x\n", // 〇〇 (trigger_x を上げる) → フラグ + そのターンを刻む
+            "    when: { kind: stat_at_least, entity: player, key: trigger_x, value: 1 }\n",
+            "    effects:\n",
+            "      - { op: set_flag, key: x_done, value: true }\n",
+            "      - { op: record_turn, key: x_turn }\n",
+            "  - id: delayed\n", // x_done かつ X から 3 ターン経過で発火
+            "    when: { kind: all, of: [\n",
+            "        { kind: flag_is, key: x_done, value: true },\n",
+            "        { kind: turns_since, key: x_turn, turns: 3 } ] }\n",
+            "    effects: [ { op: set_flag, key: event_done, value: true } ]\n",
+            "    narration: 三日が過ぎた。\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n"
+        ))
+        .unwrap();
+        let mut s = sc.initial_state(1);
+
+        // X を起こす apply: trigger_x +1 → mark_x 発火 → x_turn に現在ターンを刻む。
+        let o = apply(
+            &mut s,
+            &sc,
+            &d(vec![StateOp::AdjustStat { entity: PLAYER.into(), key: "trigger_x".into(), delta: 1 }]),
+        )
+        .expect("trigger_x 加算は合法");
+        assert!(o.fired.iter().any(|f| f.id == "mark_x"), "X で mark_x 発火");
+        assert!(s.flag("x_done"));
+        assert_eq!(s.stat("x_turn"), i64::from(s.turn), "刻まれたのは現在ターン");
+        assert!(!s.flag("event_done"), "まだ遅延イベントは発火しない");
+
+        // 経過待ち: あと 2 ターンは発火しない (turns_since < 3)。
+        for _ in 0..2 {
+            let o = apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
+            assert!(o.fired.is_empty(), "3 ターン未満では発火しない");
+            assert!(!s.flag("event_done"));
+        }
+        // 記録から 3 ターン後の apply で delayed が発火する。
+        let o = apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
+        assert!(o.fired.iter().any(|f| f.id == "delayed"), "3 ターン経過で遅延イベント発火");
+        assert!(s.flag("event_done"));
+    }
+
+    /// 【タイマー詐称遮断】LLM が record_turn でターンを刻もうとしても却下される
+    /// (GrantSkill/SetAttribute と同型の authored 専権)。
+    #[test]
+    fn llm_proposed_record_turn_is_rejected() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\ninitial_stats: { x_turn: 0 }\nallowed_flags: []\n",
+            "goal: { kind: always }\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n"
+        ))
+        .unwrap();
+        let s = sc.initial_state(1);
+        let delta = d(vec![StateOp::RecordTurn { entity: PLAYER.into(), key: "x_turn".into() }]);
+        match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => assert!(
+                reasons
+                    .iter()
+                    .any(|r| matches!(r, RejectReason::TurnRecordNotAllowed { key, .. } if key == "x_turn")),
+                "TurnRecordNotAllowed で却下されるべき"
+            ),
+            Verdict::Accept => panic!("LLM の record_turn は却下されるべき (タイマー詐称)"),
+        }
     }
 
     /// 【純粋性】adjudicate は trigger を発火させない (state を一切変えない)。

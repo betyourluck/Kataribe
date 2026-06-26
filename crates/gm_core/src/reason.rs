@@ -38,6 +38,9 @@ pub enum RejectReason {
     /// 文字列属性の書き換え (set_attribute) は LLM が提案できない (authored トリガーの専権)。
     /// クラス/種族 等の捏造遮断 (SkillGrantNotAllowed と同型)。
     AttributeSetNotAllowed { entity: String, key: String },
+    /// ターンの刻み (record_turn) は LLM が提案できない (authored トリガーの専権)。
+    /// タイマー詐称遮断 (SkillGrantNotAllowed と同型)。
+    TurnRecordNotAllowed { entity: String, key: String },
     /// 譲渡先がこのシナリオに存在しない entity (幻のキャラには渡せない)。
     UnknownEntity { entity: String },
     /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
@@ -84,6 +87,9 @@ impl RejectReason {
             RejectReason::AttributeSetNotAllowed { entity, key } => {
                 format!("{entity} の '{key}' をその場で書き換えられない (属性は筋書きの出来事でのみ変わる)")
             }
+            RejectReason::TurnRecordNotAllowed { entity, key } => {
+                format!("{entity} の '{key}' にターンを刻めない (時の記録は筋書きの出来事でのみ起きる)")
+            }
             RejectReason::UnknownEntity { entity } => {
                 format!("'{entity}' はこのシナリオに存在しないので渡せない")
             }
@@ -126,6 +132,9 @@ impl RejectReason {
             }
             RejectReason::AttributeSetNotAllowed { entity, key } => {
                 format!("{entity} cannot rewrite '{key}' on a whim (attributes change only through authored events)")
+            }
+            RejectReason::TurnRecordNotAllowed { entity, key } => {
+                format!("{entity} cannot stamp the turn into '{key}' (time is recorded only through authored events)")
             }
             RejectReason::UnknownEntity { entity } => {
                 format!("cannot give to '{entity}' because it does not exist in this scenario")

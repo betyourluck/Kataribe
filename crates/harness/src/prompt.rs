@@ -69,6 +69,9 @@ fn gate_brief(gate: &Gate) -> String {
         Gate::AttributeIs { entity, key, value } => {
             format!("{entity} の「{key}」が「{value}」であること")
         }
+        Gate::TurnsSince { entity, key, turns } => {
+            format!("{entity} の「{key}」に刻まれた時から {turns} ターン以上経つこと")
+        }
         Gate::All { of } => {
             let parts: Vec<String> = of.iter().map(gate_brief).collect();
             format!("すべて満たす({})", parts.join(" / "))

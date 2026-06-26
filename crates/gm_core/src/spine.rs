@@ -58,6 +58,16 @@ pub enum Gate {
         key: AttrKey,
         value: String,
     },
+    /// 指定キャラの stat に刻まれたターンから **`turns` ターン以上経過**している
+    /// (`現在turn - stat >= turns`)。[`StateOp::RecordTurn`](crate::StateOp::RecordTurn) と対で
+    /// 「〇〇から N ターン後に発火」を組む。stat 未設定 (=0) だと turn>=turns で誤発火しうるので、
+    /// 「〇〇が起きた」フラグと `all` で束ねるのが定石。`entity` 省略時は主人公。
+    TurnsSince {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        key: StatKey,
+        turns: u32,
+    },
     /// すべての子条件が通る (AND)。
     All { of: Vec<Gate> },
     /// いずれかの子条件が通る (OR)。
@@ -75,6 +85,11 @@ impl Gate {
             Gate::StatAtMost { entity, key, value } => s.stat_of(entity, key) <= *value,
             Gate::HasSkill { entity, skill } => s.has_skill(entity, skill),
             Gate::AttributeIs { entity, key, value } => s.attribute_of(entity, key) == value,
+            Gate::TurnsSince { entity, key, turns } => {
+                // 現在ターン - 刻まれたターン >= turns。turn は u32 だが減算は i64 で行う
+                // (stat は i64・未設定 0)。記録前は turn - 0 = turn なので flag と束ねて守る。
+                i64::from(s.turn) - s.stat_of(entity, key) >= i64::from(*turns)
+            }
             Gate::All { of } => of.iter().all(|g| g.eval(s)),
             Gate::Any { of } => of.iter().any(|g| g.eval(s)),
         }

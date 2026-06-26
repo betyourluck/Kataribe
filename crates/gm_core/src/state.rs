@@ -272,4 +272,13 @@ pub enum StateOp {
         key: AttrKey,
         value: String,
     },
+    /// **現在ターンを stat に刻む** (タイムスタンプ)。**authored トリガーの専権** — LLM が提案すると
+    /// `adjudicate` が却下する (タイマー詐称遮断、GrantSkill/SetAttribute と同型)。trigger effects は
+    /// `apply_ops` 直行なので刻める。`Gate::TurnsSince` と対で「〇〇から N ターン後に発火」を組む。
+    /// 値は `GameState.turn` の生値 (stat 境界で clamp しない)。`entity` 省略時は主人公。
+    RecordTurn {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        key: StatKey,
+    },
 }
