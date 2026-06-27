@@ -116,6 +116,10 @@ pub struct Location {
     /// **engine は解釈しない不透明 string** (description/narration と同じ語り素材カテゴリ、北極星)。
     #[serde(default)]
     pub image: Option<String>,
+    /// ループ BGM のアセット ID (`audios/` 配下のファイル名)。提示層がこの場所に居る間ループ再生する。
+    /// **engine は解釈しない不透明 string** (image と同じ語り素材カテゴリ、北極星)。
+    #[serde(default)]
+    pub bgm: Option<String>,
     /// この場所に「いる」NPC (presence)。提示層が顔アイコン行に出す。
     /// **空なら scenario.characters 全員**にフォールバック (後方互換)。engine は使わない不透明データ。
     #[serde(default)]
@@ -201,6 +205,10 @@ pub struct Trigger {
     /// イベント CG の出し方 (既定 [`ImageMode::Background`])。engine は使わない不透明データ。
     #[serde(default)]
     pub image_mode: Option<ImageMode>,
+    /// 発火時の SE (効果音) のアセット ID (`audios/` 配下)。**engine は解釈しない不透明 string**
+    /// (image と同類)。提示層が発火ターンに one-shot 再生する。`None` なら SE 無し。
+    #[serde(default)]
+    pub sound: Option<String>,
     /// **繰り返し発火**するか (既定 false = edge-triggered once)。
     ///
     /// `false`: 一度発火すると [`GameState::fired`] に latch され二度と発火しない (伏線・覚醒など一回性のビート)。
@@ -314,6 +322,10 @@ pub enum ScenarioError {
     },
     /// `global_flags` に挙げたフラグが `allowed_flags` に宣言されていない (幻の世界フラグ)。
     GlobalFlagUndeclared { flag: FlagKey },
+    /// `persistent_flags` に挙げたフラグが `allowed_flags` に宣言されていない (幻の場所フラグ)。
+    PersistentFlagUndeclared { flag: FlagKey },
+    /// `flag_hints` のキーが `allowed_flags` に宣言されていない (幻フラグへのヒント)。
+    FlagHintUndeclared { flag: FlagKey },
     /// トリガーの `set_attribute` が宣言されていない属性キーに書こうとしている (幻属性遮断)。
     /// player は `initial_attributes`、NPC は `CharacterDef::attributes` でキーを宣言する。
     AttributeKeyUndeclared {
@@ -368,9 +380,22 @@ pub struct Scenario {
     /// [`Scenario::transition`] はこれに挙げたフラグだけ次モジュールへ運び、残り (局所) は捨てる。
     #[serde(default)]
     pub global_flags: BTreeSet<FlagKey>,
+    /// **場所フラグ** (その場所＝このモジュールに持つ)。`allowed_flags` の部分集合 (spec 02)。
+    /// global と違い ambient に全モジュールへ漏らさず、**このモジュールを再訪したときだけ**復元される
+    /// (例: `chest_opened`)。蓄積は engine でなく harness の campaign 層が担う
+    /// (gm_core はこの宣言を持つだけ・`transition` は局所と同じく捨てる)。
+    #[serde(default)]
+    pub persistent_flags: BTreeSet<FlagKey>,
     /// フラグを true にするための gate。記載なければ [`Gate::Always`]。
     #[serde(default)]
     pub flag_rules: BTreeMap<FlagKey, Gate>,
+    /// **知識フラグのヒント** (`flag → 立てる条件の説明文`、spec 03)。提示層が prompt に surface し、
+    /// LLM が「会話で情報が伝わった瞬間」に `set_flag` を出せるようにする (弱モデル向けロバスト化)。
+    /// **非検証の語り素材** (engine は値を解釈しない、`world`/`profile` と同類) だが、キーは
+    /// `allowed_flags` 宣言必須 (幻フラグへのヒントを load 時に弾く)。`flag_rules` の gate と対で使う
+    /// — ヒントが**促し**、gate が**守る** (早まった set_flag を却下するバックストップ)。
+    #[serde(default)]
+    pub flag_hints: BTreeMap<FlagKey, String>,
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
     pub initial_stats: BTreeMap<StatKey, i64>,
@@ -462,6 +487,18 @@ impl Scenario {
         for flag in &self.global_flags {
             if !self.allowed_flags.contains(flag) {
                 errs.push(ScenarioError::GlobalFlagUndeclared { flag: flag.clone() });
+            }
+        }
+        // 場所フラグも許可フラグの部分集合 (幻の場所フラグを campaign 記憶に乗せない)。
+        for flag in &self.persistent_flags {
+            if !self.allowed_flags.contains(flag) {
+                errs.push(ScenarioError::PersistentFlagUndeclared { flag: flag.clone() });
+            }
+        }
+        // 知識フラグのヒントも許可フラグのキーにしか付けられない (幻フラグへのヒントを弾く)。
+        for flag in self.flag_hints.keys() {
+            if !self.allowed_flags.contains(flag) {
+                errs.push(ScenarioError::FlagHintUndeclared { flag: flag.clone() });
             }
         }
         // 属性の閉世界: トリガーの set_attribute は宣言済みキーにしか書けない (幻属性遮断)。

@@ -55,6 +55,7 @@ triggers:
       - { op: adjust_stat, entity: player, key: hp, delta: -99 }
     narration: 扉がきしんだ瞬間、古い仕掛けが弾けた。天井から岩塊が雪崩れ落ちる。
     image: rockfall.svg        # 落石のイベント CG (背景上書き・持続)
+    sound: rockfall.wav        # 落石の SE (発火ターンに one-shot 再生)
   # 聖剣を手にした瞬間、見習いが魔法剣士へ覚醒する (転職 + 魔法の開花)。
   - id: awakening
     when: { kind: has_item, entity: player, item: 聖剣 }
@@ -63,10 +64,12 @@ triggers:
       - { op: grant_skill, entity: player, skill: 魔法 }
     narration: 聖剣の柄を握った瞬間、忘れられていた魔力が血に巡った。見習いの体に、魔法剣士としての力が宿る。
     image: awakening.svg       # 覚醒のイベント CG (背景上書き・持続)
+    sound: awakening.wav       # 覚醒の SE (発火ターンに one-shot 再生)
 
 locations:
   gate:
     image: gate.svg          # images/gate.svg を背景に
+    bgm: shrine_ambient.wav  # audios/shrine_ambient.wav をループ BGM に
     description: |
       苔むした祠の入口。重い石の扉が固く閉ざされている。手前には、力尽きた先人の冒険者が壁に
       もたれて事切れていた。その手は、錆びた「祠の鍵」と、小さな「回復薬」を握りしめている。
@@ -79,6 +82,7 @@ locations:
 
   altar:
     image: altar.svg         # images/altar.svg を背景に
+    bgm: shrine_ambient.wav  # 同じ環境音をループ (場所が変わっても切らさない＝同一 URL なら再代入しない)
     description: |
       崩れかけた祭壇の間。中央に、鎖と封印札に縛められた漆黒の魔がうごめいている。封印は今にも
       解けそうだ。祭壇には、白く輝く一振りの「聖剣」が突き立っている。

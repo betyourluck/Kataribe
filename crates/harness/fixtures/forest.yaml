@@ -1,0 +1,11 @@
+# spec 02 PoC モジュール B = 森。村との往復で persistent フラグの蓄積を検証するための相手。
+title: 森
+start: clearing
+allowed_flags: [forest_marker, return_village]
+goals:
+  - id: to_village
+    when: { kind: flag_is, key: return_village, value: true }
+locations:
+  clearing:
+    description: 森の空き地。
+    exits: []

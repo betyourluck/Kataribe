@@ -1,0 +1,15 @@
+# spec 02 PoC モジュール A = 村。
+# chest_opened は「その場所に持つ」(persistent) — 森へ出て戻っても宝箱は開いたまま。
+# torch_lit は局所 — その場限り、再訪では消える。
+title: 村
+start: square
+allowed_flags: [chest_opened, torch_lit, leave_village]
+persistent_flags: [chest_opened] # 場所フラグ: village を再訪したとき復元される
+initial_stats: { hp: 10 }
+goals:
+  - id: to_forest
+    when: { kind: flag_is, key: leave_village, value: true }
+locations:
+  square:
+    description: 村の広場。隅に古い宝箱がある。
+    exits: []

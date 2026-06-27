@@ -20,7 +20,7 @@ mod turn;
 pub use asset::{resolve_asset, AssetKind};
 pub use campaign::{
     advance_campaign, advance_campaign_injected, load_campaign, load_module, load_module_injected,
-    Advance, Campaign, CampaignEdge, ModuleId,
+    Advance, Campaign, CampaignEdge, CampaignMemory, ModuleId,
 };
 pub use package::{
     inject_package, is_campaign_entry, load_campaign_package, load_package, read_manifest, Globals,
@@ -485,6 +485,34 @@ mod tests {
         assert!(
             prompt::GM_SYSTEM.contains("主人公の設定") && prompt::GM_SYSTEM.contains("教師"),
             "GM_SYSTEM が NPC の主人公認識を刷り込む"
+        );
+    }
+
+    /// 【知識フラグの surfacing / spec 03】flag_hints が scenario_brief に出て、GM_SYSTEM が
+    /// 「条件が満たされた瞬間に set_flag」を刷り込む (下流 gate に出ないフラグも LLM に可視化)。
+    #[test]
+    fn scenario_brief_surfaces_flag_hints_and_gm_system_demands_setting() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\n",
+            "allowed_flags: [知った_鍵の在処]\n",
+            "flag_hints: { 知った_鍵の在処: プレイヤーが賢者から鍵の在処を聞いたら立てる }\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let brief = prompt::scenario_brief(&sc);
+        assert!(brief.contains("状態フラグ"), "状態フラグ節が出る");
+        assert!(
+            brief.contains("知った_鍵の在処") && brief.contains("賢者から鍵の在処を聞いたら"),
+            "フラグ名とヒントが surface される: {brief}"
+        );
+        assert!(
+            prompt::GM_SYSTEM.contains("状態フラグ") && prompt::GM_SYSTEM.contains("set_flag"),
+            "GM_SYSTEM が条件成立時の set_flag を刷り込む"
+        );
+        assert!(
+            prompt::GM_SYSTEM.contains("先回り") || prompt::GM_SYSTEM.contains("満たしていない"),
+            "早まった set_flag を戒める (flag_rules バックストップと対)"
         );
     }
 

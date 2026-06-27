@@ -31,6 +31,10 @@ pub const GM_SYSTEM: &str = "\
 (開花するのは筋書きが定めた出来事のときだけで、それはエンジンが起こす)。未宣言の力で局面を \
 打開する展開を narration に書くな = キャラを万能のメアリー・スーにしない。\n\
 - 世界状態の変更 (アイテム取得・フラグ・移動・ダイス) は必ず ops に構造化して書くこと。\n\
+- **盤面に『状態フラグ』が列挙されていたら、その条件 (例: 賢者から鍵の在処を聞く) が会話・出来事で \
+満たされた瞬間に set_flag でそのフラグを立てること。** 知識や状態の獲得は narration に書くだけでは \
+正本に残らない (次のターンには忘れる) ので、必ず ops で記録せよ。ただし条件をまだ満たしていないのに \
+先回りで立ててはならない (満たされていなければエンジンが却下する)。\n\
 - **数値 (好感度・HP・能力値など) の変化は narration に書くだけでは正本に反映されない。\
 必ず adjust_stat op で起こすこと。** 親しくなった・傷ついた等を語ったら、対応する数値変化を \
 adjust_stat で出す (例: 好感度が上がる → adjust_stat で +1〜+3)。\n\
@@ -154,6 +158,14 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
                 None => String::new(),
             };
             s.push_str(&format!("- {label} (id: {id}): {basis}{req}\n"));
+        }
+    }
+    // 知識・状態フラグのヒント (spec 03)。会話で情報が伝わった瞬間に立てるべきフラグを LLM に見せる。
+    // 下流 gate に出ないフラグも可視化され、弱モデルでも狙って set_flag できる (flag_rules が早まりを守る)。
+    if !scenario.flag_hints.is_empty() {
+        s.push_str("\n## 状態フラグ (条件が満たされた瞬間に set_flag で立てる)\n");
+        for (flag, hint) in &scenario.flag_hints {
+            s.push_str(&format!("- {flag}: {}\n", hint.trim()));
         }
     }
     if !scenario.goals.is_empty() {

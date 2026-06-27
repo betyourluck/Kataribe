@@ -64,6 +64,8 @@ pub struct FiredTrigger {
     pub image: Option<String>,
     /// イベント CG の表示モード。`Trigger.image_mode` を passthrough。
     pub image_mode: Option<ImageMode>,
+    /// 発火時の SE (効果音 ID)。`Trigger.sound` を passthrough (engine は解釈しない)。
+    pub sound: Option<String>,
 }
 
 /// デルタ受理時の適用結果。ダイスの出目と、その適用が連鎖発火させたトリガー群。
@@ -344,6 +346,7 @@ fn fire_triggers(
             recall: t.recall.clone(), // cue を passthrough。解釈は harness。
             image: t.image.clone(),   // イベント CG を passthrough。解決は提示層。
             image_mode: t.image_mode,
+            sound: t.sound.clone(),   // SE を passthrough。再生は提示層。
         });
     }
     fired
@@ -1959,6 +1962,27 @@ locations:
         );
     }
 
+    /// 【知識フラグヒントの閉世界 / spec 03】flag_hints のキーが allowed_flags 未宣言なら
+    /// validate が弾く (幻フラグへのヒントを load 時に弾く。値は自由文の語り素材)。
+    #[test]
+    fn validate_rejects_undeclared_flag_hint() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [known]
+flag_hints: { ghost: 賢者から聞いたら立てる }
+goal: { kind: always }
+locations:
+  room: { description: d, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::FlagHintUndeclared { flag } if flag == "ghost")),
+            "未宣言フラグへのヒントを validate が弾く: {:?}", sc.validate()
+        );
+    }
+
     /// 【アセット passthrough】Location.image/present・CharacterDef.icon が serde で読まれる
     /// (engine は使わない不透明データ。提示層が背景/顔アイコン/presence に使う)。
     #[test]
@@ -1970,12 +1994,13 @@ characters:
   moka: { name: モカ, icon: moka.svg, stats: { 好感度: { initial: 10, min: 0, max: 100 } } }
 goal: { kind: always }
 locations:
-  room: { description: d, image: room.svg, present: [moka], items: {}, exits: [] }
+  room: { description: d, image: room.svg, bgm: shrine.ogg, present: [moka], items: {}, exits: [] }
 "#;
         let sc = Scenario::from_yaml(yaml).unwrap();
         assert_eq!(sc.characters["moka"].icon.as_deref(), Some("moka.svg"), "NPC の顔アイコン ID");
         let room = sc.location("room").unwrap();
         assert_eq!(room.image.as_deref(), Some("room.svg"), "場所の背景 ID");
+        assert_eq!(room.bgm.as_deref(), Some("shrine.ogg"), "場所のループ BGM ID (Phase 3)");
         assert!(room.present.contains("moka"), "場所の presence");
     }
 
@@ -2032,6 +2057,40 @@ triggers:
         let beat = out.fired.iter().find(|f| f.id == "cg_beat").expect("発火する");
         assert_eq!(beat.image.as_deref(), Some("scene.svg"));
         assert_eq!(beat.image_mode, None, "省略時は None (既定 Background は提示層の解釈)");
+    }
+
+    /// 【SE passthrough (Phase 3)】`Trigger.sound` が serde で読まれ、発火時に `FiredTrigger.sound`
+    /// へそのまま載る (engine は解釈しない不透明データ。再生は提示層)。省略時は `None`。
+    #[test]
+    fn trigger_sound_passthrough_to_fired() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [done, hit]
+goal: { kind: flag_is, key: done, value: true }
+locations:
+  room: { description: d, exits: [] }
+triggers:
+  - id: se_beat
+    when: { kind: always }
+    effects:
+      - { op: set_flag, key: hit, value: true }
+    narration: 岩が砕ける。
+    sound: rockfall.ogg
+  - id: silent_beat
+    when: { kind: flag_is, key: hit, value: true }
+    effects:
+      - { op: set_flag, key: done, value: true }
+    narration: 静寂が戻る。
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        let out = apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
+
+        let se = out.fired.iter().find(|f| f.id == "se_beat").expect("発火する");
+        assert_eq!(se.sound.as_deref(), Some("rockfall.ogg"), "SE ID を passthrough");
+        let silent = out.fired.iter().find(|f| f.id == "silent_beat").expect("連鎖発火する");
+        assert_eq!(silent.sound, None, "sound 省略時は None (SE 無し)");
     }
 
     /// 【却下時は不発】不正 op を含むデルタは却下され、trigger も発火しない (原子性)。

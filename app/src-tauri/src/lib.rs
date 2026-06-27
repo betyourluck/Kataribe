@@ -14,8 +14,8 @@ use std::path::{Component, Path, PathBuf};
 use gm_core::{is_goal, CheckOutcome, GameState, ImageMode, Lang, Scenario, PLAYER};
 use harness::{
     advance_campaign_injected, is_campaign_entry, load_campaign_package, load_lore, load_package,
-    read_manifest, resolve_asset, resolve_recall, run_turn, AssetKind, Campaign, LoreStore,
-    MemoryFragment, ModuleId, PackageManifest, TurnOutcome,
+    read_manifest, resolve_asset, resolve_recall, run_turn, AssetKind, Campaign, CampaignMemory,
+    LoreStore, MemoryFragment, ModuleId, PackageManifest, TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
 use serde::Serialize;
@@ -100,6 +100,8 @@ struct BeatView {
     image: Option<String>,
     /// イベント CG の表示モード ("background" | "overlay")。未指定なら None (=background 扱い)。
     image_mode: Option<String>,
+    /// 発火時の SE の絶対パス (frontend が convertFileSrc → one-shot 再生)。無ければ None。
+    sound: Option<String>,
 }
 
 /// 開幕 view (new_game の戻り)。
@@ -111,6 +113,8 @@ struct GameView {
     state: StateView,
     /// 現在地の背景画像の絶対パス (frontend が convertFileSrc で URL 化)。無ければ None。
     background: Option<String>,
+    /// 現在地のループ BGM の絶対パス (frontend が convertFileSrc → <audio loop>)。無ければ None。
+    bgm: Option<String>,
     /// 現在地に居る NPC (顔アイコン行)。
     present_characters: Vec<CharacterView>,
 }
@@ -135,6 +139,8 @@ struct TurnView {
     goal_narration: Option<String>,
     /// 現在地の背景画像の絶対パス (frontend が convertFileSrc で URL 化)。無ければ None。
     background: Option<String>,
+    /// 現在地のループ BGM の絶対パス (frontend が convertFileSrc → <audio loop>)。無ければ None。
+    bgm: Option<String>,
     /// 現在地に居る NPC (顔アイコン行)。
     present_characters: Vec<CharacterView>,
     /// campaign で次モジュールへ遷移したとき、遷移先モジュールの開幕情報。単発/未遷移なら None。
@@ -158,6 +164,13 @@ struct TransitionView {
 fn background_for(scenario: &Scenario, state: &GameState, root: &Path) -> Option<String> {
     let id = scenario.location(&state.location)?.image.as_ref()?;
     resolve_asset(root, AssetKind::Images, id).map(|p| p.to_string_lossy().into_owned())
+}
+
+/// 現在地のループ BGM を解決して絶対パス文字列にする (frontend が convertFileSrc で URL 化)。
+/// `images` でなく `audios` フォルダから引く以外は `background_for` と同経路。無ければ None。
+fn bgm_for(scenario: &Scenario, state: &GameState, root: &Path) -> Option<String> {
+    let id = scenario.location(&state.location)?.bgm.as_ref()?;
+    resolve_asset(root, AssetKind::Audios, id).map(|p| p.to_string_lossy().into_owned())
 }
 
 /// 顔アイコン行の 1 キャラ。`icon` は解決済み絶対パス (無ければ None → frontend が initials)。
@@ -238,6 +251,8 @@ struct GameSession {
     campaign: Option<Campaign>,
     /// 現在のモジュール id (campaign 時のみ意味を持つ)。advance の `from`。
     current_module: ModuleId,
+    /// campaign の場所フラグ記憶 (spec 02)。再訪したモジュールで persistent フラグを復元する。
+    campaign_memory: CampaignMemory,
     /// package manifest (campaign 前進で遷移先モジュールへ player/globals/world を継承させるのに要る)。
     manifest: PackageManifest,
 }
@@ -547,6 +562,7 @@ async fn new_game(
             .unwrap_or_default(),
         state: state_view(&state, &scenario),
         background: background_for(&scenario, &state, &pkg_dir),
+        bgm: bgm_for(&scenario, &state, &pkg_dir),
         present_characters: present_characters(&scenario, &state, &pkg_dir),
     };
 
@@ -561,6 +577,7 @@ async fn new_game(
         last_narration: String::new(),
         campaign,
         current_module,
+        campaign_memory: CampaignMemory::new(),
         manifest,
         // 言語設定タブ由来の lang を優先、無ければ env 既定。
         lang: match lang.as_deref() {
@@ -620,6 +637,11 @@ async fn play_turn(
                         ImageMode::Background => "background".to_string(),
                         ImageMode::Overlay => "overlay".to_string(),
                     }),
+                    // 発火 SE の ID を package_root 起点に解決 (背景と同経路、audios フォルダ)。
+                    sound: b.sound.as_ref().and_then(|id| {
+                        resolve_asset(&sess.package_root, AssetKind::Audios, id)
+                            .map(|p| p.to_string_lossy().into_owned())
+                    }),
                 })
                 .collect();
             // 次ターンの語りに織り込ませる伏線を持ち越す。
@@ -664,6 +686,7 @@ async fn play_turn(
                 goal_id,
                 goal_narration,
                 background: background_for(&sess.scenario, &sess.state, &sess.package_root),
+                bgm: bgm_for(&sess.scenario, &sess.state, &sess.package_root),
                 present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
                 transition: None,
             }
@@ -683,6 +706,7 @@ async fn play_turn(
             goal_id: goal_view(&sess.state, &sess.scenario).0,
             goal_narration: goal_view(&sess.state, &sess.scenario).1,
             background: background_for(&sess.scenario, &sess.state, &sess.package_root),
+            bgm: bgm_for(&sess.scenario, &sess.state, &sess.package_root),
             present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
             transition: None,
         },
@@ -698,6 +722,7 @@ async fn play_turn(
                 &campaign,
                 &sess.package_root,
                 &sess.manifest,
+                &mut sess.campaign_memory,
                 &from,
                 &sess.scenario,
                 &sess.state,
@@ -727,6 +752,7 @@ async fn play_turn(
                 // パネル類は遷移先を指す (goal_* は遷移元の結末のまま残す)。
                 view.state = state_view(&sess.state, &sess.scenario);
                 view.background = background_for(&sess.scenario, &sess.state, &sess.package_root);
+                view.bgm = bgm_for(&sess.scenario, &sess.state, &sess.package_root);
                 view.present_characters =
                     present_characters(&sess.scenario, &sess.state, &sess.package_root);
                 // キャンペーンは続くので入力を締めない (終端は advance=None で締まる)。

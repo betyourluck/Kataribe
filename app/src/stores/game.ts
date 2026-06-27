@@ -22,6 +22,16 @@ function loadBgBrightness(): number {
   const v = Number(localStorage.getItem(BG_BRIGHTNESS_KEY));
   return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 35;
 }
+// 音量 0..100 (BGM ループと SE one-shot に共通でかかる)。既定は控えめ。
+const AUDIO_VOLUME_KEY = "kataribe.audioVolume";
+const AUDIO_MUTED_KEY = "kataribe.audioMuted";
+function loadAudioVolume(): number {
+  const v = Number(localStorage.getItem(AUDIO_VOLUME_KEY));
+  return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 60;
+}
+function loadAudioMuted(): boolean {
+  return localStorage.getItem(AUDIO_MUTED_KEY) === "true";
+}
 // 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。
 const BUILTIN_PACKAGES = ["packages/houkago", "packages/promise_demo", "packages/escape"];
 
@@ -60,10 +70,16 @@ interface GameState {
   error: string | null;
   // 現在の背景画像 (asset:// URL)。場所/イベントで差し替え。無ければ null。
   background: string | null;
+  // 現在地のループ BGM (asset:// URL)。場所変化で差し替え。無ければ null。
+  bgm: string | null;
   // 現在地に居る NPC (顔アイコン行)。icon は asset:// URL 化済み。
   presentCharacters: CharacterView[];
   // 背景の明るさ 0..100 (大きいほど画像が明るく見える=暗幕が薄い)。グラフィック設定。
   bgBrightness: number;
+  // 音量 0..100 (BGM/SE 共通)。サウンド設定。
+  audioVolume: number;
+  // ミュート (true なら音を出さない)。サウンド設定。
+  audioMuted: boolean;
   // 選択中パッケージのパス。
   packagePath: string;
   // localStorage が保持するパッケージフォルダのパス一覧。
@@ -83,8 +99,11 @@ export const useGameStore = defineStore("game", {
       loading: false,
       error: null,
       background: null,
+      bgm: null,
       presentCharacters: [],
       bgBrightness: loadBgBrightness(),
+      audioVolume: loadAudioVolume(),
+      audioMuted: loadAudioMuted(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
       packagePaths: paths,
       packages: [],
@@ -107,6 +126,8 @@ export const useGameStore = defineStore("game", {
         backgroundPosition: "center",
       };
     },
+    // 実効音量 0..1 (BGM/SE 共通)。ミュート時は 0。<audio>.volume と new Audio に渡す。
+    audioGain: (s): number => (s.audioMuted ? 0 : Math.max(0, Math.min(1, s.audioVolume / 100))),
   },
 
   actions: {
@@ -114,6 +135,32 @@ export const useGameStore = defineStore("game", {
     setBgBrightness(v: number) {
       this.bgBrightness = Math.max(0, Math.min(100, Math.round(v)));
       localStorage.setItem(BG_BRIGHTNESS_KEY, String(this.bgBrightness));
+    },
+
+    // 音量を設定 (即時反映 + localStorage 永続化)。サウンド設定タブから呼ぶ。
+    setAudioVolume(v: number) {
+      this.audioVolume = Math.max(0, Math.min(100, Math.round(v)));
+      localStorage.setItem(AUDIO_VOLUME_KEY, String(this.audioVolume));
+    },
+    // ミュート切替 (即時反映 + localStorage 永続化)。
+    setAudioMuted(b: boolean) {
+      this.audioMuted = b;
+      localStorage.setItem(AUDIO_MUTED_KEY, String(b));
+    },
+    // SE を one-shot 再生する (発火ビート由来)。ミュート/音量 0 なら鳴らさない。
+    // BGM はループ要素 (App.vue の <audio>) が担うので、ここは効果音だけ。
+    playSe(url: string | null) {
+      const gain = this.audioGain;
+      if (!url || gain <= 0) return;
+      try {
+        const a = new Audio(url);
+        a.volume = gain;
+        void a.play().catch(() => {
+          /* 自動再生制約・デコード失敗は握りつぶす (没入の付帯機能ゆえ致命でない) */
+        });
+      } catch {
+        /* Audio 生成失敗も無視 */
+      }
     },
 
     // localStorage のパス一覧から各 package.yaml の manifest を読み、一覧 view を更新する。
@@ -170,6 +217,7 @@ export const useGameStore = defineStore("game", {
         this.title = view.title;
         this.state = view.state;
         this.background = assetUrl(view.background);
+        this.bgm = assetUrl(view.bgm);
         this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
         this.log = [{ kind: "opening", text: view.description }];
       } catch (e) {
@@ -193,6 +241,8 @@ export const useGameStore = defineStore("game", {
           if (turn.checks.length) this.log.push({ kind: "checks", checks: turn.checks });
           for (const b of turn.beats) {
             this.log.push({ kind: "beat", narration: b.narration, recalled: b.recalled });
+            // 発火 SE を one-shot 再生 (受理ターンのみ。CG と同様、語りの瞬間に鳴らす)。
+            this.playSe(assetUrl(b.sound));
           }
           if (turn.attempts > 1) {
             this.log.push({ kind: "system", text: `GM は ${turn.attempts} 回目の提案で筋を通した` });
@@ -233,6 +283,9 @@ export const useGameStore = defineStore("game", {
                 .reverse()
                 .find((b) => b.image && (b.image_mode ?? "background") === "background");
           this.background = cgBeat?.image ? assetUrl(cgBeat.image) : assetUrl(turn.background);
+          // BGM は場所変化で差し替え。同一 URL なら再代入せずループを切らさない (CG と違い持続)。
+          const nextBgm = assetUrl(turn.bgm);
+          if (nextBgm !== this.bgm) this.bgm = nextBgm;
         }
       } catch (e) {
         this.error = String(e);

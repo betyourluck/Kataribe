@@ -56,6 +56,8 @@ export interface BeatView {
   image: string | null;
   /** イベント CG の表示モード ("background" | "overlay")。未指定なら null (=background 扱い)。 */
   image_mode: string | null;
+  /** 発火時の SE の絶対パス (convertFileSrc で URL 化 → one-shot 再生)。無ければ null。 */
+  sound: string | null;
 }
 
 /** 顔アイコン行の 1 キャラ。icon は backend 解決済みの絶対パス (store で asset URL 化)。 */
@@ -72,6 +74,8 @@ export interface GameView {
   state: StateView;
   /** 現在地の背景画像の絶対パス (convertFileSrc で URL 化する)。無ければ null。 */
   background: string | null;
+  /** 現在地のループ BGM の絶対パス (convertFileSrc で URL 化 → <audio loop>)。無ければ null。 */
+  bgm: string | null;
   /** 現在地に居る NPC (顔アイコン行)。 */
   present_characters: CharacterView[];
 }
@@ -99,6 +103,8 @@ export interface TurnView {
   goal_narration: string | null;
   /** 現在地の背景画像の絶対パス (convertFileSrc で URL 化する)。無ければ null。 */
   background: string | null;
+  /** 現在地のループ BGM の絶対パス (convertFileSrc で URL 化 → <audio loop>)。無ければ null。 */
+  bgm: string | null;
   /** 現在地に居る NPC (顔アイコン行)。 */
   present_characters: CharacterView[];
   /** campaign で次モジュールへ遷移したときの遷移先開幕情報。単発/未遷移なら null。

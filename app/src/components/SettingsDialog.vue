@@ -14,11 +14,12 @@ import { useGameStore } from "../stores/game";
 const emit = defineEmits<{ (e: "close"): void }>();
 const game = useGameStore();
 
-type Tab = "display" | "graphics" | "language" | "model" | "help";
+type Tab = "display" | "graphics" | "sound" | "language" | "model" | "help";
 const tab = ref<Tab>("display");
 const tabs: { id: Tab; label: string }[] = [
   { id: "display", label: "表示" },
   { id: "graphics", label: "グラフィック" },
+  { id: "sound", label: "サウンド" },
   { id: "language", label: "言語設定" },
   { id: "model", label: "AIモデル" },
   { id: "help", label: "ヘルプ" },
@@ -141,6 +142,36 @@ onMounted(loadLlm);
               :style="game.backgroundStyle"
             />
             <p v-else class="text-parchment/40 text-xs">（ゲーム開始後、背景のあるパッケージでプレビューが出ます）</p>
+          </section>
+
+          <!-- サウンド -->
+          <section v-else-if="tab === 'sound'" class="space-y-3">
+            <h3 class="text-parchment font-bold">サウンド</h3>
+            <label class="flex items-center gap-2 text-sm text-parchment/70">
+              <input
+                type="checkbox"
+                class="accent-ember"
+                :checked="game.audioMuted"
+                @change="game.setAudioMuted(($event.target as HTMLInputElement).checked)"
+              />
+              ミュート（BGM・効果音を鳴らさない）
+            </label>
+            <label class="block text-sm text-parchment/70">
+              音量（{{ game.audioVolume }}）
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="5"
+                :value="game.audioVolume"
+                :disabled="game.audioMuted"
+                class="mt-2 block w-64 accent-ember disabled:opacity-40"
+                @input="game.setAudioVolume(+($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <p class="text-parchment/40 text-xs">
+              場所のループ BGM と発火時の効果音に共通でかかります（即時適用・localStorage に保存）。音の出るアセットを同梱したパッケージで有効です。
+            </p>
           </section>
 
           <!-- 言語設定 -->

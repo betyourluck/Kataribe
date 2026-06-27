@@ -125,6 +125,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut pending_checks: Vec<gm_core::CheckOutcome> = Vec::new();
     // 直前ターンの語り。次ターンに「続く情景」として渡し、既出描写の繰り返しを防ぐ (継続性)。
     let mut last_narration = String::new();
+    // campaign の場所フラグ記憶 (spec 02)。再訪したモジュールで persistent フラグを復元する。
+    let mut campaign_memory = harness::CampaignMemory::new();
     loop {
         print!("> ");
         io::stdout().flush().ok();
@@ -193,7 +195,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     match &campaign {
                         Some(camp) => {
                             let from = current_module.as_deref().unwrap_or("");
-                            match advance_campaign(camp, &root, from, &scenario, &state)? {
+                            match advance_campaign(camp, &root, &mut campaign_memory, from, &scenario, &state)? {
                                 // 辺が在る = 次モジュールへ。状態を持ち越し骨格だけ差し替える。
                                 Some(adv) => {
                                     println!(

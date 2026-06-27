@@ -59,6 +59,42 @@ pub struct Advance {
     pub state: GameState,
 }
 
+/// **campaign のフラグ記憶** (spec 02 — 「その場所に持つ」の蓄積層)。
+///
+/// `ModuleId → (FlagKey → bool)`。各モジュールの `persistent_flags` の最新値を**モジュール別**に覚える。
+/// gm_core の `transition` は二値 (global/局所) しか知らない — この層が独立に糸通しすることで
+/// 「再訪したモジュールでだけフラグが蘇る」第三の値を実現する。namespace は `ModuleId` で分離
+/// (A の `chest_opened` は B に漏れず、B の同名フラグとも衝突しない)。セッション保持 (save/load は後段)。
+pub type CampaignMemory = BTreeMap<ModuleId, BTreeMap<String, bool>>;
+
+/// 遷移**元**モジュールの `persistent_flags` を `state.flags` から読み、記憶に上書き保存する。
+/// 設定済み (state.flags に在る) フラグだけ覚える (未設定は既定 false ＝覚える必要なし)。
+fn harvest_persistent(
+    memory: &mut CampaignMemory,
+    module: &str,
+    scenario: &Scenario,
+    state: &GameState,
+) {
+    for flag in &scenario.persistent_flags {
+        if let Some(&value) = state.flags.get(flag) {
+            memory
+                .entry(module.to_string())
+                .or_default()
+                .insert(flag.clone(), value);
+        }
+    }
+}
+
+/// 遷移**先**モジュールの記憶を `state.flags` に重ねる (再訪なら過去の場所フラグが蘇る)。
+/// 初訪なら記憶が無く何も起きない。`transition` が局所として捨てた persistent フラグの復元点。
+fn overlay_persistent(memory: &CampaignMemory, module: &str, state: &mut GameState) {
+    if let Some(flags) = memory.get(module) {
+        for (flag, &value) in flags {
+            state.flags.insert(flag.clone(), value);
+        }
+    }
+}
+
 impl Campaign {
     pub fn from_yaml(s: &str) -> Result<Self, serde_yaml::Error> {
         serde_yaml::from_str(s)
@@ -162,14 +198,16 @@ fn build_module(
 /// - 辺が在る → 次モジュールを load + transition して `Ok(Some(Advance))`
 ///
 /// state は読むだけ (遷移先 state は新規に作って返す)。LLM 非依存。
+/// `memory` = campaign のフラグ記憶 (spec 02)。遷移で更新される (遷移元を harvest・遷移先を overlay)。
 pub fn advance_campaign(
     campaign: &Campaign,
     root: &Path,
+    memory: &mut CampaignMemory,
     current_module: &str,
     scenario: &Scenario,
     state: &GameState,
 ) -> Result<Option<Advance>, HarnessError> {
-    advance_with(campaign, root, None, current_module, scenario, state)
+    advance_with(campaign, root, None, memory, current_module, scenario, state)
 }
 
 /// [`advance_campaign`] の **package 注入版**。campaign-entry パッケージで使う
@@ -178,18 +216,21 @@ pub fn advance_campaign_injected(
     campaign: &Campaign,
     root: &Path,
     manifest: &PackageManifest,
+    memory: &mut CampaignMemory,
     current_module: &str,
     scenario: &Scenario,
     state: &GameState,
 ) -> Result<Option<Advance>, HarnessError> {
-    advance_with(campaign, root, Some(manifest), current_module, scenario, state)
+    advance_with(campaign, root, Some(manifest), memory, current_module, scenario, state)
 }
 
 /// goal 到達後の前進本体。`manifest` を渡すと遷移先モジュールへ package を注入する。
+/// `memory` は spec 02 の場所フラグ蓄積: 遷移元を harvest し、遷移先を overlay する。
 fn advance_with(
     campaign: &Campaign,
     root: &Path,
     manifest: Option<&PackageManifest>,
+    memory: &mut CampaignMemory,
     current_module: &str,
     scenario: &Scenario,
     state: &GameState,
@@ -203,9 +244,13 @@ fn advance_with(
         return Ok(None);
     };
     let next_id = next_id.clone();
+    // spec 02: 遷移元モジュールの場所フラグを記憶に刻む (その場所を出る瞬間の最新値)。
+    harvest_persistent(memory, current_module, scenario, state);
     // 次モジュールの骨格を load し、状態を持ち越して糸通しする (骨格だけ差し替え)。
     let next_scenario = build_module(campaign, root, &next_id, manifest)?;
-    let next_state = next_scenario.transition(state, scenario);
+    let mut next_state = next_scenario.transition(state, scenario);
+    // spec 02: 遷移先モジュールの場所フラグ記憶を復元 (再訪なら過去の状態が蘇る)。
+    overlay_persistent(memory, &next_id, &mut next_state);
     Ok(Some(Advance {
         module_id: next_id,
         scenario: next_scenario,
@@ -225,6 +270,7 @@ mod tests {
     use std::path::PathBuf;
 
     const ESCAPE: &str = include_str!("../../../packages/escape/campaign.yaml");
+    const REVISIT: &str = include_str!("../fixtures/campaign_revisit.yaml");
 
     /// escape パッケージの root (campaign.yaml / scenarios/ が在る所)。module path はここからの相対。
     fn repo_root() -> PathBuf {
@@ -232,6 +278,13 @@ mod tests {
     }
     fn campaign() -> Campaign {
         Campaign::from_yaml(ESCAPE).expect("escape.yaml がパースできること")
+    }
+    /// spec 02 の再訪サイクル fixture の root (village.yaml / forest.yaml が在る所)。
+    fn revisit_root() -> PathBuf {
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures")).to_path_buf()
+    }
+    fn revisit_campaign() -> Campaign {
+        Campaign::from_yaml(REVISIT).expect("campaign_revisit.yaml がパースできること")
     }
     fn d(ops: Vec<StateOp>) -> StateDelta {
         StateDelta::new("", ops)
@@ -279,7 +332,8 @@ mod tests {
         );
 
         // orchestration: 発火 GoalId で辺を引き、次モジュールへ state を糸通しして遷移。
-        let adv = advance_campaign(&c, &root, "study", &study, &s)
+        let mut mem = CampaignMemory::new();
+        let adv = advance_campaign(&c, &root, &mut mem, "study", &study, &s)
             .expect("advance は成功する")
             .expect("辺が在るので遷移が起きる");
 
@@ -306,7 +360,8 @@ mod tests {
         let cellar = load_module(&c, &root, "cellar").expect("cellar を load できる");
         let s = cellar.initial_state(1);
         assert!(cellar.reached(&s).is_some(), "cellar は goal=always で即到達");
-        let adv = advance_campaign(&c, &root, "cellar", &cellar, &s).expect("成功する");
+        let mut mem = CampaignMemory::new();
+        let adv = advance_campaign(&c, &root, &mut mem, "cellar", &cellar, &s).expect("成功する");
         assert!(adv.is_none(), "辺の無いエンディングでは遷移しない (終端=キャンペーン完了)");
     }
 
@@ -318,8 +373,77 @@ mod tests {
         let study = load_module(&c, &root, "study").expect("study を load できる");
         let s = study.initial_state(19); // 何もしていない = 未到達
         assert_eq!(study.reached(&s), None, "開始時は未到達");
-        let adv = advance_campaign(&c, &root, "study", &study, &s).expect("成功する");
+        let mut mem = CampaignMemory::new();
+        let adv = advance_campaign(&c, &root, &mut mem, "study", &study, &s).expect("成功する");
         assert!(adv.is_none(), "未到達では遷移しない");
+    }
+
+    /// 【spec 02 核心】「その場所に持つ」フラグは再訪で蘇り、局所フラグは蘇らない。
+    /// village で宝箱を開け松明を灯す → 森へ → 村へ**再訪**。宝箱(persistent)は覚えているが
+    /// 松明(局所)は消え、森の局所フラグも漏れない。campaign 記憶 (CampaignMemory) が糸通しする。
+    #[test]
+    fn persistent_flag_survives_revisit_local_flag_does_not() {
+        let c = revisit_campaign();
+        let root = revisit_root();
+        let mut mem = CampaignMemory::new();
+
+        // --- 1) village: 宝箱を開け(persistent)・松明を灯し(局所)・村を出る合図を立てる ---
+        let village = load_module(&c, &root, "village").expect("village を load できる");
+        let mut s = village.initial_state(1);
+        apply(&mut s, &village, &d(vec![StateOp::SetFlag { key: "chest_opened".into(), value: true }])).unwrap();
+        apply(&mut s, &village, &d(vec![StateOp::SetFlag { key: "torch_lit".into(), value: true }])).unwrap();
+        apply(&mut s, &village, &d(vec![StateOp::SetFlag { key: "leave_village".into(), value: true }])).unwrap();
+        assert_eq!(village.reached(&s).as_deref(), Some("to_forest"));
+
+        // village → forest。遷移元 village の persistent (chest_opened) を記憶へ harvest。
+        let to_forest = advance_campaign(&c, &root, &mut mem, "village", &village, &s)
+            .unwrap()
+            .expect("辺が在る");
+        assert_eq!(to_forest.module_id, "forest");
+        assert_eq!(to_forest.state.flags.get("chest_opened"), None, "森には村の場所フラグは漏れない");
+        assert_eq!(to_forest.state.flags.get("torch_lit"), None, "局所フラグは捨てられる");
+        assert_eq!(mem["village"].get("chest_opened"), Some(&true), "village の場所フラグが記憶された");
+
+        // --- 2) forest: 村へ戻る合図を立てる ---
+        let forest = to_forest.scenario;
+        let mut fs = to_forest.state;
+        apply(&mut fs, &forest, &d(vec![StateOp::SetFlag { key: "return_village".into(), value: true }])).unwrap();
+        assert_eq!(forest.reached(&fs).as_deref(), Some("to_village"));
+
+        // forest → village (再訪)。遷移先 village の記憶を overlay → 宝箱が蘇る。
+        let back = advance_campaign(&c, &root, &mut mem, "forest", &forest, &fs)
+            .unwrap()
+            .expect("戻り辺が在る");
+        assert_eq!(back.module_id, "village", "戻り辺で village へ再訪");
+        assert_eq!(
+            back.state.flags.get("chest_opened"),
+            Some(&true),
+            "その場所に持つフラグは再訪で蘇る (宝箱はもう開いている)"
+        );
+        assert_eq!(back.state.flags.get("torch_lit"), None, "局所フラグは再訪でも消えたまま");
+        assert_eq!(back.state.flags.get("return_village"), None, "森の局所フラグは村へ漏れない");
+        assert_eq!(back.state.flags.get("leave_village"), None, "村の局所合図も復元されない (persistent でない)");
+    }
+
+    /// 【閉世界】`persistent_flags` が `allowed_flags` 未宣言なら validate が弾く (幻の場所フラグ)。
+    #[test]
+    fn validate_rejects_undeclared_persistent_flag() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [a]
+persistent_flags: [ghost]
+goal: { kind: always }
+locations:
+  room: { description: d, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                gm_core::ScenarioError::PersistentFlagUndeclared { flag } if flag == "ghost")),
+            "未宣言の場所フラグを validate が弾く: {:?}",
+            sc.validate()
+        );
     }
 
     // 念のため: GameState の clone を経ない参照渡しで state を読むだけであることを型で固定。

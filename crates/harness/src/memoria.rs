@@ -202,6 +202,8 @@ pub struct FiredBeat {
     pub image: Option<String>,
     /// イベント CG の表示モード。`FiredTrigger.image_mode` を passthrough。
     pub image_mode: Option<ImageMode>,
+    /// 発火時の SE (効果音 ID)。`FiredTrigger.sound` を passthrough (再生は提示層)。
+    pub sound: Option<String>,
 }
 
 /// 発火トリガー列の `recall` cue を Memoria で解決し [`FiredBeat`] 列にする。
@@ -221,6 +223,7 @@ pub fn resolve_recall<M: Memoria>(memoria: &M, fired: &[FiredTrigger]) -> Vec<Fi
                 .unwrap_or_default(),
             image: f.image.clone(),
             image_mode: f.image_mode,
+            sound: f.sound.clone(),
         })
         .collect()
 }
@@ -300,6 +303,7 @@ mod tests {
             recall: recall.map(|s| s.into()),
             image: None,
             image_mode: None,
+            sound: None,
         }
     }
 
@@ -359,6 +363,18 @@ mod tests {
     fn trigger_without_cue_recalls_nothing() {
         let beats = resolve_recall(&store(), &[fired("plain_beat", None)]);
         assert!(beats[0].recalled.is_empty());
+    }
+
+    /// 【SE/CG passthrough (Phase 3)】発火トリガーの `sound`/`image` を `resolve_recall` が
+    /// `FiredBeat` へそのまま運ぶ (純粋 retrieval — 解決は提示層、ここは passthrough のみ)。
+    #[test]
+    fn resolve_recall_carries_sound_and_image() {
+        let mut f = fired("rockfall", None);
+        f.sound = Some("rockfall.ogg".into());
+        f.image = Some("rockfall.svg".into());
+        let beats = resolve_recall(&store(), &[f]);
+        assert_eq!(beats[0].sound.as_deref(), Some("rockfall.ogg"), "SE を passthrough");
+        assert_eq!(beats[0].image.as_deref(), Some("rockfall.svg"), "CG も passthrough");
     }
 
     /// 【null Memoria】`()` は常に空を返す (recall を使わない経路)。

@@ -10,7 +10,7 @@
  * 状態の真実は backend (GameState) が握る。ここは command が返す view を描画するだけ。
  * パッケージパスの追加/削除は PackageDialog、その他設定は SettingsDialog に分離。
  */
-import { ref, onMounted } from "vue";
+import { ref, watch, onMounted } from "vue";
 import { useGameStore } from "./stores/game";
 import TitleBar from "./components/TitleBar.vue";
 import PackageDialog from "./components/PackageDialog.vue";
@@ -23,11 +23,53 @@ const game = useGameStore();
 const showSettings = ref(false);
 const showPackages = ref(false);
 
+// ループ BGM の <audio> 要素。store.bgm (場所の BGM) を src に流し、音量はミュート/音量設定に追従。
+// 状態の真実は store が握り、ここは再生デバイスとして従う (CG/SE と分業: SE は one-shot で store が鳴らす)。
+const bgmEl = ref<HTMLAudioElement | null>(null);
+
+// BGM を (再)生成する。停止中で src が設定済みなら play() を試みる。
+// **autoplay 制約対策**: 起動直後 (new_game の await 跨ぎ) の初回 play は弾かれることがあるので、
+// この関数をユーザー操作 (pointerdown/keydown) でも呼び、実 gesture context で確実に解錠する。
+function ensureBgmPlaying() {
+  const el = bgmEl.value;
+  if (!el || !game.bgm || !el.paused) return;
+  el.volume = game.audioGain;
+  el.play().catch(() => {
+    /* まだ gesture が足りない等は次の操作でリトライ */
+  });
+}
+
+// store.bgm が変わったら src を差し替える (場所変化)。null なら停止。
+watch(
+  () => game.bgm,
+  (url) => {
+    const el = bgmEl.value;
+    if (!el) return;
+    if (url) {
+      if (el.src !== url) el.src = url;
+      ensureBgmPlaying();
+    } else {
+      el.pause();
+      el.removeAttribute("src");
+    }
+  },
+);
+// 音量/ミュート変更を再生中の BGM へ即時反映 (src は触らずループを切らさない)。
+watch(
+  () => game.audioGain,
+  (g) => {
+    if (bgmEl.value) bgmEl.value.volume = g;
+  },
+);
+
 // 起動時: パッケージ一覧の取得 + 保存済みフォントサイズ (表示設定) の適用。
+// + ユーザー操作のたびに BGM 再生を試みる (初回 play が autoplay で弾かれても次の操作で復帰する)。
 onMounted(() => {
   game.refreshPackages();
   const px = Number(localStorage.getItem("kataribe.fontScale")) || 16;
   document.documentElement.style.fontSize = `${px}px`;
+  window.addEventListener("pointerdown", ensureBgmPlaying);
+  window.addEventListener("keydown", ensureBgmPlaying);
 });
 </script>
 
@@ -85,6 +127,9 @@ onMounted(() => {
 
       <StatePanel />
     </div>
+
+    <!-- ループ BGM (不可視の再生デバイス。src は store.bgm に追従)。 -->
+    <audio ref="bgmEl" loop class="hidden" />
 
     <!-- ダイアログ (TitleBar のボタンから開く) -->
     <PackageDialog v-if="showPackages" @close="showPackages = false" />

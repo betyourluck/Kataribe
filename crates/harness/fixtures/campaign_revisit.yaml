@@ -1,0 +1,10 @@
+# spec 02 PoC: 双方向（再訪）サイクルの campaign。village ⇄ forest。
+# 「その場所に持つ」フラグ (persistent_flags) が再訪で蘇り、局所フラグは蘇らないことを実証する骨格。
+title: 再訪テスト
+start: village
+modules:
+  village: village.yaml
+  forest: forest.yaml
+edges:
+  - { from: village, on_goal: to_forest, to: forest }
+  - { from: forest, on_goal: to_village, to: village } # 戻り辺 = 再訪

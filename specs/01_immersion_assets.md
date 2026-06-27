@@ -1,6 +1,6 @@
 # 01. 没入のための画像・音声アセット
 
-Status: **Locked（#1〜#6 合意済・実装待ち）** / 2026-06-26
+Status: **Done（Phase 0〜3 全実装済）** / 2026-06-27
 Scope: packages に `images/` `audios/` を同梱し、場所背景・イベント CG・キャラ顔アイコン・BGM/SE を出す。
 
 ## 北極星整合
@@ -98,7 +98,7 @@ ID は `^[A-Za-z0-9._-]{1,64}$` のファイル名のみ。gm_core は ID を解
 - **Phase 1 — 場所背景**: `Location.image` → 背景。最小で没入が一気に上がる。
 - **Phase 1.5 — 顔アイコン**: `CharacterDef.icon`/`Protagonist.icon` + `Location.cast` + 顔アイコン行 + クリック→ステータス（engine 改修ゼロの見せ場）。
 - **Phase 2 — イベント CG ✅**: `Trigger.image` + `ImageMode`（background／overlay 予約）→ `FiredTrigger`/`FiredBeat`/`BeatView` を passthrough。frontend は**瞬間**（発火ターンに場所背景を上書き → 次の受理ターンで場所背景へ復帰、却下は保持。#3 改訂）。gm_core 純粋維持・PoC `trigger_image_passthrough_to_fired`/`trigger_image_mode_defaults_to_none`。ドッグフード= `sealed_shrine` の `awakening`/`rockfall` に CG。
-- **Phase 3 — 音声**: `Location.bgm`（ループ・フェード）/ `Trigger.sound`（SE）。
+- **Phase 3 — 音声 ✅**: `Location.bgm`（ループ BGM）/ `Trigger.sound`（発火 SE）→ `FiredTrigger.sound`/`FiredBeat.sound`/`BeatView.sound` を passthrough。gm_core 純粋維持・PoC `trigger_sound_passthrough_to_fired`（gm_core）/ `resolve_recall_carries_sound_and_image`（harness）。app は `bgm_for`（`AssetKind::Audios` で解決）→ `GameView.bgm`/`TurnView.bgm`、frontend は不可視の `<audio loop>` が `store.bgm` に追従（同一 URL なら再代入せずループを切らさない）、SE は `playSe` が one-shot（受理ターンのみ・ミュート/音量 0 で無音）。音量/ミュート UI は設定の「サウンド」タブ（localStorage 永続）。CSP `media-src asset:` と asset scope の `allow_directory(root, true)` は Phase 0 の既存基盤がそのまま `audios/` を覆う。ドッグフード= `sealed_shrine` に `shrine_ambient.wav`（祠 BGM）/ `rockfall.wav`（落石 SE）/ `awakening.wav`（覚醒 SE）の tiny WAV プレースホルダを同梱・配線。実再生は GUI 起動で要目視確認。
 
 ---
 
