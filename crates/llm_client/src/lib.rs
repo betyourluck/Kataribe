@@ -38,9 +38,71 @@ ops は構造化された要求のみで、エンジンが全件検証する。\
 ///
 /// **手書きしない** ── 規格 (schema) と実装 (Rust 型) の乖離は北極星「矛盾しない」に反する。
 /// schemars が serde 属性 (`#[serde(tag = "op")]` 等) を尊重して単一真実源から導出する。
+///
+/// **自己完結化** ([`inline_schema_defs`]): schemars は `ops` 要素を `#/definitions/StateOp` への
+/// `$ref` で出すが、tool-call grammar へ schema をコンパイルするサーバ (xAI Grok 等) は `$ref`/
+/// `definitions`/`$schema` を解決しない (docs に記載なし) → `ops` を制約できず空デルタになる。
+/// `$ref` を実体に inline し `definitions`/`$schema` を落として**どのプロバイダでも自己完結**にする
+/// (Anthropic は $ref を解決できるが、Grok/OpenAI 厳格系は自己完結を要する。互換性の上位互換)。
 pub fn state_delta_schema() -> serde_json::Value {
     let schema = schemars::schema_for!(StateDelta);
-    serde_json::to_value(schema).expect("schemars 生成スキーマは必ず JSON 化できる")
+    let value = serde_json::to_value(schema).expect("schemars 生成スキーマは必ず JSON 化できる");
+    inline_schema_defs(&value)
+}
+
+/// JSON Schema の `$ref` (`#/definitions/X` / `#/$defs/X`) を実体に inline し、
+/// `definitions`/`$defs`/`$schema` キーを除去して**自己完結スキーマ**にする。
+///
+/// tool-call grammar コンパイラ (Grok 等) が参照解決をしない問題への対処。`seen` で展開中の
+/// 定義名を追い、循環参照は空 object に落として無限再帰を防ぐ (現状の gm_core 型は非再帰だが安全側)。
+pub fn inline_schema_defs(schema: &serde_json::Value) -> serde_json::Value {
+    let defs = schema
+        .get("definitions")
+        .or_else(|| schema.get("$defs"))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    inline_value(schema, &defs, &mut Vec::new())
+}
+
+fn inline_value(
+    value: &serde_json::Value,
+    defs: &serde_json::Map<String, serde_json::Value>,
+    seen: &mut Vec<String>,
+) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            // `$ref` は実体へ差し替え (循環は空 object で打ち切り)。
+            if let Some(Value::String(r)) = map.get("$ref") {
+                let name = r
+                    .strip_prefix("#/definitions/")
+                    .or_else(|| r.strip_prefix("#/$defs/"));
+                if let Some(name) = name {
+                    if seen.iter().any(|s| s == name) {
+                        return Value::Object(serde_json::Map::new());
+                    }
+                    if let Some(def) = defs.get(name) {
+                        seen.push(name.to_string());
+                        let inlined = inline_value(def, defs, seen);
+                        seen.pop();
+                        return inlined;
+                    }
+                }
+            }
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                // メタ/参照キーは自己完結スキーマから落とす。
+                if matches!(k.as_str(), "$ref" | "definitions" | "$defs" | "$schema") {
+                    continue;
+                }
+                out.insert(k.clone(), inline_value(v, defs, seen));
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(|v| inline_value(v, defs, seen)).collect()),
+        other => other.clone(),
+    }
 }
 
 impl LlmClient {
@@ -103,6 +165,23 @@ mod tests {
         ] {
             assert!(s.contains(op), "op '{op}' が schema に無い (型と乖離)");
         }
+        // 【自己完結 (Grok 対応)】$ref/definitions/$schema を残さない (tool-call grammar コンパイラが
+        // 参照解決しないサーバでも ops を制約できるよう inline 済み)。
+        assert!(!s.contains("$ref"), "$ref を inline で消す: {s}");
+        assert!(!s.contains("definitions") && !s.contains("$defs"), "definitions を落とす");
+        assert!(!s.contains("$schema"), "$schema メタを落とす");
+    }
+
+    /// 【$ref inline の健全性】inline_schema_defs が参照を実体へ展開し、ops 配列要素の中に
+    /// 各 op の判別子が直接現れる ($ref 経由でなく自己完結)。
+    #[test]
+    fn inline_schema_defs_resolves_refs_self_contained() {
+        let schema = state_delta_schema();
+        // ops プロパティの items が $ref でなく実体 (oneOf の枝) を持つ。
+        let ops_items = &schema["properties"]["ops"]["items"];
+        assert!(ops_items.get("$ref").is_none(), "ops.items は $ref でなく実体");
+        let dump = serde_json::to_string(ops_items).unwrap();
+        assert!(dump.contains("add_item") && dump.contains("set_flag"), "op 実体が ops.items 内に inline");
     }
 
     /// 【リクエスト整形】generate_structured が tool を載せ、tool_choice で強制する。

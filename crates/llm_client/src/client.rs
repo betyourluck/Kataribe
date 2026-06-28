@@ -94,6 +94,15 @@ impl LlmClient {
 
     /// chat/completions を 1 回叩く (リトライ無し)。
     async fn chat_once(&self, req: &ChatRequest) -> Result<ChatResponse, LlmError> {
+        // 診断: LLM_DEBUG が設定されていれば送信ボディと生応答を stderr に出す。
+        // tool_choice/schema を受理しつつ応答形が噛み合わないサーバ (Grok 等) の切り分け用。
+        let debug = std::env::var("LLM_DEBUG").is_ok();
+        if debug {
+            eprintln!(
+                "[LLM_DEBUG] request -> {}",
+                serde_json::to_string(req).unwrap_or_default()
+            );
+        }
         let resp = self
             .http
             .post(self.config.chat_endpoint())
@@ -109,6 +118,13 @@ impl LlmClient {
                 status: status.as_u16(),
                 body,
             });
+        }
+        if debug {
+            // 生応答を読んでログ → text から ChatResponse へ (json() の代わり)。
+            let body = resp.text().await?;
+            eprintln!("[LLM_DEBUG] response <- {body}");
+            return serde_json::from_str::<ChatResponse>(&body)
+                .map_err(|source| LlmError::Parse { source, raw: body });
         }
         Ok(resp.json::<ChatResponse>().await?)
     }
