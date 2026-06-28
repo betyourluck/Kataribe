@@ -286,6 +286,35 @@ mod tests {
     fn revisit_campaign() -> Campaign {
         Campaign::from_yaml(REVISIT).expect("campaign_revisit.yaml がパースできること")
     }
+    const GLOBAL_CAMPAIGN: &str = include_str!("../fixtures/campaign_global.yaml");
+
+    /// 【再現】ゲームプレイで set した global フラグが goal 遷移で次ステージへ持ち越されるか。
+    /// 「goals で global_flags の値を true にして次ステージで反映されない」の切り分け。
+    #[test]
+    fn global_flag_set_in_play_carries_to_next_stage() {
+        let c = Campaign::from_yaml(GLOBAL_CAMPAIGN).expect("campaign_global.yaml パース");
+        let root = revisit_root();
+        let a = load_module(&c, &root, "a").expect("stage_a を load");
+
+        // ゲームプレイで cleared を立てる (set_flag op)。cleared は a の allowed_flags + global_flags。
+        let mut s = a.initial_state(1);
+        apply(&mut s, &a, &d(vec![StateOp::SetFlag { key: "cleared".into(), value: true }]))
+            .expect("cleared は allowed なので受理");
+        assert_eq!(s.flags.get("cleared"), Some(&true), "a で cleared=true");
+        assert_eq!(a.reached(&s).as_deref(), Some("done"), "cleared で goal done に到達");
+
+        // goal 到達 → 次ステージ b へ advance。global フラグが持ち越されるはず。
+        let mut mem = CampaignMemory::new();
+        let adv = advance_campaign(&c, &root, &mut mem, "a", &a, &s)
+            .expect("advance 成功")
+            .expect("辺があるので遷移");
+        assert_eq!(adv.module_id, "b");
+        assert_eq!(
+            adv.state.flags.get("cleared"),
+            Some(&true),
+            "set した global フラグは次ステージへ持ち越される (反映されないならここで失敗)"
+        );
+    }
     fn d(ops: Vec<StateOp>) -> StateDelta {
         StateDelta::new("", ops)
     }

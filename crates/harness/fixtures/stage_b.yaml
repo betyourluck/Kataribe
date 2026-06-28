@@ -1,0 +1,7 @@
+# ステージ B: 次ステージ。cleared が持ち越されているかを観測する。
+title: ステージB
+start: room_b
+allowed_flags: [cleared]
+goal: { kind: always }
+locations:
+  room_b: { description: 部屋B, exits: [] }

@@ -1,0 +1,8 @@
+# 再現用: ゲームプレイで set した global フラグが goal 遷移で次ステージへ持ち越されるか。
+title: グローバル持ち越し再現
+start: a
+modules:
+  a: stage_a.yaml
+  b: stage_b.yaml
+edges:
+  - { from: a, on_goal: done, to: b }

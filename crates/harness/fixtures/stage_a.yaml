@@ -1,0 +1,10 @@
+# ステージ A: cleared を global 宣言。ゴール done は cleared が true で成立。
+title: ステージA
+start: room_a
+allowed_flags: [cleared]
+global_flags: [cleared]      # 世界に残る = transition で次ステージへ持ち越す
+goals:
+  - id: done
+    when: { kind: flag_is, key: cleared, value: true }
+locations:
+  room_a: { description: 部屋A, exits: [] }
