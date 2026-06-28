@@ -252,6 +252,13 @@ fn validate_ops(
                     key: key.clone(),
                 });
             }
+            StateOp::SetPresence { entity, .. } => {
+                // 登場/退場も authored トリガーの専権。LLM 提案は常に却下 (キャラ勝手登場の捏造遮断)。
+                // trigger effects は apply_ops 直行なのでこの検証を通らず登場/退場させられる。
+                reasons.push(RejectReason::PresenceSetNotAllowed {
+                    entity: entity.clone(),
+                });
+            }
         }
     }
 }
@@ -482,6 +489,10 @@ fn apply_ops(
             StateOp::SetAttribute { entity, key, value } => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
                 state.set_attribute(entity, key, value);
+            }
+            StateOp::SetPresence { entity, present } => {
+                // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
+                state.present_overrides.insert(entity.clone(), *present);
             }
         }
     }
@@ -1566,6 +1577,92 @@ locations:
             ),
             Verdict::Accept => panic!("LLM の record_turn は却下されるべき (タイマー詐称)"),
         }
+    }
+
+    /// 【登場/退場 (spec 04)】authored トリガーの set_presence で entity が登場/退場し、
+    /// `present_at` が場所ベース ± override を反映する。
+    #[test]
+    fn presence_override_via_trigger_changes_present_at() {
+        let yaml = r#"
+title: t
+start: hall
+allowed_flags: [scene2]
+goal: { kind: flag_is, key: scene2, value: true }
+characters:
+  alice: { name: アリス }
+  bob: { name: ボブ }
+locations:
+  hall: { description: d, present: [alice], exits: [] }
+triggers:
+  - id: swap_cast
+    when: { kind: always }
+    effects:
+      - { op: set_presence, entity: bob, present: true }
+      - { op: set_presence, entity: alice, present: false }
+      - { op: set_flag, key: scene2, value: true }
+    narration: ボブが入り、アリスが去る。
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        // 初期: hall は present:[alice] → 実効 presence は {alice}。
+        assert!(sc.present_at(&s).contains("alice"));
+        assert!(!sc.present_at(&s).contains("bob"));
+        // 空デルタ → always トリガー発火 → bob 登場・alice 退場。
+        apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
+        let present = sc.present_at(&s);
+        assert!(present.contains("bob"), "bob が登場 (override true)");
+        assert!(!present.contains("alice"), "alice が退場 (override false が場所ベースを上書き)");
+    }
+
+    /// 【捏造遮断 (spec 04)】LLM が set_presence でキャラを勝手に登場させようとしても却下される
+    /// (GrantSkill/SetAttribute/RecordTurn と同型の authored 専権)。
+    #[test]
+    fn llm_proposed_set_presence_is_rejected() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: hall\n",
+            "characters: { alice: { name: アリス } }\n",
+            "goal: { kind: always }\n",
+            "locations:\n  hall: { description: d, items: {}, exits: [] }\n"
+        ))
+        .unwrap();
+        let s = sc.initial_state(1);
+        let delta = d(vec![StateOp::SetPresence { entity: "alice".into(), present: true }]);
+        match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => assert!(
+                reasons
+                    .iter()
+                    .any(|r| matches!(r, RejectReason::PresenceSetNotAllowed { entity } if entity == "alice")),
+                "PresenceSetNotAllowed で却下されるべき"
+            ),
+            Verdict::Accept => panic!("LLM の set_presence は却下されるべき (キャラ勝手登場の捏造)"),
+        }
+    }
+
+    /// 【持ち越し (spec 04)】登場/退場のオーバーライドが次モジュールへ持ち越される (仲間が同行する)。
+    #[test]
+    fn transition_carries_present_overrides() {
+        let a = Scenario::from_yaml(concat!(
+            "title: A\nstart: hall\n",
+            "characters: { bob: { name: ボブ } }\n",
+            "goal: { kind: always }\n",
+            "locations:\n  hall: { description: d, exits: [] }\n"
+        ))
+        .unwrap();
+        let b = Scenario::from_yaml(concat!(
+            "title: B\nstart: road\n",
+            "characters: { bob: { name: ボブ } }\n",
+            "goal: { kind: always }\n",
+            "locations:\n  road: { description: d, exits: [] }\n"
+        ))
+        .unwrap();
+        let mut s = a.initial_state(1);
+        s.present_overrides.insert("bob".into(), true);
+        s.present_overrides.insert("alice".into(), false);
+        let next = b.transition(&s, &a);
+        assert_eq!(next.present_overrides.get("bob"), Some(&true), "登場が次モジュールへ持ち越し");
+        assert_eq!(next.present_overrides.get("alice"), Some(&false), "退場も持ち越し");
+        // B は bob を cast に持つので、持ち越した仲間が次の画面でも同行する。
+        assert!(b.present_at(&next).contains("bob"), "持ち越した登場が次の画面の presence に出る");
     }
 
     /// 【純粋性】adjudicate は trigger を発火させない (state を一切変えない)。

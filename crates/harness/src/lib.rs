@@ -459,8 +459,26 @@ mod tests {
         assert!(brief.contains("corridor"), "出口先の場所が含まれる");
         assert!(brief.contains("rusty_key"), "取得可能アイテムが含まれる");
 
-        let sb = prompt::state_brief(&s);
+        let sb = prompt::state_brief(&s, &sc);
         assert!(sb.contains("cell"), "現在地が含まれる");
+    }
+
+    /// 【内部 stat の秘匿 (spec 04 追補)】hidden_stats に挙げた帳簿 stat (タイマー等) は
+    /// state_brief の能力値行に出ない (主人公の可視ステータスを汚さない)。
+    #[test]
+    fn state_brief_hides_hidden_stats() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\n",
+            "initial_stats: { hp: 10, x_turn: 0 }\n",
+            "hidden_stats: [x_turn]\n",
+            "goal: { kind: always }\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n"
+        ))
+        .unwrap();
+        let s = sc.initial_state(1);
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(sb.contains("hp=10"), "可視 stat は出る");
+        assert!(!sb.contains("x_turn"), "内部タイマー stat は隠れる: {sb}");
     }
 
     /// 【主人公の認識】world / protagonist が scenario_brief に surface され、GM_SYSTEM が

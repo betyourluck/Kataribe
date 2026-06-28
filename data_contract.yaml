@@ -17,6 +17,7 @@ GameState:
   fired: [TriggerId]            # 発火済みトリガー集合 (Phase C)。edge-triggered once の latch。セーブ対象
   skills: { EntityId: [SkillId] }  # キャラ別の獲得済み能力 (閉世界)。初期=宣言集合、開花は authored トリガーのみ
   attributes: { EntityId: { AttrKey: string } }  # キャラ別の文字列属性(クラス/職業/種族 等。第4の可変状態)。初期=宣言集合、書き換えは authored トリガーの set_attribute のみ(LLM 却下)。未宣言キーは load 時 validate で弾く。値は authored 自由文字列。セーブ対象
+  present_overrides: { EntityId: bool }  # 画面上の登場/退場のオーバーライド(第5の可変状態, spec 04)。true=強制登場/false=強制退場。Location.present に重ねて実効 presence を決める。書き換えは authored トリガーの set_presence のみ(LLM 却下)。transition で持ち越し(仲間が同行)。セーブ対象
 
 # --- LLM が毎ターン返す構造化出力 (これ以外の形を出せない) -------------------
 StateDelta:
@@ -40,6 +41,7 @@ StateOp:                        # 内部タグ "op" 付き列挙
   - { op: grant_skill,  entity: EntityId, skill: SkillId }   # スキル開花。validate_ops は常に却下、apply_ops(trigger effects)のみ実行
   - { op: set_attribute, entity: EntityId, key: AttrKey, value: string }  # 文字列属性の書き換え(クラス転職 等)。validate_ops は常に却下(クラス捏造遮断)、apply_ops(trigger effects)のみ実行。未宣言キーは load 時 validate で弾く
   - { op: record_turn,  entity: EntityId, key: StatKey }  # 現在ターンを stat に刻む(タイムスタンプ)。validate_ops は常に却下(タイマー詐称遮断)、apply_ops(trigger effects)のみ実行。生値で書く(clamp なし)。Gate::turns_since と対で遅延イベント
+  - { op: set_presence, entity: EntityId, present: bool }  # 画面上の登場(true)/退場(false)。validate_ops は常に却下(キャラ勝手登場の捏造遮断)、apply_ops(trigger effects)のみ実行。GameState.present_overrides に書き transition で持ち越す(spec 04)
 
 # --- 裁定の不変条件 (engine::adjudicate / apply が守る掟) --------------------
 adjudication:
@@ -79,6 +81,7 @@ Scenario:
   flag_hints: { FlagKey: String }   # 知識フラグのヒント (spec 03)。flag→「立てる条件」の説明文。非検証の語り素材だがキーは allowed_flags 必須。提示層が scenario_brief に opt-in surface し LLM が会話で情報が伝わった瞬間 set_flag できる (弱モデル向け)。flag_rules(守り)と対で使う(ヒント=促し)
   flag_hints_idiom: "定石: 会話で立つ知識 → flag_hints(促し)+flag_rules(守り)。行動・場所に紐づく学び → authored トリガー(when:location_is library→set_flag)。どちらも allowed_flags で閉世界、立った後は gate 強制で知ったフリ不能"
   initial_stats: { StatKey: i64 }   # "player" の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い
+  hidden_stats: [StatKey]           # 表示から隠す stat キー (内部用の帳簿 stat。spec 04 追補)。タイマー(record_turn の刻み)や repeatable カウンタを提示層(UI 状態パネル/state_brief/CLI)が skip。engine 非使用・非検証の提示ヒント。全 entity に効く。x_turn 等を主人公の可視ステータスから外す
   initial_skills: [SkillId]         # "player" の初期スキル糖衣 (閉世界宣言)。NPC は CharacterDef.skills
   initial_inventory: [ItemId]       # "player" の初期所持品。initial_state が seed (場所拾い/譲渡/持ち越し以外の「最初から所持」)。NPC は CharacterDef.inventory
   initial_attributes: { AttrKey: string }  # "player" の初期文字列属性 (クラス/職業/種族 等)。宣言キーが player 属性の閉世界許可集合。NPC は CharacterDef.attributes
@@ -168,7 +171,7 @@ Location:
   description: string
   image: String?                    # 背景画像のアセット ID (images/ 配下のファイル名)。engine は不解釈の不透明 string。提示層が resolve_asset で背景に (spec 01 Phase 1)
   bgm: String?                      # ループ BGM のアセット ID (audios/ 配下)。engine 不解釈の不透明 string。提示層が <audio loop> で再生 (spec 01 Phase 3)
-  present: [EntityId]                # この場に居る NPC (presence)。空なら全 characters。提示層が顔アイコン行に出す (spec 01 Phase 1.5)。engine 不使用
+  present: [EntityId]                # この場に居る NPC の authored 場所ベース。空なら全 characters。実効 presence = これ ± GameState.present_overrides (spec 04 で可変化)。Scenario::present_at(state) が解決し提示層が顔アイコン行に出す
   items: { ItemId: Gate }           # 拾得可能なアイテム → 拾うための gate
   exits: [Exit]
 
@@ -257,6 +260,14 @@ Capability:
   skill_gate:  "Gate::HasSkill{entity,skill} で能力を op/移動/取得/trigger の前提条件にできる"
   awakening:   "新能力の開花は Trigger.effects の grant_skill のみ (authored・gated)。LLM 提案の grant_skill は RejectReason::SkillGrantNotAllowed で却下"
   narration:   "「宣言済み能力しか使えない/勝手に開花しない/未宣言の力は存在しない」を GM_SYSTEM で接地。state_brief が各 entity の現在スキルを提示"
+
+# --- 登場/退場 (presence の可変化, spec 04) ---------------------------------
+Presence:
+  base:        "Location.present = authored の場所ベース (空なら全 characters)。これは静的"
+  override:    "GameState.present_overrides{EntityId:bool} = 可変オーバーライド (true=強制登場/false=強制退場)。第5の可変状態・セーブ対象"
+  effective:   "Scenario::present_at(state) = 場所ベース ± override、既知 characters に retain (純粋関数)。app present_characters がこれを使い主人公を先頭に解決"
+  control:     "登場/退場は Trigger.effects の set_presence のみ (authored 専権)。LLM 提案の set_presence は RejectReason::PresenceSetNotAllowed で却下 (grant_skill 同型・第4例)"
+  carry:       "transition が present_overrides を持ち越す (登場させた仲間が次の画面に同行)。未注入キャラへの force-present は present_at の retain でそのモジュールでは黙って落ち、override は state に残り次のモジュールで現れる"
 
 # --- 反応機構: 禁忌(Phase B) と トリガー(Phase C) は双対 ---------------------
 # 両者とも「delta 適用後に Gate を評価する」同じ機構を使う。Phase B が機構を作り、

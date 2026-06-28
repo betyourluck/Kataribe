@@ -41,6 +41,9 @@ pub enum RejectReason {
     /// ターンの刻み (record_turn) は LLM が提案できない (authored トリガーの専権)。
     /// タイマー詐称遮断 (SkillGrantNotAllowed と同型)。
     TurnRecordNotAllowed { entity: String, key: String },
+    /// 登場/退場 (set_presence) は LLM が提案できない (authored トリガーの専権)。
+    /// キャラ勝手登場の捏造遮断 (SkillGrantNotAllowed と同型)。
+    PresenceSetNotAllowed { entity: String },
     /// 譲渡先がこのシナリオに存在しない entity (幻のキャラには渡せない)。
     UnknownEntity { entity: String },
     /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
@@ -90,6 +93,9 @@ impl RejectReason {
             RejectReason::TurnRecordNotAllowed { entity, key } => {
                 format!("{entity} の '{key}' にターンを刻めない (時の記録は筋書きの出来事でのみ起きる)")
             }
+            RejectReason::PresenceSetNotAllowed { entity } => {
+                format!("{entity} をその場で登場/退場させられない (登場は筋書きの出来事でのみ起きる)")
+            }
             RejectReason::UnknownEntity { entity } => {
                 format!("'{entity}' はこのシナリオに存在しないので渡せない")
             }
@@ -135,6 +141,9 @@ impl RejectReason {
             }
             RejectReason::TurnRecordNotAllowed { entity, key } => {
                 format!("{entity} cannot stamp the turn into '{key}' (time is recorded only through authored events)")
+            }
+            RejectReason::PresenceSetNotAllowed { entity } => {
+                format!("{entity} cannot enter or leave the scene on a whim (presence changes only through authored events)")
             }
             RejectReason::UnknownEntity { entity } => {
                 format!("cannot give to '{entity}' because it does not exist in this scenario")

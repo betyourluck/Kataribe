@@ -180,7 +180,7 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
 }
 
 /// 現在の正本状態を要約する。LLM が見てよい唯一の真実のスナップショット。
-pub fn state_brief(state: &GameState) -> String {
+pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
     // 所持物はキャラ別 (誰が何を持つかを LLM に見せる = 譲渡の前提)。
     let inv = if state.inventory.values().all(|s| s.is_empty()) {
         "なし".to_string()
@@ -208,13 +208,16 @@ pub fn state_brief(state: &GameState) -> String {
             .entities
             .iter()
             .map(|(eid, stats)| {
+                // 内部用の帳簿 stat (hidden_stats) は提示しない (タイマー/カウンタの露出防止)。
                 let kv = stats
                     .iter()
+                    .filter(|(k, _)| !scenario.hidden_stats.contains(*k))
                     .map(|(k, v)| format!("{k}={v}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{eid}: {kv}")
             })
+            .filter(|line| !line.ends_with(": "))
             .collect::<Vec<_>>()
             .join(" / ")
     };

@@ -77,7 +77,7 @@ pub async fn run_turn<P: DeltaProposer>(
         )),
         ChatMessage::user(format!(
             "{}{}{}{}\n\n# プレイヤーの行動\n{}",
-            prompt::state_brief(state),
+            prompt::state_brief(state, scenario),
             prompt::check_outcome_note(recent_checks),
             prompt::recalled_lore_note(recalled_lore),
             prompt::recent_narration_note(recent_narration),

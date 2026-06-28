@@ -61,6 +61,12 @@ pub struct GameState {
     /// 存在しない (閉世界、load 時 validate)。値は authored な自由文字列。**セーブ対象**。
     #[serde(default)]
     pub attributes: BTreeMap<EntityId, BTreeMap<AttrKey, String>>,
+    /// **画面上の在/不在のオーバーライド** (登場/退場。第5の可変状態。spec 04)。`entity → true`
+    /// は強制登場、`entity → false` は強制退場。`Location.present` (場所ベース) に重ねて実効 presence を
+    /// 決める。書き換えは authored トリガーの set_presence のみ (LLM は提案しても却下)。**セーブ対象**・
+    /// `transition` で持ち越す (仲間が同行する)。
+    #[serde(default)]
+    pub present_overrides: BTreeMap<EntityId, bool>,
 }
 
 impl GameState {
@@ -76,6 +82,7 @@ impl GameState {
             fired: BTreeSet::new(),
             skills: BTreeMap::new(),
             attributes: BTreeMap::new(),
+            present_overrides: BTreeMap::new(),
         }
     }
 
@@ -280,5 +287,14 @@ pub enum StateOp {
         #[serde(default = "default_entity")]
         entity: EntityId,
         key: StatKey,
+    },
+    /// **画面上の登場/退場** (presence のオーバーライド)。**authored トリガーの専権** — LLM が提案すると
+    /// `adjudicate` が却下する (キャラ勝手登場の捏造遮断、GrantSkill/SetAttribute と同型)。trigger effects は
+    /// `apply_ops` 直行なので登場/退場させられる。`present=true` で強制登場・`false` で強制退場。
+    /// `transition` で持ち越すので、ある画面で登場させた仲間が次の画面にも同行する。`entity` 省略時は主人公。
+    SetPresence {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        present: bool,
     },
 }

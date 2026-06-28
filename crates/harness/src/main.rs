@@ -187,7 +187,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "  [所在: {} / 所持: {} / 能力値: {}]",
                     state.location,
                     inventory(&state),
-                    stats_line(&state),
+                    stats_line(&state, &scenario),
                 );
 
                 // goal 到達処理: キャンペーンなら発火 GoalId で次モジュールへ遷移、単発なら終了。
@@ -263,7 +263,7 @@ fn inventory(state: &GameState) -> String {
     }
 }
 
-fn stats_line(state: &GameState) -> String {
+fn stats_line(state: &GameState, scenario: &Scenario) -> String {
     if state.entities.is_empty() {
         "なし".to_string()
     } else {
@@ -271,13 +271,16 @@ fn stats_line(state: &GameState) -> String {
             .entities
             .iter()
             .map(|(eid, stats)| {
+                // 内部用の帳簿 stat (hidden_stats) は表示しない。
                 let kv = stats
                     .iter()
+                    .filter(|(k, _)| !scenario.hidden_stats.contains(*k))
                     .map(|(k, v)| format!("{k}={v}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{eid}({kv})")
             })
+            .filter(|line| !line.ends_with("()"))
             .collect::<Vec<_>>()
             .join(" / ")
     }

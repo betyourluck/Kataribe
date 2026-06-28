@@ -200,14 +200,9 @@ fn present_characters(scenario: &Scenario, state: &GameState, root: &Path) -> Ve
         name: player_name,
         icon: resolve_icon(&scenario.protagonist.icon),
     }];
-    // 現在地の NPC。
-    let here = scenario.location(&state.location).map(|l| &l.present);
-    let ids: Vec<&String> = match here {
-        Some(p) if !p.is_empty() => p.iter().collect(),
-        _ => scenario.characters.keys().collect(),
-    };
-    for id in ids {
-        if let Some(def) = scenario.characters.get(id) {
+    // 現在地の実効 NPC presence (場所ベース ± present_overrides、spec 04)。トリガーで登場/退場した結果を反映。
+    for id in scenario.present_at(state) {
+        if let Some(def) = scenario.characters.get(&id) {
             out.push(CharacterView {
                 id: id.clone(),
                 name: if def.name.is_empty() { id.clone() } else { def.name.clone() },
@@ -321,6 +316,8 @@ fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
                 .map(|stats| {
                     stats
                         .iter()
+                        // 内部用の帳簿 stat (hidden_stats) は状態パネルに出さない。
+                        .filter(|(k, _)| !scenario.hidden_stats.contains(*k))
                         .map(|(k, v)| StatView { key: k.clone(), value: *v })
                         .collect()
                 })

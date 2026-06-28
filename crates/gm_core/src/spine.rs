@@ -399,6 +399,12 @@ pub struct Scenario {
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
     pub initial_stats: BTreeMap<StatKey, i64>,
+    /// **表示から隠す stat キー** (内部用の帳簿 stat。spec 04 追補)。タイマー (`record_turn` の刻み) や
+    /// repeatable カウンタのような engine 内部値を、提示層 (UI の状態パネル / prompt の state_brief / CLI) が
+    /// この集合のキーで skip する。**engine は使わない提示ヒント** (キーの正本性には影響しない・非検証)。
+    /// 全 entity に効く (どの entity のこのキーの stat も隠す)。
+    #[serde(default)]
+    pub hidden_stats: BTreeSet<StatKey>,
     /// `"player"` の初期スキル糖衣 (閉世界宣言)。NPC は [`CharacterDef::skills`]。
     #[serde(default)]
     pub initial_skills: BTreeSet<SkillId>,
@@ -451,6 +457,28 @@ impl Scenario {
     /// 指定 entity がこのシナリオに存在するか (主人公 or 登場人物)。譲渡先の検証に使う。
     pub fn knows_entity(&self, entity: &str) -> bool {
         entity == PLAYER || self.characters.contains_key(entity)
+    }
+
+    /// 現在地の**実効 NPC presence** (spec 04)。`Location.present` (場所ベース、空なら全 characters) に
+    /// `GameState.present_overrides` を重ね、このモジュールが知る characters に絞る。**純粋関数** —
+    /// 提示層 (顔アイコン行) が主人公を先頭に名前/アイコンを解決する素。override は bool を運ぶだけなので、
+    /// このモジュールに未注入の entity への force-present はここで黙って落ちる (override 自体は state に残り、
+    /// そのキャラを持つ次のモジュールで現れる)。
+    pub fn present_at(&self, state: &GameState) -> BTreeSet<EntityId> {
+        let mut set: BTreeSet<EntityId> = match self.location(&state.location) {
+            Some(loc) if !loc.present.is_empty() => loc.present.clone(),
+            _ => self.characters.keys().cloned().collect(),
+        };
+        for (entity, &present) in &state.present_overrides {
+            if present {
+                set.insert(entity.clone());
+            } else {
+                set.remove(entity);
+            }
+        }
+        // このモジュールが知らない (cast 注入されていない) entity は解決できないので落とす。
+        set.retain(|e| self.characters.contains_key(e));
+        set
     }
 
     /// authored challenge を引く (未宣言なら `None`)。
@@ -600,6 +628,8 @@ impl Scenario {
                 s.set_attribute(entity, key, value);
             }
         }
+        // 登場/退場のオーバーライド: 丸ごと持ち越し (登場させた仲間が次の画面にも同行する、spec 04)。
+        s.present_overrides = prev.present_overrides.clone();
         // フラグ: source が global と宣言したものだけ運ぶ (局所は捨てる)。
         for key in &prev_scenario.global_flags {
             if let Some(value) = prev.flags.get(key) {
