@@ -27,6 +27,13 @@ pub const DEFAULT_GOAL: &str = "goal";
 /// 主人公の規約的 EntityId。op/gate が entity を省略した時の既定。
 pub const PLAYER: &str = "player";
 
+/// **authored 専権 op の serde タグ** ── LLM が提案すると [`crate::adjudicate`] が必ず却下する op。
+/// これらは authored トリガーの効果 (`apply_ops` 直行) でのみ実行される。`emit_delta` の schema から
+/// これらを除外して LLM に**そもそも提案させない** (構造的遮断)。露出したままだと LLM が使い続け、
+/// 却下→再生成ループで詰まる (presence は物語で頻出ゆえ特に問題)。adjudicate の却下ケースと対応。
+pub const AUTHORED_ONLY_OPS: &[&str] =
+    &["grant_skill", "set_attribute", "record_turn", "set_presence"];
+
 /// op/gate の `entity` 省略時に使う既定値 (serde default)。
 pub fn default_entity() -> EntityId {
     PLAYER.to_string()

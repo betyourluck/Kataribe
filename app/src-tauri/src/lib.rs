@@ -131,6 +131,9 @@ struct TurnView {
     attempts: u32,
     /// 却下時の理由 (session.lang で localize 済み)。
     reasons: Vec<String>,
+    /// 受理されたが、それまでに却下された各試行の理由 (試行順・localize 済み)。空なら一発合格。
+    /// 「なぜ筋を通すのに N 回かかったか」を author に見せる (Grok 等で却下が多い時の診断)。
+    retries: Vec<Vec<String>>,
     state: StateView,
     goal_reached: bool,
     /// 到達した名前付き goal の id (複数 goal のどれに達したか)。単一 goal/未到達なら None。
@@ -615,7 +618,7 @@ async fn play_turn(
     .map_err(|e| e.to_string())?;
 
     let mut view = match outcome {
-        TurnOutcome::Accepted { narration, rolls, checks, fired, attempts } => {
+        TurnOutcome::Accepted { narration, rolls, checks, fired, attempts, rejected } => {
             // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止)。
             sess.last_narration = narration.clone();
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
@@ -678,6 +681,11 @@ async fn play_turn(
                 beats,
                 attempts,
                 reasons: Vec::new(),
+                // 受理前に却下された各試行の理由を localize して author に見せる。
+                retries: rejected
+                    .iter()
+                    .map(|rs| rs.iter().map(|r| r.localize(sess.lang)).collect())
+                    .collect(),
                 state: state_view(&sess.state, &sess.scenario),
                 goal_reached: is_goal(&sess.state, &sess.scenario),
                 goal_id,
@@ -696,6 +704,7 @@ async fn play_turn(
             beats: Vec::new(),
             attempts,
             reasons: last_reasons.iter().map(|r| r.localize(sess.lang)).collect(),
+            retries: Vec::new(),
             // 却下では state 無傷。現状スナップショットを返す。
             state: state_view(&sess.state, &sess.scenario),
             goal_reached: is_goal(&sess.state, &sess.scenario),

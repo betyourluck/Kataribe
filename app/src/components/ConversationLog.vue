@@ -65,6 +65,16 @@ const game = useGameStore();
         <p class="text-parchment/40 mt-1">※ 状態は変化していません。別の行動を試してください。</p>
       </div>
 
+      <!-- 受理までに却下された試行の理由 (なぜ筋を通すのに N 回かかったか) -->
+      <div v-else-if="entry.kind === 'retries'" class="rounded-lg bg-ash/20 px-4 py-2 text-xs text-parchment/55">
+        <p class="text-parchment/45">却下された試行:</p>
+        <ul class="list-disc list-inside mt-0.5">
+          <li v-for="(reasons, j) in entry.reasons" :key="j">
+            {{ j + 1 }} 回目: {{ reasons.join(" / ") }}
+          </li>
+        </ul>
+      </div>
+
       <!-- システム告知 -->
       <p v-else-if="entry.kind === 'system'" class="text-center text-glow/80 text-sm">
         {{ entry.text }}

@@ -153,7 +153,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
         pending_checks = Vec::new();
         match outcome {
-            Ok(TurnOutcome::Accepted { narration, rolls, checks, fired, attempts }) => {
+            Ok(TurnOutcome::Accepted { narration, rolls, checks, fired, attempts, rejected }) => {
                 println!("\n{narration}");
                 last_narration = narration.clone(); // 次ターンの継続文脈に持ち越す
                 for r in &rolls {
@@ -179,9 +179,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         pending_lore.push(frag.clone());
                     }
                 }
-                // 核心的未知の計測: 何回の再生成で合法な ops に収束したか。
+                // 核心的未知の計測: 何回の再生成で合法な ops に収束したか + なぜ却下されたか。
                 if attempts > 1 {
                     println!("  [GM は {attempts} 回目の提案で筋を通した]");
+                    for (i, reasons) in rejected.iter().enumerate() {
+                        let why: Vec<String> = reasons.iter().map(|r| r.localize(lang)).collect();
+                        println!("    ✗ {} 回目却下: {}", i + 1, why.join(" / "));
+                    }
                 }
                 println!(
                     "  [所在: {} / 所持: {} / 能力値: {}]",

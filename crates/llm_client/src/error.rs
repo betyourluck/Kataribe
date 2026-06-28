@@ -10,8 +10,14 @@ pub enum LlmError {
     Config(String),
 
     /// HTTP 層の失敗 (接続不能・タイムアウト・TLS など)。リトライ対象。
-    #[error("HTTP エラー: {0}")]
-    Http(#[from] reqwest::Error),
+    /// `detail` は **source 連鎖を平坦化**した文面 (reqwest の "error sending request for url" は
+    /// 真因をラップして隠すので、"…: operation timed out" 等の根本原因まで surface する)。
+    #[error("HTTP エラー: {detail}")]
+    Http {
+        #[source]
+        source: reqwest::Error,
+        detail: String,
+    },
 
     /// API がエラーステータスを返した。`status` でリトライ可否を判断する。
     #[error("API エラー (status={status}): {body}")]
@@ -33,11 +39,28 @@ pub enum LlmError {
     },
 }
 
+/// reqwest エラーから [`LlmError::Http`] を作る。source 連鎖を平坦化して `detail` に詰める
+/// ("error sending request for url (…)" の下に隠れた timeout/connect/TLS の真因まで見せる)。
+impl From<reqwest::Error> for LlmError {
+    fn from(source: reqwest::Error) -> Self {
+        let mut detail = source.to_string();
+        let mut cause: Option<&dyn std::error::Error> = std::error::Error::source(&source);
+        while let Some(inner) = cause {
+            detail.push_str(": ");
+            detail.push_str(&inner.to_string());
+            cause = inner.source();
+        }
+        LlmError::Http { source, detail }
+    }
+}
+
 impl LlmError {
     /// 一過性 (リトライで回復しうる) か。HTTP 障害と 5xx / 429 を対象とする。
     pub fn is_transient(&self) -> bool {
         match self {
-            LlmError::Http(e) => e.is_timeout() || e.is_connect() || e.is_request(),
+            LlmError::Http { source, .. } => {
+                source.is_timeout() || source.is_connect() || source.is_request()
+            }
             LlmError::Api { status, .. } => *status == 429 || (500..600).contains(status),
             _ => false,
         }

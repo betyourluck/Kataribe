@@ -246,6 +246,8 @@ export const useGameStore = defineStore("game", {
           }
           if (turn.attempts > 1) {
             this.log.push({ kind: "system", text: `GM は ${turn.attempts} 回目の提案で筋を通した` });
+            // なぜ却下されたか (試行ごとの理由) を author に見せる。
+            if (turn.retries.length) this.log.push({ kind: "retries", reasons: turn.retries });
           }
           // goal 到達: 単発/終端なら goal_reached、campaign 継続なら transition で signal。
           if (turn.goal_reached || turn.transition) {

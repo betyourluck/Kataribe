@@ -47,7 +47,32 @@ ops は構造化された要求のみで、エンジンが全件検証する。\
 pub fn state_delta_schema() -> serde_json::Value {
     let schema = schemars::schema_for!(StateDelta);
     let value = serde_json::to_value(schema).expect("schemars 生成スキーマは必ず JSON 化できる");
-    inline_schema_defs(&value)
+    let inlined = inline_schema_defs(&value);
+    filter_authored_only_ops(inlined)
+}
+
+/// `ops` の oneOf から **authored 専権 op** ([`gm_core::AUTHORED_ONLY_OPS`]) を除く。
+///
+/// これらは LLM が提案しても `adjudicate` が必ず却下する (trigger 効果でのみ実行)。schema に残すと
+/// LLM が使い続けて却下→再生成ループで詰まる (特に constrained decoding な Grok は grammar に含めて
+/// しまう)。除外すれば **LLM はそもそも提案できない** (Grok でも grammar に出ない=構造的遮断)。
+fn filter_authored_only_ops(mut schema: serde_json::Value) -> serde_json::Value {
+    if let Some(variants) = schema
+        .pointer_mut("/properties/ops/items/oneOf")
+        .and_then(|v| v.as_array_mut())
+    {
+        variants.retain(|variant| {
+            let op = variant
+                .get("properties")
+                .and_then(|p| p.get("op"))
+                .and_then(|o| o.get("enum"))
+                .and_then(|e| e.as_array())
+                .and_then(|a| a.first())
+                .and_then(|s| s.as_str());
+            !matches!(op, Some(name) if gm_core::AUTHORED_ONLY_OPS.contains(&name))
+        });
+    }
+    schema
 }
 
 /// JSON Schema の `$ref` (`#/definitions/X` / `#/$defs/X`) を実体に inline し、
@@ -182,6 +207,29 @@ mod tests {
         assert!(ops_items.get("$ref").is_none(), "ops.items は $ref でなく実体");
         let dump = serde_json::to_string(ops_items).unwrap();
         assert!(dump.contains("add_item") && dump.contains("set_flag"), "op 実体が ops.items 内に inline");
+    }
+
+    /// 【authored 専権 op の除外】LLM 向け schema は set_presence/grant_skill 等を **提案肢に出さない**
+    /// (露出すると LLM が使い続けて却下→再生成ループで詰まる。Grok の constrained decoding 対策の核心)。
+    /// LLM が使える op (add_item 等) は残る。
+    #[test]
+    fn schema_excludes_authored_only_ops() {
+        let schema = state_delta_schema();
+        let variants = schema["properties"]["ops"]["items"]["oneOf"]
+            .as_array()
+            .expect("ops.items.oneOf は配列");
+        let op_tags: Vec<String> = variants
+            .iter()
+            .filter_map(|v| v["properties"]["op"]["enum"][0].as_str().map(String::from))
+            .collect();
+        // authored 専権 op は1つも露出しない。
+        for banned in gm_core::AUTHORED_ONLY_OPS {
+            assert!(!op_tags.iter().any(|t| t == banned), "authored 専権 op '{banned}' を schema から除外");
+        }
+        // LLM が使える代表 op は残る。
+        for keep in ["add_item", "set_flag", "move", "adjust_stat", "check", "attempt_challenge"] {
+            assert!(op_tags.iter().any(|t| t == keep), "提案可能な op '{keep}' は残す");
+        }
     }
 
     /// 【リクエスト整形】generate_structured が tool を載せ、tool_choice で強制する。

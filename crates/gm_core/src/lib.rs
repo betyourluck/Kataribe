@@ -24,5 +24,6 @@ pub use spine::{
 };
 pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
-    RngState, SkillId, StatKey, StateDelta, StateOp, TriggerId, DEFAULT_GOAL, PLAYER,
+    RngState, SkillId, StatKey, StateDelta, StateOp, TriggerId, AUTHORED_ONLY_OPS, DEFAULT_GOAL,
+    PLAYER,
 };

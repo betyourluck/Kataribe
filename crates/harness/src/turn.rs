@@ -28,6 +28,9 @@ pub enum TurnOutcome {
         fired: Vec<FiredTrigger>,
         /// 受理までに要した試行回数 (1 = 一発合格)。
         attempts: u32,
+        /// 受理前に却下された各試行の理由 (試行順)。空なら一発合格。提示層が「なぜ筋を通すのに
+        /// N 回かかったか」を author に見せる素 (Grok 等で却下が多い時の診断)。
+        rejected: Vec<Vec<RejectReason>>,
     },
     /// 最大試行回数まで却下され続けた。**state は無傷**。理由は構造化 (表示は localize)。
     Rejected {
@@ -86,6 +89,8 @@ pub async fn run_turn<P: DeltaProposer>(
     ];
 
     let mut last_reasons = Vec::new();
+    // 受理前に却下された各試行の理由 (試行順)。受理時に提示層へ渡し「なぜ N 回かかったか」を見せる。
+    let mut rejected: Vec<Vec<RejectReason>> = Vec::new();
 
     for attempt in 1..=max_attempts.max(1) {
         let delta = proposer.propose(&messages).await?;
@@ -102,11 +107,13 @@ pub async fn run_turn<P: DeltaProposer>(
                     checks: out.checks,
                     fired: out.fired,
                     attempts: attempt,
+                    rejected,
                 });
             }
             Verdict::Reject { reasons } => {
                 // 履歴の一貫性のため、LLM が出した提案 (の痕跡) と却下理由を会話に積む。
                 push_rejection(&mut messages, &delta, &reasons, lang);
+                rejected.push(reasons.clone());
                 last_reasons = reasons;
             }
         }

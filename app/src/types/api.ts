@@ -95,6 +95,8 @@ export interface TurnView {
   beats: BeatView[];
   attempts: number;
   reasons: string[];
+  /** 受理までに却下された各試行の理由 (試行順・localize 済み)。空なら一発合格。 */
+  retries: string[][];
   state: StateView;
   goal_reached: boolean;
   /** 到達した名前付き goal の id (複数 goal のどれに達したか)。単一 goal/未到達なら null。 */
@@ -121,4 +123,5 @@ export type LogEntry =
   | { kind: "rolls"; rolls: RollView[] }
   | { kind: "checks"; checks: CheckView[] }
   | { kind: "reject"; reasons: string[]; attempts: number }
+  | { kind: "retries"; reasons: string[][] }
   | { kind: "system"; text: string };

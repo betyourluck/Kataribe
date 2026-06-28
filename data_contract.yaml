@@ -206,7 +206,7 @@ LlmClient:
   wire:        "OpenAI 互換 POST {base_url}/chat/completions + Bearer api_key"
   structured:  "単一ツール emit_delta を tool_choice で強制 → arguments(JSON文字列) を StateDelta に再パース"
   fallback:    "tool_calls 不在時は content のフェンス JSON を strip して再パース (tool_choice 非尊重サーバの保険)"
-  schema:      "emit_delta の parameters は schemars が gm_core::StateDelta から機械生成 (規格=実装の単一真実源・手書き禁止)"
+  schema:      "emit_delta の parameters は schemars が gm_core::StateDelta から機械生成 (規格=実装の単一真実源・手書き禁止)。state_delta_schema が2段後処理: ①inline_schema_defs で $ref/definitions/$schema を inline・除去し自己完結化 (Grok 等 grammar コンパイラ対応) ②filter_authored_only_ops で gm_core::AUTHORED_ONLY_OPS (grant_skill/set_attribute/record_turn/set_presence) を ops の oneOf から除外 = LLM にそもそも提案させない (露出すると却下→再生成ループで詰まる、特に constrained decoding な Grok。authored 専権 op は trigger 効果でのみ実行)"
   retry:       "一過性エラー (HTTP障害 / 429 / 5xx) のみ指数backoff、最大 LLM_MAX_RETRIES 回"
   parse_error: "JSON パース失敗は raw を保持した LlmError::Parse を返す → 却下→再生成ループ(self_repair同型)が raw を LLM に戻せる"
   boundary:    "llm_client は transport + 構造化出力の保証のみ。messages 構築(GMペルソナ/シナリオ要約/却下理由) と adjudicate は上位(harness)の責務"
