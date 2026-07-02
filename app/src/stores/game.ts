@@ -255,9 +255,11 @@ export const useGameStore = defineStore("game", {
             if (turn.goal_narration) {
               this.log.push({ kind: "narration", text: turn.goal_narration });
             }
+            // 表示は authored title を優先し、無ければ id (機械用セレクタ) へフォールバック。
+            const goalLabel = turn.goal_title ?? turn.goal_id;
             if (turn.transition) {
               // campaign: この章の結末 → 次モジュールへ。入力は締めず続行。
-              const end = turn.goal_id ? `結末「${turn.goal_id}」` : "この章の結末";
+              const end = goalLabel ? `結末「${goalLabel}」` : "この章の結末";
               this.log.push({
                 kind: "system",
                 text: `${end}に到達。次の章『${turn.transition.module_title}』へ。`,
@@ -266,7 +268,7 @@ export const useGameStore = defineStore("game", {
               this.log.push({ kind: "opening", text: turn.transition.description });
             } else {
               // 単発シナリオ/キャンペーン終端 = クリア。
-              const label = turn.goal_id ? `🎉 結末「${turn.goal_id}」に到達した。` : "🎉 クリア。goal に到達した。";
+              const label = goalLabel ? `🎉 結末「${goalLabel}」に到達した。` : "🎉 クリア。goal に到達した。";
               this.log.push({ kind: "system", text: label });
             }
           }

@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target";
   size?: number;
 }>();
 </script>
@@ -40,6 +40,20 @@ defineProps<{
     <template v-else-if="name === 'turn'">
       <circle cx="12" cy="12" r="9" />
       <path d="M12 7v5l3 2" />
+    </template>
+    <!-- ステータス: 波形 (activity) -->
+    <template v-else-if="name === 'gauge'">
+      <path d="M22 12h-4l-3 8L9 4l-3 8H2" />
+    </template>
+    <!-- 能力: 四芒星のきらめき -->
+    <template v-else-if="name === 'sparkle'">
+      <path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2 2-6Z" />
+    </template>
+    <!-- 結末 (ゴール): 的 -->
+    <template v-else-if="name === 'target'">
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="5" />
+      <circle cx="12" cy="12" r="1" />
     </template>
   </svg>
 </template>

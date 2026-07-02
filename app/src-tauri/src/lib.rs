@@ -49,6 +49,9 @@ struct EntityView {
     items: Vec<String>,
     /// 文字列属性 (クラス/職業/種族 等。可変。トリガーで書き換わる)。
     attributes: Vec<StatStrView>,
+    /// 設定・背景・性向 (authored の語り素材、CharacterDef.profile / Protagonist.profile)。
+    /// プロフィールダイアログの本文。無ければ空。
+    profile: String,
 }
 
 /// 文字列属性の 1 エントリ (key=value)。
@@ -66,6 +69,22 @@ struct StateView {
     flags: Vec<String>,
     entities: Vec<EntityView>,
     goal_reached: bool,
+    /// このモジュールの名前付き goal (目標) の一覧 (authored 順)。
+    /// プレイヤーに「何を目指せる盤面か」を示す (when/narration はネタバレゆえ出さない。
+    /// hint は作者が意図的に開示する道しるべ)。単一 goal (無名・後方互換) のシナリオでは空。
+    goals: Vec<GoalView>,
+    /// 到達した goal の id (一覧のハイライト用)。未到達なら None。
+    reached_goal: Option<String>,
+}
+
+/// 目標一覧の 1 エントリ (id + 表示名 + プレイヤー向けヒント)。
+#[derive(Serialize)]
+struct GoalView {
+    id: String,
+    /// 人間向けの表示名 (id は機械用セレクタ)。空なら frontend が id へフォールバック。
+    title: String,
+    /// 「何をすればだいたい行けるか」の authored ヒント。空なら表示なし。
+    hint: String,
 }
 
 #[derive(Serialize)]
@@ -138,6 +157,8 @@ struct TurnView {
     goal_reached: bool,
     /// 到達した名前付き goal の id (複数 goal のどれに達したか)。単一 goal/未到達なら None。
     goal_id: Option<String>,
+    /// 到達 goal の表示名 (authored title)。空/未到達なら None (frontend は id へフォールバック)。
+    goal_title: Option<String>,
     /// 到達 goal の結末ナレーション (authored)。空/未到達なら None。
     goal_narration: Option<String>,
     /// 現在地の背景画像の絶対パス (frontend が convertFileSrc で URL 化)。無ければ None。
@@ -216,14 +237,18 @@ fn present_characters(scenario: &Scenario, state: &GameState, root: &Path) -> Ve
     out
 }
 
-/// 到達した名前付き goal の (id, 結末ナレーション) を view 用に取り出す。
-fn goal_view(state: &GameState, scenario: &Scenario) -> (Option<String>, Option<String>) {
+/// 到達した名前付き goal の (id, 表示名, 結末ナレーション) を view 用に取り出す。
+fn goal_view(
+    state: &GameState,
+    scenario: &Scenario,
+) -> (Option<String>, Option<String>, Option<String>) {
     match scenario.reached_goal(state) {
         Some(g) => (
             Some(g.id.clone()),
+            (!g.title.trim().is_empty()).then(|| g.title.clone()),
             (!g.narration.trim().is_empty()).then(|| normalize(&g.narration)),
         ),
-        None => (None, None),
+        None => (None, None, None),
     }
 }
 
@@ -344,8 +369,20 @@ fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
                         .collect()
                 })
                 .unwrap_or_default(),
+            profile: if id == PLAYER {
+                scenario.protagonist.profile.clone()
+            } else {
+                scenario
+                    .characters
+                    .get(id)
+                    .map(|c| c.profile.clone())
+                    .unwrap_or_default()
+            },
         })
         .collect();
+    // 隠しゴール (visible: false) は到達するまで一覧に出さない (到達で開示され ✓ 付きで現れる)。
+    // DTO 自体から落とす = 提示層より手前でネタバレを断つ (when/narration を出さないのと同じ衛生)。
+    let reached = scenario.reached(state);
     StateView {
         turn: state.turn,
         location: state.location.clone(),
@@ -363,6 +400,13 @@ fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
             .collect(),
         entities,
         goal_reached: is_goal(state, scenario),
+        goals: scenario
+            .goals
+            .iter()
+            .filter(|g| g.visible || reached.as_deref() == Some(g.id.as_str()))
+            .map(|g| GoalView { id: g.id.clone(), title: g.title.clone(), hint: g.hint.clone() })
+            .collect(),
+        reached_goal: reached,
     }
 }
 
@@ -664,7 +708,7 @@ async fn play_turn(
             // 次ターンの語りに還流する判定結果を持ち越す。
             sess.pending_checks = checks;
 
-            let (goal_id, goal_narration) = goal_view(&sess.state, &sess.scenario);
+            let (goal_id, goal_title, goal_narration) = goal_view(&sess.state, &sess.scenario);
             TurnView {
                 accepted: true,
                 narration: normalize(&narration),
@@ -689,6 +733,7 @@ async fn play_turn(
                 state: state_view(&sess.state, &sess.scenario),
                 goal_reached: is_goal(&sess.state, &sess.scenario),
                 goal_id,
+                goal_title,
                 goal_narration,
                 background: background_for(&sess.scenario, &sess.state, &sess.package_root),
                 bgm: bgm_for(&sess.scenario, &sess.state, &sess.package_root),
@@ -710,7 +755,8 @@ async fn play_turn(
             goal_reached: is_goal(&sess.state, &sess.scenario),
             // 却下では state 不変ゆえ goal も変わらない。スナップショットとして同様に返す。
             goal_id: goal_view(&sess.state, &sess.scenario).0,
-            goal_narration: goal_view(&sess.state, &sess.scenario).1,
+            goal_title: goal_view(&sess.state, &sess.scenario).1,
+            goal_narration: goal_view(&sess.state, &sess.scenario).2,
             background: background_for(&sess.scenario, &sess.state, &sess.package_root),
             bgm: bgm_for(&sess.scenario, &sess.state, &sess.package_root),
             present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),

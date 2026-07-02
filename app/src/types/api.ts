@@ -18,6 +18,8 @@ export interface EntityView {
   skills: string[];
   items: string[];
   attributes: StatStrView[];
+  /** 設定・背景・性向 (authored の語り素材)。プロフィールダイアログの本文。無ければ空。 */
+  profile: string;
 }
 
 export interface StateView {
@@ -27,6 +29,18 @@ export interface StateView {
   flags: string[];
   entities: EntityView[];
   goal_reached: boolean;
+  /** 名前付き goal (目標) の一覧 (authored 順)。単一 goal のシナリオでは空。 */
+  goals: GoalView[];
+  /** 到達した goal の id (一覧のハイライト用)。未到達なら null。 */
+  reached_goal: string | null;
+}
+
+/** 目標一覧の 1 エントリ。title は人間向け表示名 (空なら id へフォールバック)、
+ *  hint は「何をすればだいたい行けるか」の authored 道しるべ (空なら無し)。 */
+export interface GoalView {
+  id: string;
+  title: string;
+  hint: string;
 }
 
 export interface RollView {
@@ -101,6 +115,8 @@ export interface TurnView {
   goal_reached: boolean;
   /** 到達した名前付き goal の id (複数 goal のどれに達したか)。単一 goal/未到達なら null。 */
   goal_id: string | null;
+  /** 到達 goal の表示名 (authored title)。空/未到達なら null (表示は id へフォールバック)。 */
+  goal_title: string | null;
   /** 到達 goal の結末ナレーション (authored)。空/未到達なら null。 */
   goal_narration: string | null;
   /** 現在地の背景画像の絶対パス (convertFileSrc で URL 化する)。無ければ null。 */
