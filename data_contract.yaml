@@ -22,6 +22,7 @@ GameState:
 # --- LLM が毎ターン返す構造化出力 (これ以外の形を出せない) -------------------
 StateDelta:
   narration: string             # 情景/NPC台詞。検証しない (LLMの領分)
+  summary: string               # このターンの経緯 1 行 (非検証・省略可)。harness が経緯ログ (chronicle) に蓄積し「これまでの経緯」として以後の prompt に還流 = GM の中期記憶 (2026-07-02)
   ops: [StateOp]                # 構造化された状態変更要求。エンジンが全件検証
 
 StateOp:                        # 内部タグ "op" 付き列挙
@@ -237,9 +238,10 @@ LlmConfig:                        # 環境変数からの設定 (LocalAI config.
 # --- GM ターンループ (crate harness。三権を 1 ターンに結線) ------------------
 # LLM が提案し (llm_client)、エンジンが裁く (gm_core)。LocalAI _self_repair_loop 同型。
 GmTurn:
-  signature:  "run_turn(proposer, &mut state, scenario, player_action, max_attempts, lang, recalled_lore, recent_checks) -> TurnOutcome"
+  signature:  "run_turn(proposer, &mut state, scenario, player_action, max_attempts, lang, recalled_lore, recent_checks, recent_narration, history) -> TurnOutcome"
   loop:       "propose → adjudicate → Accept なら apply(原子適用) / Reject なら reasons を messages に積んで再生成、max_attempts まで"
-  outcome:    "Accepted{narration, rolls, fired, checks, attempts} | Rejected{last_reasons, attempts}。Rejected 時 state は無傷"
+  outcome:    "Accepted{narration, summary, rolls, fired, checks, attempts, rejected} | Rejected{last_reasons, attempts}。Rejected 時 state は無傷"
+  chronicle:  "経緯ログ (中期記憶, 2026-07-02)。TurnLog{turn, player, summary} を呼び出し側 (CLI/app) が chronicle_entry(turn, player, summary, narration) で蓄積 (summary 空なら narration 冒頭 80 字へ fallback = 弱モデル対応) し、run_turn の history に渡す → prompt::history_note が『これまでの経緯 (古い順・確定した記録)』として注入 (文字予算 2400・新しい方優先・溢れは省略明示)。GM_SYSTEM が summary の記述義務を刷り込む。state=事実の現在値 / recent_narration=直前 1 ターン / chronicle=数ターン前の経過、の三層で「経過を忘れる GM」を塞ぐ。campaign 遷移では捨てず章替わりマーカーを刻む (跨いで覚える)。語り素材であって正本状態ではない (可変世界状態は持たない)"
   check_feedback: "技能判定の結果(CheckOutcome)は同一ターンの narration に間に合わない(出目は apply 後)。bin は recent_checks に持ち越し、次ターンの prompt に『直前の判定結果』として注入 → GM が結果に沿って語る(memoria_bridge と同じ還流パターン)。CheckOutcome{entity,stat,sides,roll,modifier,total,dc,success,tier}。tier=authored challenge の極名(crit_fail 等)、素の check は None"
   inversion:  "ループは DeltaProposer trait に対して書く。本番=LlmClient, テスト=ScriptedProposer。却下→再生成を実APIなしで決定論検証"
   messages:   "毎ターン state から新規構築 (GM persona + scenario_brief + state_brief + player_action)。state が唯一の真実なので履歴に古い状態を溜めない"

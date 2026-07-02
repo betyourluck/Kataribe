@@ -30,7 +30,7 @@ pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use proposer::DeltaProposer;
-pub use turn::{run_turn, TurnOutcome};
+pub use turn::{chronicle_entry, run_turn, TurnLog, TurnOutcome};
 
 // =============================================================================
 // PoC: GM ターンループの実証 (Red→Green)
@@ -102,7 +102,7 @@ mod tests {
             value: true,
         }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "").await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 1),
             other => panic!("受理されるべき: {other:?}"),
@@ -123,7 +123,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "").await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 2, "2回目で受理"),
             other => panic!("最終的に受理されるべき: {other:?}"),
@@ -143,7 +143,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "").await.unwrap();
+        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
 
         let second = p.seen_text(2);
         assert!(second.contains("却下"), "再生成プロンプトに却下の文脈があるはず");
@@ -164,7 +164,7 @@ mod tests {
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]), // 引き出し前で却下
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "").await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
         match outcome {
             TurnOutcome::Rejected { attempts, last_reasons } => {
                 assert_eq!(attempts, 3);
@@ -184,7 +184,7 @@ mod tests {
         let mut s = fresh(&sc); // seed=42, cursor=0
         let p = ScriptedProposer::new(vec![delta(vec![StateOp::RequestRoll { sides: 20, dc: 10 }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "").await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { rolls, .. } => {
                 assert_eq!(rolls.len(), 1);
@@ -256,7 +256,7 @@ mod tests {
             text: "丘の上の古い樫の木の下で、二人は小指を絡めて誓った。".into(),
         }];
 
-        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "").await.unwrap();
+        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "", &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("思い出された記憶"), "想起の見出しが prompt に載る");
@@ -276,12 +276,100 @@ mod tests {
         }])]);
         let prev = "夕日が差し込む教室。モカが振り向いて微笑んだ。";
 
-        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev).await.unwrap();
+        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev, &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前までの語り"), "継続の見出しが prompt に載る");
         assert!(prompt_text.contains("モカが振り向いて微笑んだ"), "直前の語り本文が注入される");
         assert!(prompt_text.contains("繰り返さない") || prompt_text.contains("再び描写しない"), "繰り返し禁止を指示する");
+    }
+
+    /// 【経緯ログ / chronicle】過去ターンの要約列が「これまでの経緯」として prompt に載り、
+    /// GM が数ターン前の経過を保持する (recent_narration=直前 1 ターンの中期記憶版。
+    /// 「経過を忘れる GM」の対策)。TurnOutcome は GM 自身が書いた summary を運び、
+    /// 蓄積は呼び出し側 (CLI/app) が chronicle_entry で行う。
+    #[tokio::test]
+    async fn chronicle_history_is_woven_into_prompt_and_summary_carried() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let mut d0 = delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]);
+        d0.summary = "机の引き出しをこじ開けた".into();
+        let p = ScriptedProposer::new(vec![d0]);
+        let history = vec![
+            TurnLog { turn: 1, player: "部屋を見回す".into(), summary: "古びた書斎を調べ始めた".into() },
+            TurnLog { turn: 2, player: "机に近づく".into(), summary: "机上の蝋燭に火を灯した".into() },
+        ];
+
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &history)
+            .await
+            .unwrap();
+
+        let text = p.seen_text(1);
+        assert!(text.contains("# これまでの経緯"), "経緯の見出しが prompt に載る: {text}");
+        assert!(
+            text.contains("古びた書斎を調べ始めた") && text.contains("蝋燭に火を灯した"),
+            "過去ターンの要約が古い順に注入される: {text}"
+        );
+        match outcome {
+            TurnOutcome::Accepted { summary, .. } => {
+                assert_eq!(summary, "机の引き出しをこじ開けた", "GM の書いた summary を運ぶ")
+            }
+            _ => panic!("受理されるはず"),
+        }
+    }
+
+    /// 経緯が無い初回ターンは経緯ブロックを注入しない (ノイズを足さない)。
+    #[tokio::test]
+    async fn empty_history_means_no_chronicle_block() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = ScriptedProposer::new(vec![delta(vec![StateOp::SetFlag {
+            key: "drawer_opened".into(),
+            value: true,
+        }])]);
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
+        // GM_SYSTEM は summary の説明で『これまでの経緯』に言及するので、注入見出し (#) で判定する。
+        assert!(!p.seen_text(1).contains("# これまでの経緯"), "経緯なしなら注入しない");
+    }
+
+    /// 【弱モデル fallback】summary を書かないモデルでも経緯が残るよう、chronicle_entry は
+    /// narration 冒頭へフォールバックする (文字境界安全な切り詰め)。summary があればそのまま。
+    #[test]
+    fn chronicle_entry_falls_back_to_truncated_narration() {
+        let long = "夕暮れの書斎。埃をかぶった机の引き出しに手をかけると、軋みながら開いた。".repeat(5);
+        let e = chronicle_entry(3, "引き出しを開ける", "", &long);
+        assert!(e.summary.chars().count() <= 81, "narration 冒頭へ切り詰める (…込み)");
+        assert!(e.summary.starts_with("夕暮れの書斎"), "冒頭から取る");
+        assert_eq!(e.turn, 3);
+        assert_eq!(e.player, "引き出しを開ける");
+
+        let e2 = chronicle_entry(4, "話す", "アリスに約束を打ち明けた", &long);
+        assert_eq!(e2.summary, "アリスに約束を打ち明けた", "summary があればそのまま");
+    }
+
+    /// 【経緯の予算】history_note は文字予算内で新しい方を残し、古い方から省略する
+    /// (省略した旨も明示)。無限に伸びて prompt を食い潰さない。
+    #[test]
+    fn history_note_respects_budget_drops_oldest() {
+        let history: Vec<TurnLog> = (1..=200)
+            .map(|i| TurnLog {
+                turn: i,
+                player: format!("行動{i}"),
+                summary: format!("ターン{i}の出来事があった。廊下を歩き、扉を確かめ、灯りを整えた。"),
+            })
+            .collect();
+        let note = prompt::history_note(&history);
+        assert!(note.contains("ターン200の出来事"), "最新は必ず残る");
+        assert!(!note.contains("ターン1の出来事"), "最古は予算で落ちる");
+        assert!(note.contains("省略"), "省略した旨を明示する");
+    }
+
+    /// GM_SYSTEM が「summary に経緯 1 行を書け」を刷り込む (書かれなければ経緯が残らない)。
+    #[test]
+    fn gm_system_demands_turn_summary() {
+        let g = prompt::GM_SYSTEM;
+        assert!(g.contains("summary"), "summary の記述義務が刷り込まれる");
+        assert!(g.contains("経緯") || g.contains("要約"), "経緯の 1 行要約であることを説明する");
     }
 
     /// 直前の語りが無い (初回ターン等) なら継続ブロックを注入しない。
@@ -293,7 +381,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "").await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("直前までの語り"), "直前の語り無しなら注入しない");
     }
 
@@ -307,7 +395,7 @@ mod tests {
             value: true,
         }])]);
 
-        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "").await.unwrap();
+        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("思い出された記憶"), "伏線無しなら注入しない");
     }
 
@@ -335,7 +423,7 @@ mod tests {
             narration: String::new(),
         }];
 
-        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "").await.unwrap();
+        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[]).await.unwrap();
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前の判定結果"), "判定結果の見出しが載る");
         assert!(prompt_text.contains("成功"), "成否が載る");

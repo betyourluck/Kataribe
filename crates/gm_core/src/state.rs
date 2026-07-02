@@ -219,6 +219,12 @@ impl RngState {
 pub struct StateDelta {
     #[serde(default)]
     pub narration: String,
+    /// このターンの経緯 1 行 (誰が何をして何が起きたか、確定した事実だけ)。narration と同じ
+    /// **非検証の語り素材** — engine は解釈しない。harness が経緯ログとして蓄積し、以後の
+    /// ターンの prompt に「これまでの経緯」として還流する (GM の中期記憶。後のターンの
+    /// 自分自身への引き継ぎメモ)。
+    #[serde(default)]
+    pub summary: String,
     #[serde(default)]
     pub ops: Vec<StateOp>,
 }
@@ -227,6 +233,7 @@ impl StateDelta {
     pub fn new(narration: impl Into<String>, ops: Vec<StateOp>) -> Self {
         Self {
             narration: narration.into(),
+            summary: String::new(),
             ops,
         }
     }

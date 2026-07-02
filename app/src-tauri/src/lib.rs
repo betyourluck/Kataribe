@@ -14,8 +14,8 @@ use std::path::{Component, Path, PathBuf};
 use gm_core::{is_goal, CheckOutcome, GameState, ImageMode, Lang, Scenario, PLAYER};
 use harness::{
     advance_campaign_injected, is_campaign_entry, load_campaign_package, load_lore, load_package,
-    read_manifest, resolve_asset, resolve_recall, run_turn, AssetKind, Campaign, CampaignMemory,
-    LoreStore, MemoryFragment, ModuleId, PackageManifest, TurnOutcome,
+    chronicle_entry, read_manifest, resolve_asset, resolve_recall, run_turn, AssetKind, Campaign,
+    CampaignMemory, LoreStore, MemoryFragment, ModuleId, PackageManifest, TurnLog, TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
 use serde::Serialize;
@@ -267,6 +267,8 @@ struct GameSession {
     pending_checks: Vec<CheckOutcome>,
     /// 直前ターンの語り。次ターンに「続く情景」として渡し、既出描写の繰り返しを防ぐ (継続性)。
     last_narration: String,
+    /// 経緯ログ (chronicle)。GM の summary を蓄積し「これまでの経緯」として還流する (中期記憶)。
+    history: Vec<TurnLog>,
     lang: Lang,
     /// パッケージのフォルダ (アセット解決の起点)。`images/{id}` 等をここから解決する。
     package_root: PathBuf,
@@ -619,6 +621,7 @@ async fn new_game(
         pending_checks: Vec::new(),
         package_root: pkg_dir,
         last_narration: String::new(),
+        history: Vec::new(),
         campaign,
         current_module,
         campaign_memory: CampaignMemory::new(),
@@ -657,14 +660,17 @@ async fn play_turn(
         &pending,
         &pending_checks,
         &prev_narration,
+        &sess.history,
     )
     .await
     .map_err(|e| e.to_string())?;
 
     let mut view = match outcome {
-        TurnOutcome::Accepted { narration, rolls, checks, fired, attempts, rejected } => {
+        TurnOutcome::Accepted { narration, summary, rolls, checks, fired, attempts, rejected } => {
             // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止)。
             sess.last_narration = narration.clone();
+            // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback)。
+            sess.history.push(chronicle_entry(sess.state.turn, action.trim(), &summary, &narration));
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
             let beats = resolved
@@ -790,6 +796,12 @@ async fn play_turn(
                 sess.last_narration = String::new();
                 sess.pending_lore.clear();
                 sess.pending_checks.clear();
+                // 経緯 (chronicle) は捨てない — 章を跨いで覚えるのが眼目。章替わりを刻む。
+                sess.history.push(TurnLog {
+                    turn: sess.state.turn,
+                    player: "（章の移り変わり）".into(),
+                    summary: format!("『{}』へ移った", sess.scenario.title),
+                });
 
                 let description = sess
                     .scenario

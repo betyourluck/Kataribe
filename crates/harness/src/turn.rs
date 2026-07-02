@@ -15,12 +15,47 @@ use crate::error::HarnessError;
 use crate::proposer::DeltaProposer;
 use crate::prompt;
 
+/// 経緯ログの 1 エントリ (chronicle)。「経過を忘れる GM」対策 —
+/// GM が毎ターン書く 1 行要約 ([`gm_core::StateDelta`] の `summary`、無ければ narration 冒頭) を
+/// 呼び出し側 (CLI/app) が [`chronicle_entry`] で蓄積し、[`run_turn`] の `history` に渡すと
+/// 「これまでの経緯」として prompt に還流される (recent_narration=直前 1 ターンの中期記憶版)。
+/// 語り素材であって正本状態ではない (Memoria 同様、可変世界状態は持たない)。Serialize 派生は
+/// 将来のセーブ同梱用。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TurnLog {
+    /// 適用後のターン番号。
+    pub turn: u32,
+    /// プレイヤーの行動文 (そのターンの入力)。
+    pub player: String,
+    /// そのターンの経緯 1 行 (GM の summary、fallback は narration 冒頭)。
+    pub summary: String,
+}
+
+/// 受理ターンから経緯ログの 1 エントリを作る。GM が `summary` を書いていればそれを、
+/// 書いていない (弱モデル等) なら narration 冒頭を文字境界安全に切り詰めて使う。
+pub fn chronicle_entry(turn: u32, player: &str, summary: &str, narration: &str) -> TurnLog {
+    let summary = if summary.trim().is_empty() {
+        let flat = narration.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut head: String = flat.chars().take(80).collect();
+        if flat.chars().count() > 80 {
+            head.push('…');
+        }
+        head
+    } else {
+        summary.trim().to_string()
+    };
+    TurnLog { turn, player: player.to_string(), summary }
+}
+
 /// 1 ターンの結末。
 #[derive(Debug, Clone)]
 pub enum TurnOutcome {
     /// 受理されて state に適用された。
     Accepted {
         narration: String,
+        /// GM 自身が書いたこのターンの経緯 1 行 (StateDelta.summary、非検証)。
+        /// 呼び出し側が [`chronicle_entry`] で経緯ログに積む素。
+        summary: String,
         rolls: Vec<RollOutcome>,
         /// この適用で行われた技能判定の結果。次ターンの語りに還流される。
         checks: Vec<CheckOutcome>,
@@ -57,6 +92,8 @@ impl TurnOutcome {
 /// narration に間に合わない → 次ターンの prompt に還流し、GM に結果へ沿って語らせる。
 /// `recent_narration` は直前ターンの語り。継続文脈として渡し、既出情景の繰り返しを防ぐ
 /// (毎ターン messages を新規構築するので LLM は自分の直前の語りを記憶していない)。
+/// `history` は経緯ログ (chronicle)。過去ターンの 1 行要約列を「これまでの経緯」として
+/// 注入し、GM が数ターン前の経過を保持する (recent_narration の中期記憶版)。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn<P: DeltaProposer>(
     proposer: &P,
@@ -68,10 +105,11 @@ pub async fn run_turn<P: DeltaProposer>(
     recalled_lore: &[MemoryFragment],
     recent_checks: &[CheckOutcome],
     recent_narration: &str,
+    history: &[TurnLog],
 ) -> Result<TurnOutcome, HarnessError> {
     // 盤面と現在状態を毎ターン新規に提示する (state は正本の唯一の真実)。
-    // recalled_lore=思い出された伏線、recent_checks=直前判定の結果、recent_narration=直前の語り
-    // (継続文脈、繰り返し禁止) を語りに還流する。
+    // history=過去ターンの経緯、recalled_lore=思い出された伏線、recent_checks=直前判定の結果、
+    // recent_narration=直前の語り (継続文脈、繰り返し禁止) を語りに還流する。
     let mut messages = vec![
         ChatMessage::system(format!(
             "{}\n\n{}",
@@ -79,8 +117,9 @@ pub async fn run_turn<P: DeltaProposer>(
             prompt::scenario_brief(scenario)
         )),
         ChatMessage::user(format!(
-            "{}{}{}{}\n\n# プレイヤーの行動\n{}",
+            "{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
             prompt::state_brief(state, scenario),
+            prompt::history_note(history),
             prompt::check_outcome_note(recent_checks),
             prompt::recalled_lore_note(recalled_lore),
             prompt::recent_narration_note(recent_narration),
@@ -103,6 +142,7 @@ pub async fn run_turn<P: DeltaProposer>(
                     .expect("adjudicate 済みなら apply は成功する");
                 return Ok(TurnOutcome::Accepted {
                     narration: delta.narration,
+                    summary: delta.summary,
                     rolls: out.rolls,
                     checks: out.checks,
                     fired: out.fired,
