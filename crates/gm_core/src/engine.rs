@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::reason::RejectReason;
-use crate::spine::{ImageMode, Scenario};
+use crate::spine::{ImageMode, Scenario, TakeMode};
 use crate::state::{GameState, StateDelta, StateOp, TriggerId, PLAYER};
 
 /// 裁定結果。`Reject` は**構造化された**理由を含む (文面は提示層が言語ごとに生成)。
@@ -129,11 +129,21 @@ fn validate_ops(
                 }
                 match loc.items.get(item) {
                     None => reasons.push(RejectReason::ItemNotHere { item: item.clone() }),
-                    Some(gate) => {
-                        if !gate.eval(state) {
-                            reasons.push(RejectReason::ItemGateUnmet { item: item.clone() });
+                    Some(li) => match li.take() {
+                        // 備え付けは取れない。理由が「その場で使える」を LLM に説明する。
+                        TakeMode::Fixed => {
+                            reasons.push(RejectReason::ItemFixed { item: item.clone() });
                         }
-                    }
+                        // once は持ち去り済みなら再取得 (複製) を遮断。
+                        TakeMode::Once if state.already_taken(&state.location, item) => {
+                            reasons.push(RejectReason::ItemAlreadyTaken { item: item.clone() });
+                        }
+                        _ => {
+                            if !li.when().eval(state) {
+                                reasons.push(RejectReason::ItemGateUnmet { item: item.clone() });
+                            }
+                        }
+                    },
                 }
             }
             StateOp::RemoveItem { item } => {
@@ -368,10 +378,23 @@ fn apply_ops(
     rolls: &mut Vec<RollOutcome>,
     checks: &mut Vec<CheckOutcome>,
 ) {
+    // AddItem の検証は delta 開始時の現在地に対して行われる (adjudicate と同じ基準点)。
+    // Move を含む delta でも持ち去りの記録先がずれないよう、開始時の場所を取っておく。
+    let start_loc = state.location.clone();
     for op in &delta.ops {
         match op {
             StateOp::AddItem { item } => {
                 state.add_to_inventory(PLAYER, item);
+                // once アイテムは「持ち去った」事実を場所別に記録 (再取得=複製の遮断)。
+                if scenario
+                    .locations
+                    .get(&start_loc)
+                    .and_then(|l| l.items.get(item))
+                    .map(|li| li.take())
+                    == Some(TakeMode::Once)
+                {
+                    state.record_taken(&start_loc, item);
+                }
             }
             StateOp::RemoveItem { item } => {
                 state.remove_from_inventory(PLAYER, item);
@@ -1078,6 +1101,111 @@ locations:
         assert_eq!(sc.reached(&s).as_deref(), Some("defeated"));
     }
 
+    /// 【goal の title / hint / visible — プレイヤー向け提示素材】`GoalDef.title` は目標一覧の
+    /// 表示名 (id はスペース等を避ける機械用セレクタゆえ、人間向けの文はこちら)、`hint` は
+    /// 「何をすればだいたい行けるか」の道しるべ (narration の入口版)、`visible: false` は
+    /// **隠しゴール** (到達するまで目標一覧に出さない・到達判定 reached は不変で効く)。
+    /// いずれも authored・非検証、engine は不解釈で提示層が扱う。省略時は
+    /// title/hint 空・visible true (既存 YAML は無改修、title 空は id 表示)。
+    #[test]
+    fn goal_title_hint_visible_parse_and_default() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [escaped, hidden_exit]
+goals:
+  - id: escaped
+    when: { kind: flag_is, key: escaped, value: true }
+    title: 正面からの脱出
+    hint: 鍵を探して正面の扉を開ける
+    narration: 扉を抜けた。
+  - id: secret
+    when: { kind: flag_is, key: hidden_exit, value: true }
+    visible: false
+locations:
+  room: { description: 部屋, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "title/hint/visible 込みで健全");
+        assert_eq!(sc.goals[0].title, "正面からの脱出", "title (表示名) がそのまま乗る");
+        assert_eq!(sc.goals[0].hint, "鍵を探して正面の扉を開ける", "hint がそのまま乗る");
+        assert!(sc.goals[0].visible, "visible 省略時は true (既存 YAML 無改修で全 goal 表示)");
+        assert_eq!(sc.goals[1].title, "", "title 省略時は空 (提示層が id へフォールバック)");
+        assert_eq!(sc.goals[1].hint, "", "hint 省略時は空 (後方互換・既存 YAML 無改修)");
+        assert!(!sc.goals[1].visible, "visible: false = 隠しゴール (提示層が一覧から外す)");
+
+        // 隠しゴールでも到達判定 (reached) は不変で効く = visible は純粋に提示層の宣言。
+        let mut s = sc.initial_state(1);
+        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "hidden_exit".into(), value: true }]))
+            .unwrap();
+        assert_eq!(sc.reached(&s).as_deref(), Some("secret"), "隠しゴールも reached には乗る");
+    }
+
+    /// 【アイテムの取得様式 take: once/infinite/fixed】場所アイテムに 3 様式を宣言できる。
+    /// once (既定・旧 Gate 直書き形式もこれ) = 一度取ったら場所から無くなる (`taken_items` に
+    /// 記録、手放して戻っても再取得=複製は却下)。infinite (自販機のジュース等) = 何度でも取れる。
+    /// fixed (シャワー/リモコン等の備え付け) = 取得不可、却下理由が「取らずにその場で使える」を
+    /// LLM に説明する (self-repair で語り直しへ誘導)。
+    #[test]
+    fn item_take_modes_once_infinite_fixed() {
+        let yaml = r#"
+title: t
+start: room
+goal: { kind: location_is, at: exit }
+locations:
+  room:
+    description: 部屋
+    items:
+      juice: { when: { kind: always }, take: infinite }
+      rusty_key: { kind: always }
+      shower: { take: fixed }
+    exits: []
+  exit: { description: 外, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).expect("新旧混在の items が parse できる");
+        assert!(sc.validate().is_empty());
+        let mut s = sc.initial_state(1);
+
+        // fixed: 取得不可。理由は「備え付け・その場で使える」を説明する。
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::AddItem { item: "shower".into() }]));
+        match v {
+            Verdict::Reject { reasons } => {
+                assert!(
+                    reasons.iter().any(|r| matches!(
+                        r,
+                        RejectReason::ItemFixed { item } if item == "shower"
+                    )),
+                    "備え付けは ItemFixed で却下"
+                );
+                let msg = reasons[0].localize(crate::Lang::Ja);
+                assert!(msg.contains("備え付け"), "却下理由が備え付けを説明する: {msg}");
+                assert!(msg.contains("使える"), "取らずに使えることを LLM に教える: {msg}");
+            }
+            Verdict::Accept => panic!("fixed アイテムの取得が通ってしまった"),
+        }
+
+        // infinite: 取る → 手放す → もう一度取れる (自販機)。
+        apply(&mut s, &sc, &d(vec![StateOp::AddItem { item: "juice".into() }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::RemoveItem { item: "juice".into() }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::AddItem { item: "juice".into() }]))
+            .expect("infinite は何度でも取れる");
+
+        // once (旧形式 Gate 直書き = 既定): 取る → 手放す → 再取得は複製ゆえ却下。
+        apply(&mut s, &sc, &d(vec![StateOp::AddItem { item: "rusty_key".into() }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::RemoveItem { item: "rusty_key".into() }])).unwrap();
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::AddItem { item: "rusty_key".into() }]));
+        match v {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(
+                    r,
+                    RejectReason::ItemAlreadyTaken { item } if item == "rusty_key"
+                )),
+                "once の再取得 (複製) は ItemAlreadyTaken で却下"
+            ),
+            Verdict::Accept => panic!("once アイテムの複製が通ってしまった"),
+        }
+    }
+
     /// 【整合性】goal も goals も無いシナリオ (勝利条件不在) は validate で弾く。
     #[test]
     fn validate_rejects_scenario_with_no_goal() {
@@ -1577,6 +1705,40 @@ locations:
             ),
             Verdict::Accept => panic!("LLM の record_turn は却下されるべき (タイマー詐称)"),
         }
+    }
+
+    /// 【presence の明示宣言 (spec 04 改訂)】`Location.present` が空 (未宣言含む) なら
+    /// **誰もいない**。旧「空なら全 characters」フォールバックは廃止 — 「誰もいない場所」を
+    /// 作るのに全キャラを set_presence false する羽目になるため (ユーザーFB 2026-07-02)。
+    /// NPC を出したい場所には present を必ず書く。override (set_presence true) は従来どおり
+    /// 空の場所にも登場させられる。
+    #[test]
+    fn empty_present_means_nobody() {
+        let yaml = r#"
+title: t
+start: empty_room
+allowed_flags: []
+goal: { kind: location_is, at: hall }
+characters:
+  alice: { name: アリス }
+  bob: { name: ボブ }
+locations:
+  empty_room: { description: 誰もいない部屋, exits: [{ to: hall }] }
+  hall: { description: 広間, present: [alice], exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        assert!(
+            sc.present_at(&s).is_empty(),
+            "present 未宣言 = 誰もいない (全 characters フォールバックはしない)"
+        );
+        // 宣言した場所では宣言どおり。
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "hall".into() }])).unwrap();
+        let present = sc.present_at(&s);
+        assert!(present.contains("alice") && !present.contains("bob"), "宣言した alice だけ");
+        // override は空の場所にも登場させられる (トリガー専権の経路は不変)。
+        s.present_overrides.insert("bob".into(), true);
+        assert!(sc.present_at(&s).contains("bob"), "override true は base が空でも登場");
     }
 
     /// 【登場/退場 (spec 04)】authored トリガーの set_presence で entity が登場/退場し、

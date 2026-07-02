@@ -18,6 +18,7 @@ allowed_flags:
 locations:
   parlor:
     description: 暖炉のある宿屋の談話室。カウンターの奥に、宿屋の娘アリスが立っている。
+    present: [alice]
     items: {}
     exits: []
 

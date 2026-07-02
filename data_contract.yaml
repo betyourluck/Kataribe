@@ -159,8 +159,11 @@ StatDecl:
 # is_goal(state)->bool は reached(state).is_some()。後方互換: goal(単一) はそのまま、
 # goals(名前付き) は任意追加。発火 GoalId が次モジュールの transition 分岐セレクタになる。
 GoalDef:
-  id:   "GoalId。reached() が返す = transition の分岐セレクタ (jammed_ending→地下 等)"
+  id:   "GoalId。reached() が返す = transition の分岐セレクタ (jammed_ending→地下 等)。機械用ゆえスペース等を避ける"
   when: "Gate。成立でこの結末に到達"
+  title: "人間向けの表示名 (authored・非検証の提示素材、省略時空)。目標一覧と到達メッセージが表示 (空なら id へフォールバック)。id=セレクタ / title=表示名 / hint=道しるべ の三層 (2026-07-02)"
+  visible: "bool (既定 true)。false なら隠しゴール — 到達するまで提示層が目標一覧に出さない (app state_view が DTO 段階で落とす=ネタバレ衛生、到達で開示され ✓ 付きで現れる)。到達判定 reached/transition 分岐は不変で効く = engine 非解釈の提示層宣言 (hidden_stats と同類) (2026-07-02)"
+  hint: "プレイヤー向けの道しるべ (authored・非検証の提示素材、省略時空)。「この goal は何をすればだいたい行けるか」を提示層 (右ペインの目標一覧) が表示。when の条件はネタバレゆえ出さない設計に対し、作者が意図的に開示するヒント (2026-07-02)"
   narration: "到達時に語りへ注入する結末ナレーション (authored・非検証の語り素材)。複数 goal のどれに達したかを提示層が出す文面。空なら結末の語りなし"
 Reached:
   reached: "Scenario::reached(state)->Option<GoalId>。goals 非空なら authored 順で最初に成立した id (決定論)、空なら単一 goal を DEFAULT_GOAL='goal' で評価 (後方互換)"
@@ -171,9 +174,19 @@ Location:
   description: string
   image: String?                    # 背景画像のアセット ID (images/ 配下のファイル名)。engine は不解釈の不透明 string。提示層が resolve_asset で背景に (spec 01 Phase 1)
   bgm: String?                      # ループ BGM のアセット ID (audios/ 配下)。engine 不解釈の不透明 string。提示層が <audio loop> で再生 (spec 01 Phase 3)
-  present: [EntityId]                # この場に居る NPC の authored 場所ベース。空なら全 characters。実効 presence = これ ± GameState.present_overrides (spec 04 で可変化)。Scenario::present_at(state) が解決し提示層が顔アイコン行に出す
-  items: { ItemId: Gate }           # 拾得可能なアイテム → 拾うための gate
+  present: [EntityId]                # この場に居る NPC の authored 場所ベース。**明示宣言** (2026-07-02 改訂): 空 (未宣言含む) なら誰もいない — 旧「空なら全 characters」は廃止 (無人の場所を作るのに全キャラを set_presence false する羽目になるため)。NPC を出す場所には必ず書く。実効 presence = これ ± GameState.present_overrides (spec 04)。Scenario::present_at(state) が解決し提示層が顔アイコン行に出す
+  items: { ItemId: LocationItem }   # 場所のアイテム → 取得条件 + 取得様式 (2026-07-02 拡張)
   exits: [Exit]
+
+# --- 場所アイテムの宣言 (旧形式 Gate 直書きと新形式の untagged 両受け・既存 YAML 無改修) ----
+LocationItem:
+  legacy: "Gate をそのまま書く旧形式 (= take: once)。{kind: flag_is, ...}"
+  def: "{when: Gate (省略時 always), take: TakeMode (省略時 once)} の新形式"
+TakeMode:
+  once: "既定。一度取ったら場所から無くなる — GameState.taken_items に持ち去りを記録し、手放して戻っても再取得 (複製) は ItemAlreadyTaken で却下 (行商ネックレス #23 の複製穴も塞ぐ)"
+  infinite: "何度でも取れる (自販機のジュース等)。取得しても場所に残る (所持中の重複だけ ItemAlreadyHeld で防ぐ)"
+  fixed: "備え付け (シャワー/テレビのリモコン等)。取得不可 — ItemFixed の却下理由が『備え付けで持ち運べない (取得せず、その場で使える)』を LLM に説明し self-repair で語り直しへ誘導。scenario_brief も先回りで接地"
+  taken_items: "GameState.taken_items: {LocationId: [ItemId]} (セーブ対象)。transition では持ち越さない (LocationId はモジュール内スコープ。campaign 再訪の持続は persistent_flags と同じ問い・必要になったら spec 02 同型で)"
 
 # --- パッケージ同梱アセット (画像/音声) の解決。gm_core は ID を運ぶだけ・解決は harness (spec 01) ---
 AssetResolution:
@@ -263,7 +276,7 @@ Capability:
 
 # --- 登場/退場 (presence の可変化, spec 04) ---------------------------------
 Presence:
-  base:        "Location.present = authored の場所ベース (空なら全 characters)。これは静的"
+  base:        "Location.present = authored の場所ベース (**明示宣言**・2026-07-02 改訂: 空/未宣言なら誰もいない。旧『空なら全 characters』は廃止 — 無人の場所に全キャラ set_presence false が要る逆転を断つ)。これは静的"
   override:    "GameState.present_overrides{EntityId:bool} = 可変オーバーライド (true=強制登場/false=強制退場)。第5の可変状態・セーブ対象"
   effective:   "Scenario::present_at(state) = 場所ベース ± override、既知 characters に retain (純粋関数)。app present_characters がこれを使い主人公を先頭に解決"
   control:     "登場/退場は Trigger.effects の set_presence のみ (authored 専権)。LLM 提案の set_presence は RejectReason::PresenceSetNotAllowed で却下 (grant_skill 同型・第4例)"

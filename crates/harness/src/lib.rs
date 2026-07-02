@@ -534,6 +534,78 @@ mod tests {
         );
     }
 
+    /// 【presence の prompt 接地】GM は「いま誰がこの場に居るか」を presence でしか知れない —
+    /// 場所説明文は静的 (退場後もキャラが書かれたまま) なので、`state_brief` が**実効 presence**
+    /// (base ± override) を毎ターン surface し、GM_SYSTEM が「一覧が唯一の真実 (説明文より優先)・
+    /// 一覧に無いキャラを出すな・居るキャラを無視するな」を刷り込む。UI (顔アイコン行) にしか
+    /// 出ていなかった穴 (人を減らしても語りから消えない/増やしても居ないと扱われる) を塞ぐ。
+    #[test]
+    fn state_brief_surfaces_effective_presence_and_gm_system_grounds_it() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\n",
+            "characters:\n  alice: { name: アリス }\n  bob: { name: ボブ }\n",
+            "locations:\n",
+            "  room: { description: カウンターの奥にアリスが立っている, present: [alice], exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let mut s = sc.initial_state(1);
+        let brief = prompt::state_brief(&s, &sc);
+        assert!(brief.contains("この場にいる"), "presence 節が毎ターン出る: {brief}");
+        assert!(brief.contains("アリス"), "base presence の alice が出る: {brief}");
+        assert!(!brief.contains("ボブ"), "居ない bob は出ない: {brief}");
+
+        // 退場/登場の override が反映される (静的な説明文と食い違っても一覧が真実)。
+        s.present_overrides.insert("alice".into(), false);
+        s.present_overrides.insert("bob".into(), true);
+        let brief = prompt::state_brief(&s, &sc);
+        assert!(brief.contains("ボブ"), "登場した bob が出る: {brief}");
+        assert!(!brief.contains("アリス"), "退場した alice は出ない: {brief}");
+
+        // 誰もいない場合はその旨を明示 (空欄でなく)。
+        s.present_overrides.insert("bob".into(), false);
+        let brief = prompt::state_brief(&s, &sc);
+        assert!(brief.contains("誰もいない"), "無人はその旨を明示: {brief}");
+
+        // GM_SYSTEM の刷り込み: 一覧が唯一の真実・説明文より優先・勝手に出し入れしない。
+        let g = prompt::GM_SYSTEM;
+        assert!(g.contains("この場にいる"), "GM_SYSTEM が presence 節を参照する");
+        assert!(
+            g.contains("説明文") && (g.contains("登場させ") || g.contains("居ない")),
+            "説明文より一覧が真実・一覧外のキャラを出すなを刷り込む"
+        );
+    }
+
+    /// 【アイテム取得様式の prompt 接地】fixed (備え付け) は「取得不可・その場で使える」を、
+    /// infinite (自販機等) は「何度でも取れる」を scenario_brief が先回りで GM に教える
+    /// (却下される前に防ぐ prompt 層。engine 側の却下は gm_core の PoC が固定)。
+    #[test]
+    fn scenario_brief_surfaces_item_take_modes() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\n",
+            "locations:\n",
+            "  room:\n",
+            "    description: d\n",
+            "    items:\n",
+            "      ジュース: { when: { kind: always }, take: infinite }\n",
+            "      シャワー: { take: fixed }\n",
+            "      鍵: { kind: always }\n",
+            "    exits: []\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let brief = prompt::scenario_brief(&sc);
+        assert!(
+            brief.contains("シャワー") && brief.contains("備え付け") && brief.contains("その場で使える"),
+            "fixed は取得不可とその場で使えることを surface: {brief}"
+        );
+        assert!(
+            brief.contains("ジュース") && brief.contains("何度でも取れる"),
+            "infinite は何度でも取れることを surface: {brief}"
+        );
+        assert!(brief.contains("鍵"), "旧形式 (once) も従来どおり列挙される: {brief}");
+    }
+
     /// 【正本の接地 / 行商ネックレス対策】GM プロンプトは「行動文は意図」「所持品に無い物は
     /// 存在しない」「narration は非検証ゆえ GM 自身が矛盾を防ぐ」を刷り込む (failures #23)。
     /// narration には engine バックストップが無いので、この刷り込みが唯一の防衛線。

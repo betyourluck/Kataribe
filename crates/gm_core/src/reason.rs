@@ -23,6 +23,10 @@ pub enum RejectReason {
     ItemAlreadyHeld { item: String },
     ItemNotHere { item: String },
     ItemGateUnmet { item: String },
+    /// 備え付けアイテム (`take: fixed`)。取得は不可だが、その場で使えることを LLM に説明する。
+    ItemFixed { item: String },
+    /// `take: once` のアイテムを既にこの場所から持ち去っている (再取得=複製の遮断)。
+    ItemAlreadyTaken { item: String },
     ItemNotHeld { item: String },
     FlagNotAllowed { key: String },
     FlagGateUnmet { key: String },
@@ -71,6 +75,12 @@ impl RejectReason {
             RejectReason::ItemGateUnmet { item } => {
                 format!("'{item}' はまだ取得できない (前提条件が未達)")
             }
+            RejectReason::ItemFixed { item } => {
+                format!("'{item}' は備え付けで持ち運べない (取得せず、その場で使える)")
+            }
+            RejectReason::ItemAlreadyTaken { item } => {
+                format!("'{item}' は既にここから持ち去られていて、もう無い")
+            }
             RejectReason::ItemNotHeld { item } => format!("'{item}' を所持していないので手放せない"),
             RejectReason::FlagNotAllowed { key } => format!("フラグ '{key}' は許可されていない"),
             RejectReason::FlagGateUnmet { key } => format!("フラグ '{key}' を立てる前提条件が未達"),
@@ -117,6 +127,12 @@ impl RejectReason {
             RejectReason::ItemNotHere { item } => format!("'{item}' is not present in this location"),
             RejectReason::ItemGateUnmet { item } => {
                 format!("'{item}' cannot be taken yet (prerequisite unmet)")
+            }
+            RejectReason::ItemFixed { item } => {
+                format!("'{item}' is a fixture and cannot be carried (use it where it is, without taking it)")
+            }
+            RejectReason::ItemAlreadyTaken { item } => {
+                format!("'{item}' has already been taken from here and is gone")
             }
             RejectReason::ItemNotHeld { item } => {
                 format!("cannot drop '{item}' because you do not hold it")

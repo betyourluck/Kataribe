@@ -46,5 +46,7 @@ triggers:
 # threshold 設計では構造的に出ない。本物の分岐にするには踏み段をプレイヤーの選択フラグにする(後続)。
 goals:
   - id: her_love_me
-    when: { kind: all, of: [ {kind: flag_is, key: moka_love_me, value: true}, 
+    when: { kind: all, of: [ {kind: flag_is, key: moka_love_me, value: true},
                              {kind: stat_at_least, entity: moka, key: 好感度, value: 65 }] }
+    title: モカの告白
+    hint: 放課後の教室でモカと言葉を重ね、心を開いてもらえるほど仲を深める

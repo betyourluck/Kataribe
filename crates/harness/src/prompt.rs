@@ -26,6 +26,11 @@ pub const GM_SYSTEM: &str = "\
 持っている・使う・渡す・見せると述べても、それは存在しない。盤面や所持品に無い事物を前提にした \
 行動は、その前提を成り立たせてはならない。代わりに narration で「それは手元に無い」と物語の中で \
 接地せよ (例: 鞄を探っても、そんな品は入っていない)。既成事実として書いてはならない。\n\
+- **『この場にいる』の一覧が、いまその場に居る人物の唯一の真実である。** 一覧に無いキャラを \
+その場に居るように語ったり、台詞・行動をさせたりしてはならない — 場所の説明文にキャラが \
+書かれていても、一覧に居なければその人物は**もうそこに居ない** (説明文は静的、一覧が現在)。\
+逆に一覧に居るキャラを不在として扱うな。キャラの登場・退場をあなたが起こすことはできない \
+(それは筋書きの出来事が起こす)。その場に居ない人物との会話・接触を narration に書くな。\n\
 - **登場人物は『使える能力』に列挙された能力しか使えない。** そこに無い能力 (催眠・予知・隠された力 \
 など) を、その場で思い出したように発揮させてはならない。能力は物語の都合で勝手に開花しない \
 (開花するのは筋書きが定めた出来事のときだけで、それはエンジンが起こす)。未宣言の力で局面を \
@@ -131,9 +136,22 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
     for (id, loc) in &scenario.locations {
         s.push_str(&format!("### {id}\n{}\n", loc.description));
         if !loc.items.is_empty() {
-            s.push_str("- 取得可能アイテム:\n");
-            for (item, gate) in &loc.items {
-                s.push_str(&format!("  - {item} (取得条件: {})\n", gate_brief(gate)));
+            s.push_str("- アイテム:\n");
+            for (item, li) in &loc.items {
+                match li.take() {
+                    // 備え付けは取れない旨と「その場で使える」を先回りで接地 (却下前に防ぐ)。
+                    gm_core::TakeMode::Fixed => s.push_str(&format!(
+                        "  - {item} (備え付け・取得不可。取らずにその場で使える)\n"
+                    )),
+                    gm_core::TakeMode::Infinite => s.push_str(&format!(
+                        "  - {item} (取得条件: {}。何度でも取れる)\n",
+                        gate_brief(li.when())
+                    )),
+                    gm_core::TakeMode::Once => s.push_str(&format!(
+                        "  - {item} (取得条件: {})\n",
+                        gate_brief(li.when())
+                    )),
+                }
             }
         }
         if !loc.exits.is_empty() {
@@ -252,9 +270,24 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
             .collect::<Vec<_>>()
             .join(" / ")
     };
+    // いまこの場に居る NPC (実効 presence = 場所ベース ± override)。GM が「誰が居るか」を
+    // 知る唯一の経路 — 場所の説明文は静的 (退場後もキャラが書かれたまま) なのでこちらが真実。
+    let present = scenario.present_at(state);
+    let present = if present.is_empty() {
+        "誰もいない (主人公のみ)".to_string()
+    } else {
+        present
+            .iter()
+            .map(|id| match scenario.characters.get(id).map(|c| c.name.trim()) {
+                Some(name) if !name.is_empty() && name != id => format!("{name} ({id})"),
+                _ => id.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     format!(
-        "# 現在の状態 (turn {})\n- 現在地: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}\n- 使える能力: {}\n- 属性: {}",
-        state.turn, state.location, inv, flags, entities, skills, attributes,
+        "# 現在の状態 (turn {})\n- 現在地: {}\n- この場にいる: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}\n- 使える能力: {}\n- 属性: {}",
+        state.turn, state.location, present, inv, flags, entities, skills, attributes,
     )
 }
 

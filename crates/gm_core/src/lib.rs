@@ -19,8 +19,8 @@ pub use engine::{
 };
 pub use reason::{Lang, RejectReason};
 pub use spine::{
-    ChallengeDef, CharacterDef, Exit, Gate, GoalDef, ImageMode, Location, Natural, Protagonist,
-    Scenario, ScenarioError, StatDecl, TierDef, Trigger,
+    ChallengeDef, CharacterDef, Exit, Gate, GoalDef, ImageMode, Location, LocationItem, Natural,
+    Protagonist, Scenario, ScenarioError, StatDecl, TakeMode, TierDef, Trigger,
 };
 pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,

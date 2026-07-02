@@ -100,12 +100,65 @@ fn default_gate() -> Gate {
     Gate::Always
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// 場所からの出口。`gate` 未達なら [`Gate::Always`]。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Exit {
     pub to: LocationId,
     #[serde(default = "default_gate")]
     pub gate: Gate,
+}
+
+/// 場所アイテムの取得様式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TakeMode {
+    /// 一度だけ (既定)。取得すると場所から無くなる ([`GameState::taken_items`] に記録され、
+    /// 手放して戻っても再取得=複製は却下)。
+    #[default]
+    Once,
+    /// 何度でも取れる (自販機のジュース等)。取得しても場所に残る。
+    Infinite,
+    /// 備え付け (シャワー/テレビのリモコン等)。取得不可 — 却下理由が「取らずにその場で
+    /// 使える」を LLM に説明し、self-repair で語り直しへ誘導する。
+    Fixed,
+}
+
+/// 場所アイテムの宣言。旧形式 (Gate 直書き = `take: once`) と新形式 (`{when, take}`) の
+/// 両方を受ける (untagged。既存 YAML は無改修)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LocationItem {
+    /// 旧形式: 取得 gate をそのまま書く (= `take: once`)。`kind` タグで判別されるので先に試す。
+    Legacy(Gate),
+    /// 新形式: 取得条件 (`when`、省略時 always) + 取得様式 (`take`、省略時 once)。
+    Def {
+        #[serde(default = "default_gate")]
+        when: Gate,
+        #[serde(default)]
+        take: TakeMode,
+    },
+}
+
+impl LocationItem {
+    /// 取得条件の gate。
+    pub fn when(&self) -> &Gate {
+        match self {
+            LocationItem::Legacy(g) => g,
+            LocationItem::Def { when, .. } => when,
+        }
+    }
+
+    /// 取得様式 (旧形式は once)。
+    pub fn take(&self) -> TakeMode {
+        match self {
+            LocationItem::Legacy(_) => TakeMode::Once,
+            LocationItem::Def { take, .. } => *take,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,11 +175,14 @@ pub struct Location {
     pub bgm: Option<String>,
     /// この場所に「いる」NPC (presence)。提示層が顔アイコン行に出す。
     /// **空なら scenario.characters 全員**にフォールバック (後方互換)。engine は使わない不透明データ。
+    /// この場に居る NPC (**明示宣言**)。空 (未宣言含む) なら誰もいない — NPC を出す場所には
+    /// 必ず書く (旧「空なら全 characters」は廃止、2026-07-02)。実効 presence はこれ ±
+    /// `GameState.present_overrides` ([`Scenario::present_at`])。
     #[serde(default)]
     pub present: BTreeSet<EntityId>,
-    /// 拾得可能なアイテム → それを拾うための gate。
+    /// 場所にあるアイテム → 取得条件 + 取得様式 (旧形式 Gate 直書き / 新形式 `{when, take}`)。
     #[serde(default)]
-    pub items: BTreeMap<ItemId, Gate>,
+    pub items: BTreeMap<ItemId, LocationItem>,
     #[serde(default)]
     pub exits: Vec<Exit>,
 }
@@ -343,6 +399,20 @@ pub enum ScenarioError {
 pub struct GoalDef {
     pub id: GoalId,
     pub when: Gate,
+    /// 目標一覧の表示名 (authored、非検証の提示素材)。id はスペース等を避ける機械用の
+    /// 分岐セレクタゆえ、人間向けの文はこちらに書く。空なら提示層が id へフォールバック。
+    #[serde(default)]
+    pub title: String,
+    /// false なら**隠しゴール** — 到達するまで提示層が目標一覧に出さない (到達で開示)。
+    /// 到達判定 `reached` は不変で効く = engine 非解釈の提示層宣言 (`hidden_stats` と同類)。
+    /// 既定 true (既存 YAML は無改修で全 goal 表示)。
+    #[serde(default = "default_true")]
+    pub visible: bool,
+    /// プレイヤー向けの道しるべ (authored、非検証の提示素材)。「この goal は何をすれば
+    /// だいたい行けるか」を提示層 (目標一覧) が表示する。`when` の条件そのものは
+    /// ネタバレゆえ出さない設計の、作者が意図的に開示するヒント。空なら表示なし。
+    #[serde(default)]
+    pub hint: String,
     /// 到達時に語りへ注入する結末ナレーション (authored、非検証の語り素材)。
     /// 複数 goal のどれに達したかを提示層が出すための文面。空なら結末の語りなし。
     #[serde(default)]
@@ -459,16 +529,20 @@ impl Scenario {
         entity == PLAYER || self.characters.contains_key(entity)
     }
 
-    /// 現在地の**実効 NPC presence** (spec 04)。`Location.present` (場所ベース、空なら全 characters) に
+    /// 現在地の**実効 NPC presence** (spec 04)。`Location.present` (場所ベース) に
     /// `GameState.present_overrides` を重ね、このモジュールが知る characters に絞る。**純粋関数** —
     /// 提示層 (顔アイコン行) が主人公を先頭に名前/アイコンを解決する素。override は bool を運ぶだけなので、
     /// このモジュールに未注入の entity への force-present はここで黙って落ちる (override 自体は state に残り、
     /// そのキャラを持つ次のモジュールで現れる)。
+    ///
+    /// **present は明示宣言** (2026-07-02 改訂): 空 (未宣言含む) なら**誰もいない**。
+    /// 旧「空なら全 characters」フォールバックは廃止 — 無人の場所を作るのに全キャラを
+    /// set_presence false する羽目になるため。NPC を出す場所には present を必ず書く。
     pub fn present_at(&self, state: &GameState) -> BTreeSet<EntityId> {
-        let mut set: BTreeSet<EntityId> = match self.location(&state.location) {
-            Some(loc) if !loc.present.is_empty() => loc.present.clone(),
-            _ => self.characters.keys().cloned().collect(),
-        };
+        let mut set: BTreeSet<EntityId> = self
+            .location(&state.location)
+            .map(|loc| loc.present.clone())
+            .unwrap_or_default();
         for (entity, &present) in &state.present_overrides {
             if present {
                 set.insert(entity.clone());

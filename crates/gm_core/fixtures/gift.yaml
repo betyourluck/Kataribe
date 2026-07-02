@@ -26,6 +26,7 @@ allowed_flags: []
 locations:
   garden:
     description: 花の咲く庭。アリスが微笑んで待っている。
+    present: [alice]
     items:
       flower: { kind: always }   # いつでも摘める
     exits: []

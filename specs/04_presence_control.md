@@ -4,6 +4,11 @@ Status: **Done（オーバーライド層モデル実装済・PoC green）** / 2
 Scope: キャラクターの「登場（入場）/退場」をトリガーで制御し、モジュール跨ぎで持ち越す。
 顔アイコン行（presence）を authored 静的から可変状態へ昇格させる。
 
+> **改訂 (2026-07-02, ユーザーFB)**: `Location.present` は**明示宣言**になった——空（未宣言含む）
+> なら**誰もいない**。本 spec 起草時の「空なら全 characters」フォールバックは廃止（無人の場所を
+> 作るのに全キャラを `set_presence false` する逆転が起きるため）。NPC を出す場所には `present` を
+> 必ず書く。override による登場/退場は不変。PoC: `empty_present_means_nobody`。
+
 ## 北極星整合
 
 - **authored 専権の第4例**: `SetPresence` は `grant_skill`/`set_attribute`/`record_turn` と同型。

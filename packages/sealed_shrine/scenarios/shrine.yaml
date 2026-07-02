@@ -97,10 +97,16 @@ locations:
 goals:
   - id: defeated
     when: { kind: stat_at_most, entity: player, key: hp, value: 0 }
+    title: 冒険の終わり
+    hint: 力尽きれば冒険はここで終わる。無茶な挑戦には気をつけて
     narration: 視界が黒い瘴気に呑まれ、力が抜けていく。見習いの冒険は、この祠で潰えた。
   - id: sealed_ending
     when: { kind: flag_is, key: 封印した, value: true }
+    title: 封印エンド
+    hint: 祠の奥で力を得てから、魔を封じる術で緩んだ封印を結び直す
     narration: 魔法剣士となった君は、聖剣に魔力を込め、緩んだ封印を結び直した。祠に再び静寂が戻る。
   - id: slain_ending
     when: { kind: flag_is, key: 斬り伏せた, value: true }
+    title: 討伐エンド
+    hint: 祠の奥で力を得てから、剣をもって魔を討ち果たす
     narration: 君は聖剣を一閃させ、漆黒の魔を断ち斬った。瘴気は霧散し、森に朝の光が差し込んだ。

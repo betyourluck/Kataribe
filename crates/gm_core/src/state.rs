@@ -74,6 +74,12 @@ pub struct GameState {
     /// `transition` で持ち越す (仲間が同行する)。
     #[serde(default)]
     pub present_overrides: BTreeMap<EntityId, bool>,
+    /// 場所から**持ち去った** `take: once` アイテムの記録 (LocationId → 取得済み ItemId 集合)。
+    /// 手放して戻っても再取得 (複製) を却下するための世界の事実。**セーブ対象**。
+    /// `transition` では持ち越さない (LocationId はモジュール内スコープ。campaign 再訪の持続は
+    /// `persistent_flags` と同じ問いで、必要になったら spec 02 同型の機構で扱う)。
+    #[serde(default)]
+    pub taken_items: BTreeMap<LocationId, BTreeSet<ItemId>>,
 }
 
 impl GameState {
@@ -90,7 +96,21 @@ impl GameState {
             skills: BTreeMap::new(),
             attributes: BTreeMap::new(),
             present_overrides: BTreeMap::new(),
+            taken_items: BTreeMap::new(),
         }
+    }
+
+    /// `take: once` アイテムを既にその場所から持ち去ったか。
+    pub fn already_taken(&self, location: &str, item: &str) -> bool {
+        self.taken_items.get(location).is_some_and(|s| s.contains(item))
+    }
+
+    /// 持ち去りを記録する (エンジン内部用。apply の AddItem からのみ呼ばれる)。
+    pub fn record_taken(&mut self, location: &str, item: &str) {
+        self.taken_items
+            .entry(location.to_string())
+            .or_default()
+            .insert(item.to_string());
     }
 
     /// 指定キャラが能力を獲得済みか (閉世界: 宣言/開花した能力のみ true)。

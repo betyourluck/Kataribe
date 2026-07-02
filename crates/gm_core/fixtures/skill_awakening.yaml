@@ -40,6 +40,7 @@ triggers:
 locations:
   chamber:
     description: 紋様の刻まれた石室。奥に閉ざされた扉がある。
+    present: [alice]
     items: {}
     exits:
       - to: beyond
