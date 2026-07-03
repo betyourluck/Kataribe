@@ -18,6 +18,12 @@ allowed_flags:
   - domestic_problem    # 好感度40: 家庭問題を打ち明けた
   - moka_love_me        # 好感度60: 告白を受け入れた
 
+# フラグの表示名 (UI のフラグ一覧・語りの接地用。id は機械用キーのまま)
+flag_titles:
+  moka_opened_up: 素を見せた
+  domestic_problem: 家庭の悩みを打ち明けた
+  moka_love_me: 告白を受け入れた
+
 locations:
   classroom:
     present: [moka]   # この場に居る NPC = 顔アイコン行に表示

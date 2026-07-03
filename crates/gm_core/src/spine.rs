@@ -382,6 +382,10 @@ pub enum ScenarioError {
     PersistentFlagUndeclared { flag: FlagKey },
     /// `flag_hints` のキーが `allowed_flags` に宣言されていない (幻フラグへのヒント)。
     FlagHintUndeclared { flag: FlagKey },
+    /// `flag_titles` のキーが `allowed_flags` に宣言されていない (幻フラグへの表示名)。
+    FlagTitleUndeclared { flag: FlagKey },
+    /// `hidden_flags` のキーが `allowed_flags` に宣言されていない (幻フラグの秘匿)。
+    HiddenFlagUndeclared { flag: FlagKey },
     /// トリガーの `set_attribute` が宣言されていない属性キーに書こうとしている (幻属性遮断)。
     /// player は `initial_attributes`、NPC は `CharacterDef::attributes` でキーを宣言する。
     AttributeKeyUndeclared {
@@ -466,6 +470,17 @@ pub struct Scenario {
     /// — ヒントが**促し**、gate が**守る** (早まった set_flag を却下するバックストップ)。
     #[serde(default)]
     pub flag_hints: BTreeMap<FlagKey, String>,
+    /// フラグの**表示名** (エイリアス。authored・非検証の提示素材、goal の `title` と同じ三層思想:
+    /// id=機械用キー / title=人間向け表示)。UI のフラグ一覧・語りの接地に使い、キーは
+    /// `allowed_flags` 宣言必須 ([`Scenario::validate`] が幻フラグへの表示名を弾く)。
+    #[serde(default)]
+    pub flag_titles: BTreeMap<FlagKey, String>,
+    /// **表示から隠すフラグ** (`hidden_stats` のフラグ版)。タイマーの armed フラグ (`x_done` 等)
+    /// のような**変数として使う帳簿フラグ**を、提示層 (UI フラグ一覧 / `state_brief` /
+    /// 語彙節) が一切出さない宣言。engine 非使用・非検証 — gate/トリガーの評価は不変で効く。
+    /// キーは `allowed_flags` 宣言必須。
+    #[serde(default)]
+    pub hidden_flags: BTreeSet<FlagKey>,
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
     pub initial_stats: BTreeMap<StatKey, i64>,
@@ -560,6 +575,40 @@ impl Scenario {
         self.challenges.get(id)
     }
 
+    /// **authored 専権フラグ** — トリガー効果・challenge 帰結 (on_success/on_failure/tier) が
+    /// engine 経由で書くフラグ。LLM が set_flag すべきでない (立てても筋書きの先取り＝ノイズ)。
+    /// 宣言の走査だけで機械的に判別できる。`filter_authored_only_ops` (op の構造的遮断) のフラグ版。
+    pub fn authored_only_flags(&self) -> BTreeSet<FlagKey> {
+        let mut set = BTreeSet::new();
+        for t in &self.triggers {
+            for op in &t.effects {
+                if let StateOp::SetFlag { key, .. } = op {
+                    set.insert(key.clone());
+                }
+            }
+        }
+        for c in self.challenges.values() {
+            for outcome in [&c.on_success, &c.on_failure].into_iter().flatten() {
+                if let Some(flag) = &outcome.flag {
+                    set.insert(flag.clone());
+                }
+            }
+            for tier in c.tiers.values() {
+                if let Some(flag) = &tier.flag {
+                    set.insert(flag.clone());
+                }
+            }
+        }
+        set
+    }
+
+    /// **LLM が set_flag してよいフラグの語彙** = `allowed_flags` − [`Self::authored_only_flags`]。
+    /// prompt (使えるフラグの列挙) と `FlagNotAllowed` の却下文面 (self-repair の一発修正) の素。
+    pub fn usable_flags(&self) -> BTreeSet<FlagKey> {
+        let authored = self.authored_only_flags();
+        self.allowed_flags.iter().filter(|f| !authored.contains(*f)).cloned().collect()
+    }
+
     /// **静的整合性**を検査する (load 時に呼ぶ)。空 Vec なら健全。
     ///
     /// PoC-1: 各 challenge の tier が立てる帰結フラグが `allowed_flags` に宣言済みかを見る。
@@ -601,6 +650,18 @@ impl Scenario {
         for flag in self.flag_hints.keys() {
             if !self.allowed_flags.contains(flag) {
                 errs.push(ScenarioError::FlagHintUndeclared { flag: flag.clone() });
+            }
+        }
+        // フラグの表示名も同様 (幻フラグへの表示名を弾く)。
+        for flag in self.flag_titles.keys() {
+            if !self.allowed_flags.contains(flag) {
+                errs.push(ScenarioError::FlagTitleUndeclared { flag: flag.clone() });
+            }
+        }
+        // 秘匿宣言も同様 (幻フラグの秘匿を弾く)。
+        for flag in &self.hidden_flags {
+            if !self.allowed_flags.contains(flag) {
+                errs.push(ScenarioError::HiddenFlagUndeclared { flag: flag.clone() });
             }
         }
         // 属性の閉世界: トリガーの set_attribute は宣言済みキーにしか書けない (幻属性遮断)。
@@ -710,6 +771,13 @@ impl Scenario {
                 s.flags.insert(key.clone(), *value);
             }
         }
+        // 真化ターンの記録は生き残ったフラグの分だけ持ち越す (捨てたフラグの帳簿は残さない)。
+        s.flag_turns = prev
+            .flag_turns
+            .iter()
+            .filter(|(k, _)| s.flags.contains_key(*k))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
         s
     }
 

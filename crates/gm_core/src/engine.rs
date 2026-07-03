@@ -163,7 +163,12 @@ fn validate_ops(
             }
             StateOp::SetFlag { key, value } => {
                 if !scenario.allowed_flags.contains(key) {
-                    reasons.push(RejectReason::FlagNotAllowed { key: key.clone() });
+                    // 使えるフラグの語彙 (allowed − authored 専権) を却下理由に載せ、
+                    // self-repair が一発で正しい名前へ修正できるようにする (#31 の entity と同型)。
+                    reasons.push(RejectReason::FlagNotAllowed {
+                        key: key.clone(),
+                        available: scenario.usable_flags().into_iter().collect(),
+                    });
                     continue;
                 }
                 if *value && !scenario.flag_gate(key).eval(state) {
@@ -313,12 +318,29 @@ pub fn apply(
         Verdict::Accept => {}
     }
 
+    // フラグの真化点を刻むため、適用前の true 集合を控える (差分は apply 末尾で一括)。
+    let flags_before: BTreeSet<String> =
+        state.flags.iter().filter(|(_, v)| **v).map(|(k, _)| k.clone()).collect();
+
     let mut rolls = Vec::new();
     let mut checks = Vec::new();
     apply_ops(state, scenario, delta, &mut rolls, &mut checks);
     state.turn += 1;
     // 反応ビート (禁忌の双対)。受理・適用済みの実 state に対して発火判定する。
     let fired = fire_triggers(state, scenario, &mut rolls, &mut checks);
+
+    // このターンに true へ真化したフラグへ「立ったターン」を刻む。差分方式なので
+    // op / トリガー効果 / challenge 帰結のどの経路で立っても漏れなく捕捉される。
+    let newly_true: Vec<String> = state
+        .flags
+        .iter()
+        .filter(|(k, v)| **v && !flags_before.contains(*k))
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in newly_true {
+        state.flag_turns.insert(key, state.turn);
+    }
+
     Ok(ApplyOutcome { rolls, checks, fired })
 }
 
@@ -1204,6 +1226,143 @@ locations:
             ),
             Verdict::Accept => panic!("once アイテムの複製が通ってしまった"),
         }
+    }
+
+    /// 【使えるフラグ / authored 専権フラグの機械判別】trigger effects・challenge 帰結
+    /// (on_success/on_failure/tier) が書くフラグは authored 専権 — LLM が set_flag すべきで
+    /// ない (却下ループの素)。`authored_only_flags` が宣言走査で収集し、`usable_flags`
+    /// (= allowed − 専権) が LLM への語彙提示 (prompt / FlagNotAllowed 却下文面) の素になる。
+    /// filter_authored_only_ops (op の構造的遮断) のフラグ版。
+    #[test]
+    fn authored_only_flags_are_excluded_from_usable_vocabulary() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [聞いた_在処, 罠が作動, 扉が開いた, 腕が滑った, 奇跡が起きた]
+flag_titles: { 聞いた_在処: 鍵の在処の知識 }
+triggers:
+  - id: trap
+    when: { kind: flag_is, key: 聞いた_在処, value: true }
+    effects:
+      - { op: set_flag, key: 罠が作動, value: true }
+challenges:
+  force:
+    sides: 6
+    dc: 4
+    on_success: { flag: 扉が開いた }
+    on_failure: { flag: 腕が滑った }
+    tiers:
+      crit: { natural: max, flag: 奇跡が起きた }
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty());
+        let authored = sc.authored_only_flags();
+        for f in ["罠が作動", "扉が開いた", "腕が滑った", "奇跡が起きた"] {
+            assert!(authored.contains(f), "authored 専権に {f} が入る");
+        }
+        assert!(!authored.contains("聞いた_在処"), "LLM が立てる知識フラグは専権でない");
+        let usable = sc.usable_flags();
+        assert_eq!(usable.len(), 1);
+        assert!(usable.contains("聞いた_在処"), "usable = allowed − authored 専権");
+
+        // 幻フラグの却下理由が「使えるフラグ」語彙を運ぶ (self-repair が一発で直せる)。
+        let s = sc.initial_state(1);
+        match adjudicate(&s, &sc, &d(vec![StateOp::SetFlag { key: "幻".into(), value: true }])) {
+            Verdict::Reject { reasons } => {
+                let msg = reasons[0].localize(crate::Lang::Ja);
+                assert!(msg.contains("聞いた_在処"), "使えるフラグを却下文面で提示: {msg}");
+                assert!(!msg.contains("罠が作動"), "authored 専権は提示しない: {msg}");
+            }
+            Verdict::Accept => panic!("幻フラグは却下されるべき"),
+        }
+    }
+
+    /// 【フラグの真化ターン記録】op / トリガー効果のどちらで立っても、`flag_turns` に
+    /// 「true になったターン」が刻まれる (apply 末尾の差分で一括捕捉)。提示層が chronicle の
+    /// 該当ターン要約と join して「何をして立ったフラグか」を思い出せる素。
+    #[test]
+    fn flag_turns_record_when_flags_became_true() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [x_flag, y_flag, z_flag]
+triggers:
+  - id: chain
+    when: { kind: flag_is, key: y_flag, value: true }
+    effects:
+      - { op: set_flag, key: z_flag, value: true }
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "x_flag".into(), value: true }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "y_flag".into(), value: true }])).unwrap();
+        assert_eq!(s.flag_turns.get("x_flag"), Some(&1), "op で立った x はターン 1");
+        assert_eq!(s.flag_turns.get("y_flag"), Some(&2), "op で立った y はターン 2");
+        assert_eq!(s.flag_turns.get("z_flag"), Some(&2), "トリガー効果で立った z も同ターンに記録");
+    }
+
+    /// 【内部フラグの秘匿 (hidden_flags)】タイマーの armed フラグ (`x_done` 等) のような
+    /// **変数として使う帳簿フラグ**を提示層 (UI 一覧 / state_brief / 語彙節) から隠す宣言。
+    /// `hidden_stats` のフラグ版 — engine 非使用・非検証、gate/トリガーは従来どおり効く。
+    /// キーは `allowed_flags` 宣言必須 (幻フラグの秘匿を load 時に弾く)。
+    #[test]
+    fn hidden_flags_parse_and_validate_membership() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [x_done, visible_flag]
+hidden_flags: [x_done]
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "宣言済みフラグの秘匿は健全");
+        assert!(sc.hidden_flags.contains("x_done"));
+
+        let bad = r#"
+title: t
+start: room
+allowed_flags: [real]
+hidden_flags: [ghost]
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(bad).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::HiddenFlagUndeclared { flag } if flag == "ghost")),
+            "未宣言フラグの秘匿を validate が弾く: {:?}",
+            sc.validate()
+        );
+    }
+
+    /// 【表示名の宣言整合】`flag_titles` の幻フラグは validate が load 時に弾く (flag_hints と同型)。
+    #[test]
+    fn validate_rejects_undeclared_flag_title() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [real]
+flag_titles: { ghost: 幽霊フラグ }
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::FlagTitleUndeclared { flag } if flag == "ghost")),
+            "未宣言フラグへの表示名を validate が弾く: {:?}",
+            sc.validate()
+        );
     }
 
     /// 【整合性】goal も goals も無いシナリオ (勝利条件不在) は validate で弾く。

@@ -74,6 +74,11 @@ pub struct GameState {
     /// `transition` で持ち越す (仲間が同行する)。
     #[serde(default)]
     pub present_overrides: BTreeMap<EntityId, bool>,
+    /// フラグが **true に真化したターン**の記録 (`apply` 末尾の差分で一括捕捉 — op /
+    /// トリガー効果 / challenge 帰結のどの経路でも刻まれる)。提示層が chronicle (経緯ログ) の
+    /// 該当ターン要約と join し「何をして立ったフラグか」を思い出す素。**セーブ対象**。
+    #[serde(default)]
+    pub flag_turns: BTreeMap<FlagKey, u32>,
     /// 場所から**持ち去った** `take: once` アイテムの記録 (LocationId → 取得済み ItemId 集合)。
     /// 手放して戻っても再取得 (複製) を却下するための世界の事実。**セーブ対象**。
     /// `transition` では持ち越さない (LocationId はモジュール内スコープ。campaign 再訪の持続は
@@ -96,6 +101,7 @@ impl GameState {
             skills: BTreeMap::new(),
             attributes: BTreeMap::new(),
             present_overrides: BTreeMap::new(),
+            flag_turns: BTreeMap::new(),
             taken_items: BTreeMap::new(),
         }
     }

@@ -13,9 +13,10 @@ use std::path::{Component, Path, PathBuf};
 
 use gm_core::{is_goal, CheckOutcome, GameState, ImageMode, Lang, Scenario, PLAYER};
 use harness::{
-    advance_campaign_injected, is_campaign_entry, load_campaign_package, load_lore, load_package,
-    chronicle_entry, read_manifest, resolve_asset, resolve_recall, run_turn, AssetKind, Campaign,
-    CampaignMemory, LoreStore, MemoryFragment, ModuleId, PackageManifest, TurnLog, TurnOutcome,
+    advance_campaign_injected, carryover_narration, chronicle_entry, is_campaign_entry,
+    load_campaign_package, load_lore, load_package, read_manifest, resolve_asset, resolve_recall,
+    run_turn, AssetKind, Campaign, CampaignMemory, LoreStore, MemoryFragment, ModuleId,
+    PackageManifest, TurnLog, TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
 use serde::Serialize;
@@ -66,7 +67,7 @@ struct StateView {
     turn: u32,
     location: String,
     inventory: Vec<String>,
-    flags: Vec<String>,
+    flags: Vec<FlagView>,
     entities: Vec<EntityView>,
     goal_reached: bool,
     /// このモジュールの名前付き goal (目標) の一覧 (authored 順)。
@@ -75,6 +76,18 @@ struct StateView {
     goals: Vec<GoalView>,
     /// 到達した goal の id (一覧のハイライト用)。未到達なら None。
     reached_goal: Option<String>,
+}
+
+/// フラグ一覧の 1 エントリ。title は表示名 (flag_titles、空なら frontend が key へフォールバック)、
+/// cause は「何をして立ったか」= flag_turns (真化ターン) を chronicle の該当ターン要約と join した文。
+#[derive(Serialize)]
+struct FlagView {
+    key: String,
+    title: String,
+    /// 立ったターン (flag_turns)。無ければ None (旧セーブ等)。
+    turn: Option<u32>,
+    /// 立った経緯 (chronicle の該当ターン要約)。無ければ None。
+    cause: Option<String>,
 }
 
 /// 目標一覧の 1 エントリ (id + 表示名 + プレイヤー向けヒント)。
@@ -327,7 +340,7 @@ fn normalize(s: &str) -> String {
     s.replace("\\n", "\n")
 }
 
-fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
+fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> StateView {
     // stat / skill / 所持物 のいずれかを持つ entity の和集合。
     let ids: std::collections::BTreeSet<&String> = state
         .entities
@@ -397,8 +410,21 @@ fn state_view(state: &GameState, scenario: &Scenario) -> StateView {
         flags: state
             .flags
             .iter()
-            .filter(|(_, v)| **v)
-            .map(|(k, _)| k.clone())
+            // 帳簿フラグ (hidden_flags) は UI にも出さない (hidden_stats と同じ扱い)。
+            .filter(|(k, v)| **v && !scenario.hidden_flags.contains(*k))
+            .map(|(k, _)| {
+                // 真化ターン (正本) と chronicle (経緯ログ) を join して「何をして立ったか」を出す。
+                let turn = state.flag_turns.get(k).copied();
+                let cause = turn.and_then(|n| {
+                    history.iter().find(|log| log.turn == n).map(|log| log.summary.clone())
+                });
+                FlagView {
+                    key: k.clone(),
+                    title: scenario.flag_titles.get(k).cloned().unwrap_or_default(),
+                    turn,
+                    cause,
+                }
+            })
             .collect(),
         entities,
         goal_reached: is_goal(state, scenario),
@@ -606,7 +632,7 @@ async fn new_game(
             .location(&state.location)
             .map(|l| l.description.clone())
             .unwrap_or_default(),
-        state: state_view(&state, &scenario),
+        state: state_view(&state, &scenario, &[]),
         background: background_for(&scenario, &state, &pkg_dir),
         bgm: bgm_for(&scenario, &state, &pkg_dir),
         present_characters: present_characters(&scenario, &state, &pkg_dir),
@@ -667,12 +693,20 @@ async fn play_turn(
 
     let mut view = match outcome {
         TurnOutcome::Accepted { narration, summary, rolls, checks, fired, attempts, rejected } => {
-            // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止)。
-            sess.last_narration = narration.clone();
-            // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback)。
-            sess.history.push(chronicle_entry(sess.state.turn, action.trim(), &summary, &narration));
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
+            // ビートは GM が見ていない筋書きの出来事 — 継続文脈と経緯ログの両方へ併記する。
+            let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
+            // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止。ビート込み)。
+            sess.last_narration = carryover_narration(&narration, &beat_texts);
+            // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback)。
+            sess.history.push(chronicle_entry(
+                sess.state.turn,
+                action.trim(),
+                &summary,
+                &narration,
+                &beat_texts,
+            ));
             let beats = resolved
                 .iter()
                 .map(|b| BeatView {
@@ -736,7 +770,7 @@ async fn play_turn(
                     .iter()
                     .map(|rs| rs.iter().map(|r| r.localize(sess.lang)).collect())
                     .collect(),
-                state: state_view(&sess.state, &sess.scenario),
+                state: state_view(&sess.state, &sess.scenario, &sess.history),
                 goal_reached: is_goal(&sess.state, &sess.scenario),
                 goal_id,
                 goal_title,
@@ -757,7 +791,7 @@ async fn play_turn(
             reasons: last_reasons.iter().map(|r| r.localize(sess.lang)).collect(),
             retries: Vec::new(),
             // 却下では state 無傷。現状スナップショットを返す。
-            state: state_view(&sess.state, &sess.scenario),
+            state: state_view(&sess.state, &sess.scenario, &sess.history),
             goal_reached: is_goal(&sess.state, &sess.scenario),
             // 却下では state 不変ゆえ goal も変わらない。スナップショットとして同様に返す。
             goal_id: goal_view(&sess.state, &sess.scenario).0,
@@ -814,7 +848,7 @@ async fn play_turn(
                     description,
                 });
                 // パネル類は遷移先を指す (goal_* は遷移元の結末のまま残す)。
-                view.state = state_view(&sess.state, &sess.scenario);
+                view.state = state_view(&sess.state, &sess.scenario, &sess.history);
                 view.background = background_for(&sess.scenario, &sess.state, &sess.package_root);
                 view.bgm = bgm_for(&sess.scenario, &sess.state, &sess.package_root);
                 view.present_characters =

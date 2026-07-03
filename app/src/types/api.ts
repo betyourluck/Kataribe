@@ -22,11 +22,20 @@ export interface EntityView {
   profile: string;
 }
 
+/** フラグ一覧の 1 エントリ。title は表示名 (空なら key へフォールバック)、
+ *  turn/cause は「いつ・何をして立ったか」(flag_turns × chronicle の join。無ければ null)。 */
+export interface FlagView {
+  key: string;
+  title: string;
+  turn: number | null;
+  cause: string | null;
+}
+
 export interface StateView {
   turn: number;
   location: string;
   inventory: string[];
-  flags: string[];
+  flags: FlagView[];
   entities: EntityView[];
   goal_reached: boolean;
   /** 名前付き goal (目標) の一覧 (authored 順)。単一 goal のシナリオでは空。 */

@@ -28,7 +28,13 @@ pub enum RejectReason {
     /// `take: once` のアイテムを既にこの場所から持ち去っている (再取得=複製の遮断)。
     ItemAlreadyTaken { item: String },
     ItemNotHeld { item: String },
-    FlagNotAllowed { key: String },
+    /// 未宣言フラグ (幻フラグ)。`available` は LLM が set_flag してよい語彙
+    /// (`Scenario::usable_flags` = allowed − authored 専権) — self-repair が一発で正しい名前に直せる。
+    FlagNotAllowed {
+        key: String,
+        #[serde(default)]
+        available: Vec<String>,
+    },
     FlagGateUnmet { key: String },
     NoExit { to: String },
     MoveGateUnmet { to: String },
@@ -82,7 +88,13 @@ impl RejectReason {
                 format!("'{item}' は既にここから持ち去られていて、もう無い")
             }
             RejectReason::ItemNotHeld { item } => format!("'{item}' を所持していないので手放せない"),
-            RejectReason::FlagNotAllowed { key } => format!("フラグ '{key}' は許可されていない"),
+            RejectReason::FlagNotAllowed { key, available } => {
+                if available.is_empty() {
+                    format!("フラグ '{key}' は存在しない (このシナリオに set_flag できるフラグは無い)")
+                } else {
+                    format!("フラグ '{key}' は存在しない (使えるフラグ: {})", available.join(", "))
+                }
+            }
             RejectReason::FlagGateUnmet { key } => format!("フラグ '{key}' を立てる前提条件が未達"),
             RejectReason::NoExit { to } => format!("'{to}' への出口は存在しない"),
             RejectReason::MoveGateUnmet { to } => format!("'{to}' への移動条件が未達"),
@@ -137,7 +149,13 @@ impl RejectReason {
             RejectReason::ItemNotHeld { item } => {
                 format!("cannot drop '{item}' because you do not hold it")
             }
-            RejectReason::FlagNotAllowed { key } => format!("flag '{key}' is not allowed"),
+            RejectReason::FlagNotAllowed { key, available } => {
+                if available.is_empty() {
+                    format!("flag '{key}' does not exist (no flags can be set in this scenario)")
+                } else {
+                    format!("flag '{key}' does not exist (available flags: {})", available.join(", "))
+                }
+            }
             RejectReason::FlagGateUnmet { key } => format!("prerequisite to set flag '{key}' is unmet"),
             RejectReason::NoExit { to } => format!("there is no exit to '{to}'"),
             RejectReason::MoveGateUnmet { to } => format!("the condition to move to '{to}' is unmet"),

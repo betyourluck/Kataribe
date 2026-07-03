@@ -182,12 +182,30 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
             s.push_str(&format!("- {label} (id: {id}): {basis}{req}\n"));
         }
     }
-    // 知識・状態フラグのヒント (spec 03)。会話で情報が伝わった瞬間に立てるべきフラグを LLM に見せる。
-    // 下流 gate に出ないフラグも可視化され、弱モデルでも狙って set_flag できる (flag_rules が早まりを守る)。
-    if !scenario.flag_hints.is_empty() {
-        s.push_str("\n## 状態フラグ (条件が満たされた瞬間に set_flag で立てる)\n");
-        for (flag, hint) in &scenario.flag_hints {
-            s.push_str(&format!("- {flag}: {}\n", hint.trim()));
+    // 使えるフラグの語彙 (spec 03 の拡張)。LLM が set_flag してよいフラグ = allowed − authored 専権
+    // (トリガー効果/challenge 帰結が立てるフラグは見せない = 先取り set_flag の誘惑を作らない)。
+    // 閉集合を見せることで幻フラグの発明 (却下ループの素) を断つ。表示名 (flag_titles)・
+    // ヒント (flag_hints) があれば添える (flag_rules が早まりを守るのは従来どおり)。
+    // 帳簿フラグ (hidden_flags) は語彙にも出さない (LLM に触らせない内部変数)。
+    let usable: std::collections::BTreeSet<_> = scenario
+        .usable_flags()
+        .into_iter()
+        .filter(|f| !scenario.hidden_flags.contains(f))
+        .collect();
+    if !usable.is_empty() {
+        s.push_str(
+            "\n## 状態フラグ (set_flag で立てられるのはこれだけ。条件が満たされた瞬間に立てる)\n",
+        );
+        for flag in &usable {
+            let mut line = format!("- {flag}");
+            if let Some(title) = scenario.flag_titles.get(flag).filter(|t| !t.trim().is_empty()) {
+                line.push_str(&format!("（{}）", title.trim()));
+            }
+            if let Some(hint) = scenario.flag_hints.get(flag).filter(|h| !h.trim().is_empty()) {
+                line.push_str(&format!(": {}", hint.trim()));
+            }
+            line.push('\n');
+            s.push_str(&line);
         }
     }
     if !scenario.goals.is_empty() {
@@ -215,11 +233,16 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
             .collect::<Vec<_>>()
             .join(" / ")
     };
+    // 立っているフラグ。帳簿フラグ (hidden_flags) は出さず (hidden_stats と同じ扱い)、
+    // 表示名 (flag_titles) があれば添える (id は ops 用にそのまま残す)。
     let flags: Vec<String> = state
         .flags
         .iter()
-        .filter(|(_, v)| **v)
-        .map(|(k, _)| k.clone())
+        .filter(|(k, v)| **v && !scenario.hidden_flags.contains(*k))
+        .map(|(k, _)| match scenario.flag_titles.get(k).filter(|t| !t.trim().is_empty()) {
+            Some(title) => format!("{k}（{}）", title.trim()),
+            None => k.clone(),
+        })
         .collect();
     let flags = if flags.is_empty() { "なし".to_string() } else { flags.join(", ") };
     // キャラ別の能力値 (entity ごとに 1 行)。

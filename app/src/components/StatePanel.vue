@@ -170,8 +170,16 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
           <div class="mb-3">
             <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="flag" />フラグ</div>
-            <div v-if="game.state.flags.length" class="text-parchment">
-              {{ game.state.flags.join("、") }}
+            <!-- 表示名 (title || key) のチップ。hover で「いつ・何をして立ったか」(chronicle join) を出す。 -->
+            <div v-if="game.state.flags.length" class="flex flex-wrap gap-1.5 mt-1">
+              <span
+                v-for="f in game.state.flags"
+                :key="f.key"
+                class="px-2 py-0.5 rounded bg-ash/40 border border-ash text-xs text-parchment/80"
+                :title="f.cause ? `T${f.turn}: ${f.cause}` : f.turn ? `T${f.turn} に成立` : ''"
+              >
+                {{ f.title || f.key }}
+              </span>
             </div>
             <div v-else class="text-parchment/30">なし</div>
           </div>

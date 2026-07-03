@@ -30,7 +30,7 @@ pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use proposer::DeltaProposer;
-pub use turn::{chronicle_entry, run_turn, TurnLog, TurnOutcome};
+pub use turn::{carryover_narration, chronicle_entry, run_turn, TurnLog, TurnOutcome};
 
 // =============================================================================
 // PoC: GM ターンループの実証 (Red→Green)
@@ -337,14 +337,40 @@ mod tests {
     #[test]
     fn chronicle_entry_falls_back_to_truncated_narration() {
         let long = "夕暮れの書斎。埃をかぶった机の引き出しに手をかけると、軋みながら開いた。".repeat(5);
-        let e = chronicle_entry(3, "引き出しを開ける", "", &long);
+        let e = chronicle_entry(3, "引き出しを開ける", "", &long, &[]);
         assert!(e.summary.chars().count() <= 81, "narration 冒頭へ切り詰める (…込み)");
         assert!(e.summary.starts_with("夕暮れの書斎"), "冒頭から取る");
         assert_eq!(e.turn, 3);
         assert_eq!(e.player, "引き出しを開ける");
 
-        let e2 = chronicle_entry(4, "話す", "アリスに約束を打ち明けた", &long);
+        let e2 = chronicle_entry(4, "話す", "アリスに約束を打ち明けた", &long, &[]);
         assert_eq!(e2.summary, "アリスに約束を打ち明けた", "summary があればそのまま");
+    }
+
+    /// 【発火ビートの GM 還流】トリガーの authored narration はプレイヤーには表示されるが
+    /// **GM は見ていない** (発火は GM の提案後に engine 側で起きる) — 次ターンの継続文脈
+    /// (carryover_narration) と経緯ログ (chronicle_entry の beats) の両方に併記して、
+    /// GM が筋書きの出来事と噛み合った語りを続けられるようにする (#27 のトリガー版)。
+    #[test]
+    fn fired_beats_flow_into_carryover_and_chronicle() {
+        let beats = vec!["石壁が轟音とともに崩れ、隠し通路が現れた。".to_string()];
+
+        // 継続文脈: GM の語り + 筋書きの出来事の連結。
+        let carry = carryover_narration("祭壇に手を触れると、微かに紋様が光った。", &beats);
+        assert!(carry.contains("紋様が光った"), "GM の語りが残る");
+        assert!(carry.contains("筋書きの出来事"), "ビートが筋書きの出来事として連結される");
+        assert!(carry.contains("隠し通路が現れた"), "ビート本文が入る");
+        // ビートが無ければそのまま (余計なマーカーを足さない)。
+        assert_eq!(carryover_narration("素の語り", &[]), "素の語り");
+
+        // 経緯ログ: summary にビートを併記 (GM の summary はビートを知らないため)。
+        let e = chronicle_entry(5, "祭壇に触れる", "祭壇に触れて紋様が光った", "（語り）", &beats);
+        assert!(e.summary.contains("祭壇に触れて紋様が光った"), "GM の summary が残る");
+        assert!(
+            e.summary.contains("出来事") && e.summary.contains("隠し通路"),
+            "ビートが出来事として併記される: {}",
+            e.summary
+        );
     }
 
     /// 【経緯の予算】history_note は文字予算内で新しい方を残し、古い方から省略する
@@ -620,6 +646,89 @@ mod tests {
             prompt::GM_SYSTEM.contains("先回り") || prompt::GM_SYSTEM.contains("満たしていない"),
             "早まった set_flag を戒める (flag_rules バックストップと対)"
         );
+    }
+
+    /// 【使えるフラグの語彙提示】scenario_brief が「LLM が set_flag してよいフラグ」
+    /// (= allowed − authored 専権) を表示名・ヒント付きで列挙する。語彙の閉集合を見せる
+    /// ことで幻フラグの発明 (却下ループの素) を断ち、authored 専権 (トリガー/challenge が
+    /// 立てるフラグ) は見せない (先取り set_flag の誘惑を作らない)。state_brief の
+    /// 「立っている状態」にも表示名を添える。
+    #[tokio::test]
+    async fn scenario_brief_lists_usable_flags_with_titles_excluding_authored() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\n",
+            "allowed_flags: [聞いた_在処, 罠が作動]\n",
+            "flag_titles: { 聞いた_在処: 鍵の在処の知識 }\n",
+            "flag_hints: { 聞いた_在処: 賢者から在処を聞いたら立てる }\n",
+            "triggers:\n",
+            "  - id: trap\n",
+            "    when: { kind: flag_is, key: 聞いた_在処, value: true }\n",
+            "    effects: [{ op: set_flag, key: 罠が作動, value: true }]\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let brief = prompt::scenario_brief(&sc);
+        assert!(brief.contains("状態フラグ"), "フラグ語彙の節が出る: {brief}");
+        assert!(
+            brief.contains("聞いた_在処") && brief.contains("鍵の在処の知識") && brief.contains("賢者から在処を聞いたら"),
+            "使えるフラグが id+表示名+ヒント付きで列挙される: {brief}"
+        );
+        // authored 専権フラグは節に出ない (先取り set_flag の誘惑を作らない)。
+        // ※ trigger の定義自体は brief に出ないので、含まれていなければ節にも無い。
+        assert!(!brief.contains("罠が作動"), "authored 専権フラグは語彙に出さない: {brief}");
+
+        // state_brief の「立っている状態」にも表示名が添えられる (id は ops 用に残す)。
+        let mut s = sc.initial_state(1);
+        gm_core::apply(
+            &mut s,
+            &sc,
+            &gm_core::StateDelta::new("", vec![StateOp::SetFlag { key: "聞いた_在処".into(), value: true }]),
+        )
+        .unwrap();
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(
+            sb.contains("聞いた_在処（鍵の在処の知識）"),
+            "立っている状態に表示名が添えられる: {sb}"
+        );
+    }
+
+    /// 【内部フラグの秘匿 (hidden_flags)】帳簿フラグ (`x_done` 等) は state_brief の
+    /// 「立っている状態」にも scenario_brief の語彙節にも出ない (提示層が一切出さない =
+    /// `hidden_stats` と同じ扱い)。gate/トリガーの評価は不変で効く。
+    #[test]
+    fn hidden_flags_are_skipped_by_prompt_layers() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: room\n",
+            "allowed_flags: [x_done, 知った_合図]\n",
+            "hidden_flags: [x_done]\n",
+            "flag_hints: { 知った_合図: 合図を教わったら立てる }\n",
+            "locations:\n  room: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        // 語彙節: 見えるフラグは列挙され、隠しフラグは出ない。
+        let brief = prompt::scenario_brief(&sc);
+        assert!(brief.contains("知った_合図"), "見えるフラグは語彙に出る: {brief}");
+        assert!(!brief.contains("x_done"), "隠しフラグは語彙に出ない: {brief}");
+
+        // state_brief: 両方 true でも隠しフラグは「立っている状態」に出ない。
+        let mut s = sc.initial_state(1);
+        gm_core::apply(
+            &mut s,
+            &sc,
+            &gm_core::StateDelta::new(
+                "",
+                vec![
+                    StateOp::SetFlag { key: "x_done".into(), value: true },
+                    StateOp::SetFlag { key: "知った_合図".into(), value: true },
+                ],
+            ),
+        )
+        .unwrap();
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(sb.contains("知った_合図"), "見えるフラグは載る: {sb}");
+        assert!(!sb.contains("x_done"), "隠しフラグは載らない: {sb}");
     }
 
     /// 【presence の prompt 接地】GM は「いま誰がこの場に居るか」を presence でしか知れない —

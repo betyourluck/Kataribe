@@ -33,8 +33,18 @@ pub struct TurnLog {
 
 /// 受理ターンから経緯ログの 1 エントリを作る。GM が `summary` を書いていればそれを、
 /// 書いていない (弱モデル等) なら narration 冒頭を文字境界安全に切り詰めて使う。
-pub fn chronicle_entry(turn: u32, player: &str, summary: &str, narration: &str) -> TurnLog {
-    let summary = if summary.trim().is_empty() {
+///
+/// `beats` は発火した反応ビートの authored narration。**GM は見ていない** (発火は提案後に
+/// engine 側で起きる) ので GM の summary には現れない — ここで「出来事」として併記し、
+/// 筋書きの出来事が経緯から抜け落ちないようにする。
+pub fn chronicle_entry(
+    turn: u32,
+    player: &str,
+    summary: &str,
+    narration: &str,
+    beats: &[String],
+) -> TurnLog {
+    let mut summary = if summary.trim().is_empty() {
         let flat = narration.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut head: String = flat.chars().take(80).collect();
         if flat.chars().count() > 80 {
@@ -44,7 +54,32 @@ pub fn chronicle_entry(turn: u32, player: &str, summary: &str, narration: &str) 
     } else {
         summary.trim().to_string()
     };
+    let beats: Vec<String> = beats
+        .iter()
+        .filter(|b| !b.trim().is_empty())
+        .map(|b| b.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    if !beats.is_empty() {
+        summary.push_str(&format!("／出来事: {}", beats.join("、")));
+    }
     TurnLog { turn, player: player.to_string(), summary }
+}
+
+/// 次ターンへ持ち越す「直前までの語り」を組む。GM の narration に発火ビート (authored の
+/// 筋書きの出来事) を連結する — ビートはプレイヤーには表示されるが GM は見ていないため、
+/// ここで継続文脈に含めないと GM が出来事を知らないまま続きを語る (#27 のトリガー版)。
+pub fn carryover_narration(narration: &str, beats: &[String]) -> String {
+    let beats: Vec<&String> = beats.iter().filter(|b| !b.trim().is_empty()).collect();
+    if beats.is_empty() {
+        return narration.to_string();
+    }
+    let mut s = narration.trim_end().to_string();
+    s.push_str("\n（直後に筋書きの出来事が起きた）");
+    for b in beats {
+        s.push('\n');
+        s.push_str(b.trim());
+    }
+    s
 }
 
 /// 1 ターンの結末。

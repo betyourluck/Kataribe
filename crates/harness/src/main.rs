@@ -158,9 +158,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match outcome {
             Ok(TurnOutcome::Accepted { narration, summary, rolls, checks, fired, attempts, rejected }) => {
                 println!("\n{narration}");
+                // 発火ビートを先に解決 (表示と GM への還流の素)。ビートは GM が見ていない
+                // 筋書きの出来事なので、経緯ログと継続文脈の両方へ併記する。
+                let beats = resolve_recall(&lore, &fired);
+                let beat_texts: Vec<String> = beats.iter().map(|b| b.narration.clone()).collect();
                 // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback)。
-                history.push(harness::chronicle_entry(state.turn, action.trim(), &summary, &narration));
-                last_narration = narration.clone(); // 次ターンの継続文脈に持ち越す
+                history.push(harness::chronicle_entry(
+                    state.turn,
+                    action.trim(),
+                    &summary,
+                    &narration,
+                    &beat_texts,
+                ));
+                // 次ターンの継続文脈に持ち越す (ビート込み)。
+                last_narration = harness::carryover_narration(&narration, &beat_texts);
                 for r in &rolls {
                     let mark = if r.success { "成功" } else { "失敗" };
                     println!("  🎲 1d{} = {} (DC {}) → {mark}", r.sides, r.result, r.dc);
@@ -175,7 +186,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 pending_checks = checks; // 次ターンへ持ち越し
                 // 反応ビート (Phase C) + memoria_bridge: 発火点で伏線を recall して語りに注入。
-                for beat in resolve_recall(&lore, &fired) {
+                for beat in beats {
                     println!("  ✦ {}", beat.narration);
                     for frag in &beat.recalled {
                         // 伏線 (不変 lore) を「思い出した記憶」として差し込む。
