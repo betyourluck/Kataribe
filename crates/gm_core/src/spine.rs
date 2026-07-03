@@ -304,6 +304,12 @@ pub enum Natural {
 pub struct TierDef {
     /// この tier が発火する自然出目の極。
     pub natural: Natural,
+    /// 該当時に**同一 apply 内で原子適用**する機械効果 (authored 専権 — trigger effects と
+    /// 同じ信頼モデル。LLM は challenge を「選ぶ」だけで帰結を持てない)。stat/attribute/
+    /// スキル等をフラグ+トリガーの2点セット無しで直接動かせる。`attempt_challenge` は
+    /// 無限再帰の芽なので validate が弾く (連鎖は flag→トリガー経由で書く)。
+    #[serde(default)]
+    pub effects: Vec<StateOp>,
     /// 該当時に engine が直書きする帰結フラグ (任意)。`allowed_flags` 宣言必須 ([`Scenario::validate`])。
     #[serde(default)]
     pub flag: Option<FlagKey>,
@@ -320,6 +326,11 @@ pub struct ChallengeOutcome {
     /// engine が直書きする帰結フラグ (任意)。`allowed_flags` 宣言必須。
     #[serde(default)]
     pub flag: Option<FlagKey>,
+    /// 該当時に**同一 apply 内で原子適用**する機械効果 (authored 専権 — trigger effects と
+    /// 同じ信頼モデル)。通常成否と極 (tier) の effects は併存する (フラグと同じ)。
+    /// `attempt_challenge` は無限再帰の芽なので validate が弾く。
+    #[serde(default)]
+    pub effects: Vec<StateOp>,
     /// 結末ナレーション (authored・任意)。失敗を必ず描きたい時に使う (LLM 任せにしない)。
     #[serde(default)]
     pub narration: String,
@@ -398,6 +409,9 @@ pub enum ScenarioError {
     SecretAttributeUndeclared { key: AttrKey },
     /// `vote_rules` の voter_attribute キーがどこにも宣言されていない (幻属性の投票権)。
     VoteRuleAttributeUndeclared { key: AttrKey },
+    /// challenge の effects に `attempt_challenge` が入っている (A→A の無限再帰の芽)。
+    /// 判定の連鎖は flag→トリガー経由で書く。
+    ChallengeEffectRecursive { challenge: ChallengeId },
     /// `role_assignment` の pool 人数合計と among の人数が一致しない (配りきれない/余る)。
     RoleAssignmentCountMismatch { pool_total: u32, among: usize },
     /// `role_assignment.among` にこのシナリオが知らない entity が居る (幻キャラへの配布)。
@@ -697,6 +711,45 @@ impl Scenario {
                         tier: label.to_string(),
                         flag: flag.clone(),
                     });
+                }
+            }
+            // 帰結の直接効果 (effects): attempt_challenge の入れ子は無限再帰の芽なので弾く。
+            // set_attribute の幻キーもトリガー効果と同じ検査 (trigger 欄に challenge:{id})。
+            let effect_lists = def
+                .tiers
+                .values()
+                .map(|t| &t.effects)
+                .chain(def.on_success.as_ref().map(|o| &o.effects))
+                .chain(def.on_failure.as_ref().map(|o| &o.effects));
+            for effects in effect_lists {
+                for op in effects {
+                    match op {
+                        StateOp::AttemptChallenge { .. } => {
+                            errs.push(ScenarioError::ChallengeEffectRecursive {
+                                challenge: cid.clone(),
+                            });
+                        }
+                        StateOp::SetAttribute { entity, key, .. } => {
+                            let declared = if entity == PLAYER {
+                                self.initial_attributes.contains_key(key)
+                            } else {
+                                self.characters
+                                    .get(entity)
+                                    .is_some_and(|c| c.attributes.contains_key(key))
+                            } || self
+                                .role_assignment
+                                .as_ref()
+                                .is_some_and(|ra| &ra.key == key);
+                            if !declared {
+                                errs.push(ScenarioError::AttributeKeyUndeclared {
+                                    trigger: format!("challenge:{cid}"),
+                                    entity: entity.clone(),
+                                    key: key.clone(),
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }

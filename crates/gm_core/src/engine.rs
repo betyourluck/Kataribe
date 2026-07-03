@@ -523,6 +523,18 @@ fn apply_ops(
                             state.flags.insert(flag.clone(), true);
                         }
                     }
+                    // 帰結の直接効果 (authored 専権 — trigger effects と同じ信頼モデルで
+                    // apply_ops 直行)。通常成否と極の effects は併存で、同一 apply 内に
+                    // 原子適用される (attempt_challenge の入れ子は validate が遮断済)。
+                    let mut effects: Vec<StateOp> =
+                        outcome.map(|o| o.effects.clone()).unwrap_or_default();
+                    if let Some((_, t)) = hit {
+                        effects.extend(t.effects.iter().cloned());
+                    }
+                    if !effects.is_empty() {
+                        let effect_delta = StateDelta::new(String::new(), effects);
+                        apply_ops(state, scenario, &effect_delta, rolls, checks);
+                    }
                     // 結末ナレーション: 極(tier)に narration があれば優先 (より具体的・劇的)、
                     // 無ければ通常成否の narration。毎回・同ターンに提示層が出す (非 latch)。
                     let narration = hit
@@ -1470,6 +1482,94 @@ goal: { kind: always }
         assert_eq!(s1.stat_of(PLAYER, "生存人狼数"), 2);
         assert_eq!(s1.stat_of(PLAYER, "生存占い師数"), 1);
         assert_eq!(s1.stat_of(PLAYER, "生存村人数"), 3);
+    }
+
+    /// 【challenge の直接効果 (effects)】on_success/on_failure/tier に `effects: [StateOp]` を
+    /// 書けば、帰結の機械効果 (stat/attribute/スキル等) をフラグ+トリガーの2点セット無しで
+    /// **同一 apply 内に原子適用**できる。authored 専権 — LLM は challenge を「選ぶ」だけで
+    /// 帰結を持てない閉世界は不変 (trigger effects と同じ信頼モデル)。通常成否と極 (tier) の
+    /// effects は併存する (フラグと同じ)。
+    #[test]
+    fn challenge_effects_apply_stats_and_attributes_atomically() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { hp: 10, str: 5 }
+initial_attributes: { 状態: 健康 }
+allowed_flags: [ぶつけた, 押し開けた]
+challenges:
+  slam_fail:
+    sides: 1
+    dc: 2
+    on_failure:
+      flag: ぶつけた
+      effects:
+        - { op: adjust_stat, key: hp, delta: -2 }
+    tiers:
+      crit_fail:
+        natural: min
+        effects:
+          - { op: set_attribute, key: 状態, value: 打ち身 }
+  slam_win:
+    sides: 1
+    dc: 1
+    on_success:
+      flag: 押し開けた
+      effects:
+        - { op: adjust_stat, key: str, delta: 1 }
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(1);
+
+        // 1d1=1 < DC2 = 失敗 (natural 1 = min で極も併発)。
+        apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(),
+            challenge: "slam_fail".into(),
+        }]))
+        .unwrap();
+        assert!(s.flag("ぶつけた"), "帰結フラグは従来どおり");
+        assert_eq!(s.stat_of(PLAYER, "hp"), 8, "on_failure.effects の adjust_stat が同一 apply で効く");
+        assert_eq!(s.attribute_of(PLAYER, "状態"), "打ち身", "tier.effects の set_attribute も併存で効く");
+
+        // 1d1=1 >= DC1 = 成功。
+        apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(),
+            challenge: "slam_win".into(),
+        }]))
+        .unwrap();
+        assert!(s.flag("押し開けた"));
+        assert_eq!(s.stat_of(PLAYER, "str"), 6, "on_success.effects も効く");
+    }
+
+    /// 【challenge effects の再帰禁止】effects に attempt_challenge を書くと A→A の無限再帰が
+    /// 組めてしまうため validate が load 時に弾く (連鎖したければ従来どおり flag→トリガー経由)。
+    #[test]
+    fn validate_rejects_attempt_challenge_inside_challenge_effects() {
+        let yaml = r#"
+title: t
+start: room
+challenges:
+  a:
+    sides: 1
+    dc: 1
+    on_success:
+      effects:
+        - { op: attempt_challenge, challenge: a }
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::ChallengeEffectRecursive { challenge } if challenge == "a")),
+            "challenge effects 内の attempt_challenge を弾く: {:?}",
+            sc.validate()
+        );
     }
 
     /// spec 06 Phase C の共通盤面: 人狼1・村人3、昼は誰でも・夜は人狼のみ投票可、
