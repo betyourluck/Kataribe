@@ -96,6 +96,13 @@ RoleAssignment:
   mechanism: "initial_state(seed) が seed ^ 'ROLE_RNG' の専用ストリーム (role_rng) で shuffle — 本流 state.rng は消費しない (配役の有無でプレイ中のダイス列が変わらない)。同 seed 同配役 = 再現・監査可能。割り当てはエンジン専権 (LLM 関与不可 =「出目は正本」の配役版)。set_attribute は authored 専権のままなので LLM は役職を書き換えられない"
   bookkeeping: "割り当てと同時に自動生成: 各 among entity の stat 生存=1、player に役職別カウンタ 生存{役職}数 = pool 人数。更新は ResolveVote の専権 (Phase C)"
   validate: "RoleAssignmentCountMismatch (pool 合計 ≠ among 人数) / RoleAssignmentUnknownEntity (幻キャラ) / RoleAssignmentDuplicateEntity (重複配布) を load 時に弾く"
+
+# --- 投票と死亡 (spec 06 Phase C。票の意図は LLM・開票と死はエンジン) --------------
+Voting:
+  vote_rules: "[VoteRule{when: Gate (省略時 Always), voter_attribute: {key, value}? (省略時 = 生存者なら誰でも)}]。CastVote はいずれかの rule に合致したときだけ受理 = **デフォルト拒否** (rule 無し/不合致は却下・将来「観戦者」等を足しても安全)。voter_attribute の幻キーは validate VoteRuleAttributeUndeclared。パラメトリックな主語 (voter) は Gate 本体に入れない = Gate は entity 固定書きの純粋述語のまま"
+  cast_vote: "{ op: cast_vote, voter: EntityId (省略時 player), target: EntityId }。LLM 提案可 (票の意図)。検証 = voter/target 既知 (UnknownEntity) + 両者 生存=1 (EntityNotAlive) + vote_rules 合致 (VoteNotAllowed)。apply で GameState.votes (voter→target の BTreeMap = **一人一票を型で保証**・再投票は上書き・集計順決定論・セーブ対象・transition 非持ち越し) に書く"
+  resolve_vote: "{ op: resolve_vote }。**authored トリガー専権の効果 op 第5例** (AUTHORED_ONLY_OPS = LLM の schema から除外 + adjudicate が VoteResolveNotAllowed で却下 = 開票結果の捏造遮断)。発火時にエンジンが一箇所で原子適用: ①集計→最多得票 (同数は seed ^ 'VOTE_RNG' ^ turn の専用ストリームで抽選 = 決定論・本流ダイス非消費・ターンで変わる) ②死亡 = 生存=0 (Gate/集計の正本) + present_overrides=false (表示への投影 = presence 接地が死者の発言を防ぐ) ③role_assignment 盤面なら bookkeeping 再計算 (生存{役職}数減算・生存者数減算・各 {役職}優位 = 2×生存{役職}数 − 生存者数) ④票リセット。票が無ければ no-op"
+  parity_goal: "勝敗 Gate は式を評価しない — {役職}優位 (パリティ差分 stat) を ResolveVote が原子更新し、Gate は単体比較のみ (例: 人狼勝利 = stat_at_least 人狼優位 0 = 人狼が過半)。stat_compare 新 Gate は導入しない (計算はエンジン適用時に閉じる既存境界)"
   initial_stats: { StatKey: i64 }   # "player" の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い
   hidden_stats: [StatKey]           # 表示から隠す stat キー (内部用の帳簿 stat。spec 04 追補)。タイマー(record_turn の刻み)や repeatable カウンタを提示層(UI 状態パネル/state_brief/CLI)が skip。engine 非使用・非検証の提示ヒント。全 entity に効く。x_turn 等を主人公の可視ステータスから外す
   initial_skills: [SkillId]         # "player" の初期スキル糖衣 (閉世界宣言)。NPC は CharacterDef.skills

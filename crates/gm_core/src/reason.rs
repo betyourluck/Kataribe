@@ -56,6 +56,12 @@ pub enum RejectReason {
     PresenceSetNotAllowed { entity: String },
     /// 譲渡先がこのシナリオに存在しない entity (幻のキャラには渡せない)。
     UnknownEntity { entity: String },
+    /// 投票の voter/target が生存していない (死者は投票できず、されもしない)。
+    EntityNotAlive { entity: String },
+    /// いまの局面では voter に投票権が無い (`vote_rules` のどれにも合致しない = デフォルト拒否)。
+    VoteNotAllowed { voter: String },
+    /// 開票 (resolve_vote) は LLM が提案できない (authored トリガーの専権。開票結果の捏造遮断)。
+    VoteResolveNotAllowed,
     /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
     UnknownChallenge { challenge: String },
     /// challenge の前提条件 (`requires` Gate) が未達で、まだ挑めない (挑戦の解禁待ち)。
@@ -120,6 +126,15 @@ impl RejectReason {
             }
             RejectReason::UnknownEntity { entity } => {
                 format!("'{entity}' はこのシナリオに存在しないので渡せない")
+            }
+            RejectReason::EntityNotAlive { entity } => {
+                format!("{entity} は既に生存していない (死者は投票できず、投票の対象にもならない)")
+            }
+            RejectReason::VoteNotAllowed { voter } => {
+                format!("いまは {voter} が投票できる局面ではない (投票のフェーズと投票権を確認せよ)")
+            }
+            RejectReason::VoteResolveNotAllowed => {
+                "開票はあなたが起こせない (開票は筋書きの出来事でのみ行われる)".to_string()
             }
             RejectReason::UnknownChallenge { challenge } => {
                 format!("'{challenge}' という挑戦はこのシナリオに存在しない")
@@ -187,6 +202,15 @@ impl RejectReason {
             }
             RejectReason::UnknownChallenge { challenge } => {
                 format!("there is no challenge '{challenge}' in this scenario")
+            }
+            RejectReason::EntityNotAlive { entity } => {
+                format!("{entity} is no longer alive (the dead can neither vote nor be voted for)")
+            }
+            RejectReason::VoteNotAllowed { voter } => {
+                format!("{voter} cannot vote in the current situation (check the phase and voting rights)")
+            }
+            RejectReason::VoteResolveNotAllowed => {
+                "you cannot resolve the vote (tallying only happens as an authored event)".to_string()
             }
         }
     }

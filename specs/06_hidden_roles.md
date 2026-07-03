@@ -1,6 +1,6 @@
 # 06. 秘匿役職とランダム割り当て — 人狼盤面（グノーシア型）
 
-Status: **In Progress（rev2 査読反映済・Phase A/B 実装済）** / 2026-07-03
+Status: **In Progress（rev2 査読反映済・Phase A/B/C 実装済）** / 2026-07-03
 Scope: 社会的推理ゲーム（人狼/グノーシア型）を Kataribe のシナリオとして書けるようにする。
 役職は**ゲーム開始時にランダム割り当て**（player 含む・グノーシア式で確定）、**各キャラは
 自分以外の役職を知らず、プレイヤーも自分以外は知らない**。新機構は3つ
@@ -146,10 +146,23 @@ secret_attributes: [役職]   # ゲーム的秘匿情報の属性キー
   `SecretAttributeUndeclared`（幻属性の秘匿を弾く。role_assignment.key は宣言扱い）。
   PoC green: `secret_attributes_parse_and_validate_declaration`（gm_core）/
   `state_brief_marks_secret_attributes_and_gm_system_grounds_secrecy`（harness）。
-- **Phase C（engine）**: `CastVote` + `ResolveVote` — 開票の決定論 / 同数の seeded 抽選 /
-  LLM の resolve_vote 却下 / 死亡の原子適用（生存 stat + presence 投影 + カウンタ・差分 stat
-  再計算 + 票リセット）。
-  PoC: 全項目 Red→Green（判定基準は上記「生存表現の役割分担」）。
+- **Phase C（engine）✅2026-07-03 実装済**: `CastVote` + `ResolveVote`。実装で確定した契約:
+  - **`vote_rules`（投票権の宣言・デフォルト拒否）**: `[{when: Gate, voter_attribute: {key,value}?}]`
+    — いずれかに合致したときだけ CastVote 受理（rule 無し/不合致は `VoteNotAllowed` 却下）。
+    voter のようなパラメトリックな主語は Gate 本体に入れない（Gate は純粋述語のまま）。
+    幻キーは validate `VoteRuleAttributeUndeclared`。
+  - **票の器は `GameState.votes: BTreeMap<voter, target>`**（spec 素案の Vec から変更 —
+    **一人一票を型で保証**、再投票は上書き、集計順も決定論）。セーブ対象・transition 非持ち越し。
+  - 同数抽選は `seed ^ "VOTE_RNG" ^ turn` の専用ストリーム（決定論・本流ダイス非消費・
+    同じ顔ぶれでもターンが違えば変わりうる）。
+  - 死亡時の優位 stat は **`{役職}優位 = 2×生存{役職}数 − 生存者数`**（rev2 の
+    「村人優位 = 村人数−人狼数」から精密化 — 第三役職（占い師等）もパリティに数える
+    人狼ルールに正しく、pool のキーだけから機械生成できる）。人狼勝利 =
+    `stat_at_least 人狼優位 0`。
+  PoC green: `cast_vote_respects_vote_rules_default_deny`（夜に村人の票を弾く/昼は全員可/
+  死者は投票も被投票も不可）/ `resolve_vote_tallies_kills_and_recalculates`（死亡の原子適用
+  一式）/ `resolve_vote_tie_break_is_deterministic_per_seed`（同 seed 同結果・本流 cursor 0）/
+  `llm_proposed_resolve_vote_is_rejected`。
 - **Phase D（content）**: ドッグフード盤面 `packages/gnosia_village/`（5〜6 キャラ、
   フェーズ進行、役職 hint、勝敗 goal）。
 - **Phase E（実測・核心的未知）**: 実 LLM で議論 5〜10 ターンを通しプレイし計測:

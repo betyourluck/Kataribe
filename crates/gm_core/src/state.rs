@@ -32,7 +32,7 @@ pub const PLAYER: &str = "player";
 /// これらを除外して LLM に**そもそも提案させない** (構造的遮断)。露出したままだと LLM が使い続け、
 /// 却下→再生成ループで詰まる (presence は物語で頻出ゆえ特に問題)。adjudicate の却下ケースと対応。
 pub const AUTHORED_ONLY_OPS: &[&str] =
-    &["grant_skill", "set_attribute", "record_turn", "set_presence"];
+    &["grant_skill", "set_attribute", "record_turn", "set_presence", "resolve_vote"];
 
 /// op/gate の `entity` 省略時に使う既定値 (serde default)。
 pub fn default_entity() -> EntityId {
@@ -74,6 +74,11 @@ pub struct GameState {
     /// `transition` で持ち越す (仲間が同行する)。
     #[serde(default)]
     pub present_overrides: BTreeMap<EntityId, bool>,
+    /// **投票の器** (spec 06 Phase C)。voter → target。一人一票 (再投票は上書き)、
+    /// BTreeMap = 集計順も決定論。**セーブ対象**・`transition` では持ち越さない (票は
+    /// フェーズ内の一時状態)。書き込みは CastVote、読み出し+リセットは ResolveVote。
+    #[serde(default)]
+    pub votes: BTreeMap<EntityId, EntityId>,
     /// フラグが **true に真化したターン**の記録 (`apply` 末尾の差分で一括捕捉 — op /
     /// トリガー効果 / challenge 帰結のどの経路でも刻まれる)。提示層が chronicle (経緯ログ) の
     /// 該当ターン要約と join し「何をして立ったフラグか」を思い出す素。**セーブ対象**。
@@ -101,6 +106,7 @@ impl GameState {
             skills: BTreeMap::new(),
             attributes: BTreeMap::new(),
             present_overrides: BTreeMap::new(),
+            votes: BTreeMap::new(),
             flag_turns: BTreeMap::new(),
             taken_items: BTreeMap::new(),
         }
@@ -337,4 +343,18 @@ pub enum StateOp {
         entity: EntityId,
         present: bool,
     },
+    /// **投票の意図** (spec 06 Phase C)。voter が target の処刑/襲撃に票を入れる。
+    /// LLM 提案可 — ただし受理は「voter/target 生存 + `vote_rules` のいずれかに合致
+    /// (デフォルト拒否)」をエンジンが裁く。一人一票 ([`GameState::votes`] は voter キーの
+    /// map = 再投票は上書き)。開票は [`StateOp::ResolveVote`] の専権。`voter` 省略時は主人公。
+    CastVote {
+        #[serde(default = "default_entity")]
+        voter: EntityId,
+        target: EntityId,
+    },
+    /// **開票** (spec 06 Phase C)。**authored トリガーの専権 (効果 op 第5例)** — LLM が提案
+    /// すると `adjudicate` が却下する (開票結果の捏造遮断)。エンジンが一箇所で原子適用:
+    /// 集計 → 最多得票 (同数は seed 派生 VOTE_RNG で抽選 = 決定論) → 死亡
+    /// (生存=0 + presence false) → 役職カウンタ/優位 stat 再計算 → 票リセット。
+    ResolveVote,
 }

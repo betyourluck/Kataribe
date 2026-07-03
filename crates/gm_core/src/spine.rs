@@ -396,6 +396,8 @@ pub enum ScenarioError {
     /// `secret_attributes` のキーがどこにも宣言されていない (幻属性の秘匿)。
     /// initial_attributes / CharacterDef.attributes / role_assignment.key のいずれかで宣言する。
     SecretAttributeUndeclared { key: AttrKey },
+    /// `vote_rules` の voter_attribute キーがどこにも宣言されていない (幻属性の投票権)。
+    VoteRuleAttributeUndeclared { key: AttrKey },
     /// `role_assignment` の pool 人数合計と among の人数が一致しない (配りきれない/余る)。
     RoleAssignmentCountMismatch { pool_total: u32, among: usize },
     /// `role_assignment.among` にこのシナリオが知らない entity が居る (幻キャラへの配布)。
@@ -421,6 +423,28 @@ pub struct RoleAssignment {
     pub pool: BTreeMap<String, u32>,
     /// 配布先 (player を含められる = グノーシア式)。人数は pool の合計と一致必須。
     pub among: Vec<EntityId>,
+}
+
+/// 投票権の宣言 (spec 06 Phase C)。[`crate::StateOp::CastVote`] は vote_rules の
+/// **いずれかに合致**したときだけ受理される — rule が一つも合致しなければ却下
+/// (**デフォルト拒否**。将来「観戦者」等を足しても安全)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoteRule {
+    /// この rule が有効な状況 (フェーズフラグ等)。省略時 Always。
+    #[serde(default = "default_gate")]
+    pub when: Gate,
+    /// 投票権を持つ voter の条件 (省略時 = 生存者なら誰でも)。複数条件が要るまで単数
+    /// (必要になったら `voter_attributes: [..]` に拡張する余地を残す、査読で合意)。
+    #[serde(default)]
+    pub voter_attribute: Option<AttrRequirement>,
+}
+
+/// 属性の一致条件 (`attributes[key] == value`)。voter のようなパラメトリックな主語に
+/// 使うため Gate 本体には入れない (Gate は entity 固定書きの純粋述語のまま)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttrRequirement {
+    pub key: AttrKey,
+    pub value: String,
 }
 
 /// 名前付き goal (エンディング)。複数を authored 順に持ち、最初に成立したものが
@@ -519,6 +543,10 @@ pub struct Scenario {
     /// role_assignment.key) 必須。
     #[serde(default)]
     pub secret_attributes: BTreeSet<AttrKey>,
+    /// 投票権の宣言 (spec 06 Phase C)。CastVote はこのいずれかに合致したときだけ受理
+    /// (デフォルト拒否)。詳細は [`VoteRule`]。
+    #[serde(default)]
+    pub vote_rules: Vec<VoteRule>,
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
     pub initial_stats: BTreeMap<StatKey, i64>,
@@ -724,6 +752,17 @@ impl Scenario {
                 }
             }
         }
+        // 投票権の宣言整合 (spec 06 Phase C): voter_attribute の幻キーを load 時に弾く。
+        for rule in &self.vote_rules {
+            if let Some(va) = &rule.voter_attribute {
+                let declared = self.initial_attributes.contains_key(&va.key)
+                    || self.characters.values().any(|c| c.attributes.contains_key(&va.key))
+                    || self.role_assignment.as_ref().is_some_and(|ra| ra.key == va.key);
+                if !declared {
+                    errs.push(ScenarioError::VoteRuleAttributeUndeclared { key: va.key.clone() });
+                }
+            }
+        }
         // 秘匿属性の宣言整合 (spec 06 Phase B): 幻属性の秘匿を load 時に弾く。
         for key in &self.secret_attributes {
             let declared = self.initial_attributes.contains_key(key)
@@ -921,9 +960,14 @@ impl Scenario {
                 // bookkeeping: 勝敗集計の正本。更新は ResolveVote の専権 (Phase C)。
                 s.set_stat(entity, "生存", 1);
             }
-            // 役職別の生存カウンタ (goal の Gate が単体比較で読めるよう player に置く)。
+            // 役職別の生存カウンタと優位 stat (goal の Gate が単体比較で読めるよう player に置く)。
+            // {役職}優位 = 2×生存{役職}数 − 生存者数 (0 以上 = その役職が過半 = パリティ勝利条件)。
+            // 更新はどちらも ResolveVote の専権 (Phase C)。
+            let total = ra.among.len() as i64;
+            s.set_stat(PLAYER, "生存者数", total);
             for (role, n) in &ra.pool {
                 s.set_stat(PLAYER, &format!("生存{role}数"), i64::from(*n));
+                s.set_stat(PLAYER, &format!("{role}優位"), 2 * i64::from(*n) - total);
             }
         }
         s

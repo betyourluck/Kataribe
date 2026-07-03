@@ -1,12 +1,12 @@
 //! 正本の裁定者。LLM の提案を裁き、受理時のみ原子的に state を更新する。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::reason::RejectReason;
 use crate::spine::{ImageMode, Scenario, TakeMode};
-use crate::state::{GameState, StateDelta, StateOp, TriggerId, PLAYER};
+use crate::state::{GameState, RngState, StateDelta, StateOp, TriggerId, PLAYER};
 
 /// 裁定結果。`Reject` は**構造化された**理由を含む (文面は提示層が言語ごとに生成)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +274,41 @@ fn validate_ops(
                     entity: entity.clone(),
                 });
             }
+            StateOp::CastVote { voter, target } => {
+                // 票の意図は LLM が出せる。ただし受理は「両者生存 + vote_rules のいずれかに
+                // 合致 (デフォルト拒否)」をエンジンが裁く (spec 06 Phase C)。
+                if !scenario.knows_entity(voter) {
+                    reasons.push(RejectReason::UnknownEntity { entity: voter.clone() });
+                    continue;
+                }
+                if !scenario.knows_entity(target) {
+                    reasons.push(RejectReason::UnknownEntity { entity: target.clone() });
+                    continue;
+                }
+                if state.stat_of(voter, "生存") != 1 {
+                    reasons.push(RejectReason::EntityNotAlive { entity: voter.clone() });
+                    continue;
+                }
+                if state.stat_of(target, "生存") != 1 {
+                    reasons.push(RejectReason::EntityNotAlive { entity: target.clone() });
+                    continue;
+                }
+                let allowed = scenario.vote_rules.iter().any(|rule| {
+                    let voter_ok = match &rule.voter_attribute {
+                        None => true, // voter 条件なし = 生存者なら誰でも
+                        Some(va) => state.attribute_of(voter, &va.key) == va.value,
+                    };
+                    rule.when.eval(state) && voter_ok
+                });
+                if !allowed {
+                    reasons.push(RejectReason::VoteNotAllowed { voter: voter.clone() });
+                }
+            }
+            StateOp::ResolveVote => {
+                // 開票は authored トリガーの専権 (効果 op 第5例)。LLM 提案は常に却下
+                // (開票結果の捏造遮断)。trigger effects は apply_ops 直行なので開票できる。
+                reasons.push(RejectReason::VoteResolveNotAllowed);
+            }
         }
     }
 }
@@ -539,8 +574,76 @@ fn apply_ops(
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
                 state.present_overrides.insert(entity.clone(), *present);
             }
+            StateOp::CastVote { voter, target } => {
+                // 一人一票 (voter キーの map)。再投票は上書き。
+                state.votes.insert(voter.clone(), target.clone());
+            }
+            StateOp::ResolveVote => {
+                // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
+                // 開票 → 死亡 → カウンタ再計算 → 票リセット、を一箇所で原子適用 (spec 06 Phase C)。
+                resolve_vote(state, scenario);
+            }
         }
     }
+}
+
+/// "VOTE_RNG" (ASCII)。同数抽選の専用ストリームのラベル (role_rng と同系)。
+const VOTE_RNG_LABEL: u64 = 0x564F_5445_5F52_4E47;
+
+/// 開票の原子適用 (spec 06 Phase C)。票が無ければ何もしない。
+///
+/// 1. 集計 (BTreeMap = 決定論順) → 最多得票者。同数は **seed 派生の専用ストリーム**
+///    (seed ^ VOTE_RNG ^ turn) で抽選 — 決定論・本流ダイス列非消費・ターンごとに変わる。
+/// 2. 死亡: `生存`=0 (Gate/集計の**正本**) + `present_overrides`=false (表示への**投影**。
+///    presence 接地が「死者の発言」を防ぐ砦になる)。
+/// 3. `role_assignment` 盤面なら bookkeeping stat を再計算: `生存{役職}数` 減算・`生存者数`
+///    減算・各役職の優位 stat `{役職}優位 = 2×生存{役職}数 − 生存者数` (パリティ勝利条件を
+///    単体比較 Gate で書くための差分 stat)。
+/// 4. 票をリセット (次のフェーズへ)。
+fn resolve_vote(state: &mut GameState, scenario: &Scenario) {
+    if state.votes.is_empty() {
+        return;
+    }
+    // 集計。BTreeMap なので得票順・同数候補の並びが決定論。
+    let mut tally: BTreeMap<&String, u32> = BTreeMap::new();
+    for target in state.votes.values() {
+        *tally.entry(target).or_insert(0) += 1;
+    }
+    let max = *tally.values().max().expect("votes 非空");
+    let top: Vec<String> =
+        tally.iter().filter(|(_, n)| **n == max).map(|(t, _)| (*t).clone()).collect();
+    let victim = if top.len() == 1 {
+        top[0].clone()
+    } else {
+        // 同数はエンジンが抽選 (決定論)。turn を混ぜるので同じ顔ぶれの同数でもターンが違えば
+        // 結果が変わりうるが、同 seed 同経過なら必ず同じ。
+        let mut vote_rng = RngState {
+            seed: state.rng.seed ^ VOTE_RNG_LABEL ^ u64::from(state.turn),
+            cursor: 0,
+        };
+        top[(vote_rng.roll(top.len() as u32) - 1) as usize].clone()
+    };
+
+    // 死亡の原子適用: 正本 (生存 stat) + 表示への投影 (presence)。
+    state.set_stat(&victim, "生存", 0);
+    state.present_overrides.insert(victim.clone(), false);
+
+    // 役職カウンタ・優位 stat の再計算 (role_assignment 盤面のみ)。
+    if let Some(ra) = &scenario.role_assignment {
+        if let Some(role) = state.attributes.get(&victim).and_then(|a| a.get(&ra.key)).cloned() {
+            let key = format!("生存{role}数");
+            let n = state.stat_of(PLAYER, &key);
+            state.set_stat(PLAYER, &key, n - 1);
+        }
+        let alive = state.stat_of(PLAYER, "生存者数") - 1;
+        state.set_stat(PLAYER, "生存者数", alive);
+        for role in ra.pool.keys() {
+            let n = state.stat_of(PLAYER, &format!("生存{role}数"));
+            state.set_stat(PLAYER, &format!("{role}優位"), 2 * n - alive);
+        }
+    }
+
+    state.votes.clear();
 }
 
 /// stat を宣言された境界 `[min, max]` に収める。max 未宣言なら上限なし。
@@ -1367,6 +1470,189 @@ goal: { kind: always }
         assert_eq!(s1.stat_of(PLAYER, "生存人狼数"), 2);
         assert_eq!(s1.stat_of(PLAYER, "生存占い師数"), 1);
         assert_eq!(s1.stat_of(PLAYER, "生存村人数"), 3);
+    }
+
+    /// spec 06 Phase C の共通盤面: 人狼1・村人3、昼は誰でも・夜は人狼のみ投票可、
+    /// 「開票する」フラグで ResolveVote トリガーが発火する。
+    const VOTE_BOARD: &str = r#"
+title: t
+start: v
+allowed_flags: [投票フェーズ, 夜フェーズ, 開票する]
+role_assignment: { key: 役職, pool: { 人狼: 1, 村人: 3 }, among: [player, alice, bob, chris] }
+secret_attributes: [役職]
+vote_rules:
+  - when: { kind: flag_is, key: 投票フェーズ, value: true }
+  - when: { kind: flag_is, key: 夜フェーズ, value: true }
+    voter_attribute: { key: 役職, value: 人狼 }
+characters:
+  alice: { name: A }
+  bob: { name: B }
+  chris: { name: C }
+triggers:
+  - id: 開票
+    when: { kind: flag_is, key: 開票する, value: true }
+    effects: [{ op: resolve_vote }]
+    narration: 票が読み上げられた。
+locations:
+  v: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+
+    /// 盤面から役職で entity を引く (shuffle 後の実際の配役を読む)。
+    fn by_role(s: &GameState, role: &str) -> Vec<String> {
+        ["player", "alice", "bob", "chris"]
+            .iter()
+            .filter(|e| s.attribute_of(e, "役職") == role)
+            .map(|e| e.to_string())
+            .collect()
+    }
+
+    /// 【投票権 (spec 06 Phase C)】CastVote は vote_rules の**いずれかに合致**したときだけ
+    /// 受理される (デフォルト拒否)。昼 (投票フェーズ) は生存者なら誰でも、夜は
+    /// voter_attribute (役職=人狼) を満たす者だけ。死者は投票もされもしない。
+    #[test]
+    fn cast_vote_respects_vote_rules_default_deny() {
+        let sc = Scenario::from_yaml(VOTE_BOARD).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(3);
+        let wolf = by_role(&s, "人狼").pop().unwrap();
+        let villager = by_role(&s, "村人").pop().unwrap();
+        let vote = |voter: &str, target: &str| {
+            d(vec![StateOp::CastVote { voter: voter.into(), target: target.into() }])
+        };
+
+        // フェーズ外 = どの rule にも合致しない → デフォルト拒否。
+        match adjudicate(&s, &sc, &vote(&villager, &wolf)) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::VoteNotAllowed { .. })),
+                "フェーズ外の票はデフォルト拒否: {reasons:?}"
+            ),
+            Verdict::Accept => panic!("rule 合致なしで票が通ってはならない"),
+        }
+
+        // 昼 (投票フェーズ): 誰でも投票できる。
+        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "投票フェーズ".into(), value: true }]))
+            .unwrap();
+        assert!(adjudicate(&s, &sc, &vote(&villager, &wolf)).is_accept(), "昼は村人も投票可");
+        assert!(adjudicate(&s, &sc, &vote(&wolf, &villager)).is_accept(), "昼は人狼も投票可");
+
+        // 夜: voter_attribute (人狼) を満たす者だけ。
+        apply(
+            &mut s,
+            &sc,
+            &d(vec![
+                StateOp::SetFlag { key: "投票フェーズ".into(), value: false },
+                StateOp::SetFlag { key: "夜フェーズ".into(), value: true },
+            ]),
+        )
+        .unwrap();
+        match adjudicate(&s, &sc, &vote(&villager, &wolf)) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::VoteNotAllowed { .. })),
+                "夜に村人の票は弾かれる: {reasons:?}"
+            ),
+            Verdict::Accept => panic!("夜に村人が襲撃票を入れられてはならない"),
+        }
+        assert!(adjudicate(&s, &sc, &vote(&wolf, &villager)).is_accept(), "夜の人狼は投票可");
+
+        // 死者は投票できず、投票もされない。
+        s.set_stat(&villager, "生存", 0);
+        match adjudicate(&s, &sc, &vote(&wolf, &villager)) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(
+                    r,
+                    RejectReason::EntityNotAlive { entity } if entity == &villager
+                )),
+                "死者への票は弾かれる: {reasons:?}"
+            ),
+            Verdict::Accept => panic!("死者に投票できてはならない"),
+        }
+    }
+
+    /// 【開票 (spec 06 Phase C)】ResolveVote (authored トリガー専権) が集計し、最多得票者を
+    /// **一箇所で原子適用**で死亡させる: 生存=0 (正本) + presence false (表示投影) +
+    /// 役職カウンタ/優位 stat 再計算 + 票リセット。
+    #[test]
+    fn resolve_vote_tallies_kills_and_recalculates() {
+        let sc = Scenario::from_yaml(VOTE_BOARD).unwrap();
+        let mut s = sc.initial_state(3);
+        let wolf = by_role(&s, "人狼").pop().unwrap();
+        let voters: Vec<String> = ["player", "alice", "bob", "chris"]
+            .iter()
+            .filter(|e| **e != wolf)
+            .map(|e| e.to_string())
+            .collect();
+        assert_eq!(s.stat_of(PLAYER, "生存者数"), 4, "初期の生存者数");
+
+        // 昼フェーズで全員が人狼に投票 → 開票フラグでトリガーが resolve_vote を焚く。
+        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "投票フェーズ".into(), value: true }]))
+            .unwrap();
+        let mut ops: Vec<StateOp> = voters
+            .iter()
+            .map(|v| StateOp::CastVote { voter: v.clone(), target: wolf.clone() })
+            .collect();
+        ops.push(StateOp::SetFlag { key: "開票する".into(), value: true });
+        apply(&mut s, &sc, &d(ops)).unwrap();
+
+        assert_eq!(s.stat_of(&wolf, "生存"), 0, "最多得票の人狼が死亡 (正本)");
+        assert_eq!(s.present_overrides.get(&wolf), Some(&false), "presence へ投影 (退場)");
+        assert_eq!(s.stat_of(PLAYER, "生存人狼数"), 0, "役職カウンタ再計算");
+        assert_eq!(s.stat_of(PLAYER, "生存者数"), 3);
+        assert_eq!(s.stat_of(PLAYER, "人狼優位"), -3, "優位 = 2×生存人狼数 − 生存者数");
+        assert_eq!(s.stat_of(PLAYER, "村人優位"), 3, "優位 = 2×生存村人数 − 生存者数");
+        assert!(s.votes.is_empty(), "開票後は票がリセットされる");
+    }
+
+    /// 【同数の抽選 (spec 06 Phase C)】同数は seed 派生の専用ストリーム (VOTE_RNG) で抽選 —
+    /// 同 seed 同結果の決定論。本流ダイス列は消費しない。
+    #[test]
+    fn resolve_vote_tie_break_is_deterministic_per_seed() {
+        let run = || {
+            let sc = Scenario::from_yaml(VOTE_BOARD).unwrap();
+            let mut s = sc.initial_state(11);
+            apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "投票フェーズ".into(), value: true }]))
+                .unwrap();
+            // 2 対 2 の同数: player/alice → bob、bob/chris → alice。
+            apply(
+                &mut s,
+                &sc,
+                &d(vec![
+                    StateOp::CastVote { voter: "player".into(), target: "bob".into() },
+                    StateOp::CastVote { voter: "alice".into(), target: "bob".into() },
+                    StateOp::CastVote { voter: "bob".into(), target: "alice".into() },
+                    StateOp::CastVote { voter: "chris".into(), target: "alice".into() },
+                    StateOp::SetFlag { key: "開票する".into(), value: true },
+                ]),
+            )
+            .unwrap();
+            let cursor = s.rng.cursor;
+            let dead: Vec<String> = ["alice", "bob"]
+                .iter()
+                .filter(|e| s.stat_of(e, "生存") == 0)
+                .map(|e| e.to_string())
+                .collect();
+            (dead, cursor)
+        };
+        let (dead1, cursor1) = run();
+        let (dead2, _) = run();
+        assert_eq!(dead1.len(), 1, "同数でも犠牲者はちょうど一人: {dead1:?}");
+        assert_eq!(dead1, dead2, "同 seed の同数抽選は同結果 (決定論)");
+        assert_eq!(cursor1, 0, "抽選は本流ダイス列を消費しない");
+    }
+
+    /// 【捏造遮断 (spec 06 Phase C)】LLM が resolve_vote を提案しても却下される
+    /// (authored トリガー専権の効果 op 第5例。開票結果は捏造できない)。
+    #[test]
+    fn llm_proposed_resolve_vote_is_rejected() {
+        let sc = Scenario::from_yaml(VOTE_BOARD).unwrap();
+        let s = sc.initial_state(3);
+        match adjudicate(&s, &sc, &d(vec![StateOp::ResolveVote])) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::VoteResolveNotAllowed)),
+                "{reasons:?}"
+            ),
+            Verdict::Accept => panic!("LLM の開票提案は却下されるべき (開票の捏造遮断)"),
+        }
     }
 
     /// 【宛先別秘匿 (spec 06 Phase B)】`secret_attributes` はゲーム的秘匿情報の属性キー
