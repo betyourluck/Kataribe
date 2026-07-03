@@ -1,6 +1,6 @@
 # 06. 秘匿役職とランダム割り当て — 人狼盤面（グノーシア型）
 
-Status: **In Progress（rev2 査読反映済・Phase A/B/C 実装済）** / 2026-07-03
+Status: **In Progress（rev2 査読反映済・Phase A〜D 実装済・残 Phase E 実測）** / 2026-07-03
 Scope: 社会的推理ゲーム（人狼/グノーシア型）を Kataribe のシナリオとして書けるようにする。
 役職は**ゲーム開始時にランダム割り当て**（player 含む・グノーシア式で確定）、**各キャラは
 自分以外の役職を知らず、プレイヤーも自分以外は知らない**。新機構は3つ
@@ -163,8 +163,21 @@ secret_attributes: [役職]   # ゲーム的秘匿情報の属性キー
   死者は投票も被投票も不可）/ `resolve_vote_tallies_kills_and_recalculates`（死亡の原子適用
   一式）/ `resolve_vote_tie_break_is_deterministic_per_seed`（同 seed 同結果・本流 cursor 0）/
   `llm_proposed_resolve_vote_is_rejected`。
-- **Phase D（content）**: ドッグフード盤面 `packages/gnosia_village/`（5〜6 キャラ、
-  フェーズ進行、役職 hint、勝敗 goal）。
+- **Phase D（content + prompt surfacing）✅2026-07-03 実装済**:
+  - **投票の prompt surfacing**: `scenario_brief` が「## 投票」として vote_rules を平易な
+    日本語で列挙（「投票フェーズのとき: 生存者なら誰でも」「夜のとき: 役職=人狼 の者だけ」）、
+    GM_SYSTEM に「投票の局面では生存 NPC 全員分の票を cast_vote で並べよ（誰に入れるかは
+    性格・疑念・秘匿役職に沿って GM が決める＝推理劇の演出）／開票・処刑の帰結は先取りして
+    語るな」を刷り込み。PoC: `scenario_brief_surfaces_vote_rules_and_gm_system_grounds_voting`。
+  - **ドッグフード盤面 `packages/gnosia_village/`「霧の村」**: 6 人（player + ミラ/ゲン/サヨ/
+    トキオ/ユウレン、疑い方の性格を書き分けた profile）、pool 人狼2・占い師1・村人3。
+    フェーズ進行は既存プリミティブのみ＝`議論T`/`投票T`/`夜T` タイマー + repeatable トリガー
+    4 本（opening/vote_opens/execution/dawn）で「議論3T → 投票 → 開票・処刑 → 夜の狩り →
+    夜明け」を無限周回。タイマー・生存・役職カウンタ・優位は `hidden_stats` で一括秘匿
+    （カウンタは死者の役職を漏らすため）。goal 3 本（あなたの死/村の勝利/人狼の勝利）。
+  - **動線検証（使い捨てテスト、削除済み）**: load_package → 配役 → 議論3T → 投票開放 →
+    全員投票 → 処刑 → 夜の狩り → 夜明け → repeatable 再武装 → 二巡目投票 → 人狼全滅 =
+    `village_win` 到達、を engine だけで一周実証（一発 green）。
 - **Phase E（実測・核心的未知）**: 実 LLM で議論 5〜10 ターンを通しプレイし計測:
   ①**役職漏洩率**（地の文での直接言及/決定的示唆）②**誤占い率**（GM が secret 属性と
   矛盾する占い結果を語る）③**演じ分けの破綻**（死者の発言等 — presence 接地が検出基準）。

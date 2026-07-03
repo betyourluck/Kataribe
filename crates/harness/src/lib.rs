@@ -731,6 +731,49 @@ mod tests {
         assert!(!sb.contains("x_done"), "隠しフラグは載らない: {sb}");
     }
 
+    /// 【投票の prompt 接地 (spec 06 Phase D)】engine が CastVote を受理できても、GM が
+    /// 「いま誰が投票できるか・票は op で出す」を知らなければ実プレイで使われない
+    /// (challenge の実プレイ surfacing と同じギャップ)。scenario_brief が vote_rules を
+    /// 平易な日本語で列挙し、GM_SYSTEM が「投票の局面では生存 NPC 全員分の票を
+    /// cast_vote で並べよ / 開票はあなたが起こせない」を刷り込む。
+    #[test]
+    fn scenario_brief_surfaces_vote_rules_and_gm_system_grounds_voting() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: v\n",
+            "allowed_flags: [投票フェーズ, 夜フェーズ]\n",
+            "role_assignment: { key: 役職, pool: { 人狼: 1, 村人: 1 }, among: [player, alice] }\n",
+            "vote_rules:\n",
+            "  - when: { kind: flag_is, key: 投票フェーズ, value: true }\n",
+            "  - when: { kind: flag_is, key: 夜フェーズ, value: true }\n",
+            "    voter_attribute: { key: 役職, value: 人狼 }\n",
+            "characters: { alice: { name: A } }\n",
+            "locations: { v: { description: d, items: {}, exits: [] } }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let brief = prompt::scenario_brief(&sc);
+        assert!(brief.contains("## 投票"), "投票の節が出る: {brief}");
+        assert!(
+            brief.contains("投票フェーズ") && brief.contains("誰でも"),
+            "voter 条件なしの rule は「誰でも」: {brief}"
+        );
+        assert!(
+            brief.contains("役職=人狼"),
+            "voter_attribute 付きの rule は条件を surface: {brief}"
+        );
+
+        let g = prompt::GM_SYSTEM;
+        assert!(g.contains("cast_vote"), "GM_SYSTEM が cast_vote の使用を義務化する");
+        assert!(
+            g.contains("全員分") || g.contains("並べ"),
+            "投票の局面で NPC 全員分の票を並べる規律"
+        );
+        assert!(
+            g.contains("開票") && (g.contains("起こせない") || g.contains("筋書き")),
+            "開票は GM が起こせないことを刷り込む"
+        );
+    }
+
     /// 【秘匿属性の prompt 接地 (spec 06 Phase B)】GM は secret 属性を全員分見る (ゲームを
     /// 回すのに必要) が、**秘匿情報である注記**が添えられ、GM_SYSTEM が演じ分け規律
     /// (互いに知らない/地の文で明かさない/役職能力の結果は当人だけの知識) を刷り込む。

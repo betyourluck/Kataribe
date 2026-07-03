@@ -223,6 +223,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+
     /// dogfood パッケージ (packages/houkago)。
     fn pkg_dir() -> PathBuf {
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/houkago")).to_path_buf()
