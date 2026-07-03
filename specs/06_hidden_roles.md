@@ -1,6 +1,6 @@
 # 06. 秘匿役職とランダム割り当て — 人狼盤面（グノーシア型）
 
-Status: **Draft rev2（査読1回反映・実装未着手）** / 2026-07-03
+Status: **In Progress（rev2 査読反映済・Phase A 実装済）** / 2026-07-03
 Scope: 社会的推理ゲーム（人狼/グノーシア型）を Kataribe のシナリオとして書けるようにする。
 役職は**ゲーム開始時にランダム割り当て**（player 含む・グノーシア式で確定）、**各キャラは
 自分以外の役職を知らず、プレイヤーも自分以外は知らない**。新機構は3つ
@@ -133,9 +133,12 @@ secret_attributes: [役職]   # ゲーム的秘匿情報の属性キー
 
 ## Phase 分割
 
-- **Phase A（engine）**: `role_assignment` — `role_rng`（専用ストリーム）による決定論 shuffle +
-  bookkeeping stat 自動生成 + validate（人数整合/幻キャラ）。
-  PoC: 同 seed 同配役 / 異 seed 異配役 / **本流 `state.rng` の cursor が動かない** / validate 弾き。
+- **Phase A（engine）✅2026-07-03 実装済**: `role_assignment` — `role_rng`（seed ^ "ROLE_RNG" の
+  専用ストリーム）による Fisher–Yates 決定論 shuffle + bookkeeping stat 自動生成（生存=1 /
+  `生存{役職}数` を player に）+ validate（人数整合/幻キャラ/重複配布）。
+  PoC green: `role_assignment_deals_roles_deterministically_without_touching_main_rng`（同 seed
+  同配役・pool どおりの人数・**本流 cursor 0**・20 seed で複数配役）/
+  `validate_rejects_role_assignment_mismatches`。
 - **Phase B（提示層）**: `secret_attributes` — 宛先別フィルタ（GM=全員・秘匿注記 /
   player UI=本人のみ）+ プロフィールカード + GM_SYSTEM 演じ分け規律。
   PoC: DTO に NPC 役職が出ない / player 自身は出る / state_brief には注記付きで全員分出る。

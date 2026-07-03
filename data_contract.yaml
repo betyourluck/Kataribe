@@ -85,6 +85,16 @@ Scenario:
   flag_vocabulary: "使えるフラグの語彙提示 (2026-07-03)。authored_only_flags()=トリガー効果/challenge 帰結 (on_success/on_failure/tier) が書くフラグ (宣言走査で機械判別)。usable_flags()=allowed−専権。scenario_brief が「状態フラグ (set_flag で立てられるのはこれだけ)」として id+title+hint 付きで列挙=幻フラグの発明を断つ (filter_authored_only_ops のフラグ版。専権は見せない=先取り set_flag の誘惑を作らない)。RejectReason::FlagNotAllowed{key, available} も同語彙を運び self-repair が一発修正 (#31 同型)"
   flag_turns: "GameState.flag_turns: {FlagKey: u32} (2026-07-03)。フラグが true に真化したターンを apply 末尾の差分で一括記録 (op/トリガー/challenge 帰結の全経路捕捉)。セーブ対象・transition は生き残ったフラグ分のみ持ち越し。app が chronicle の該当ターン要約と join し FlagView.cause「何をして立ったか」を UI (hover) に出す"
   hidden_flags: [FlagKey]           # 表示から隠すフラグ (hidden_stats のフラグ版, 2026-07-03)。タイマーの armed フラグ (x_done 等) のような変数用の帳簿フラグを、提示層 3 経路 (UI フラグ一覧 / state_brief の立っている状態 / scenario_brief の語彙節) が一切出さない。engine 非使用・非検証 = gate/トリガー評価は不変。キーは allowed_flags 必須 (validate HiddenFlagUndeclared)
+  role_assignment: RoleAssignment?  # 役職のランダム割り当て (spec 06 Phase A, 2026-07-03)
+
+# --- 役職のランダム割り当て (spec 06 Phase A。人狼/グノーシア型の秘匿役職盤面) ----
+RoleAssignment:
+  key: AttrKey                      # 書き込む属性キー (例: 役職)。この宣言自体が属性キー宣言を兼ねる (値の閉集合 = pool のキー)
+  pool: { String: u32 }             # 役職 → 人数。キー順 (BTreeMap) 展開 → Fisher–Yates で決定論 shuffle
+  among: [EntityId]                 # 配布先 (player を含められる = グノーシア式)。人数は pool 合計と一致必須
+  mechanism: "initial_state(seed) が seed ^ 'ROLE_RNG' の専用ストリーム (role_rng) で shuffle — 本流 state.rng は消費しない (配役の有無でプレイ中のダイス列が変わらない)。同 seed 同配役 = 再現・監査可能。割り当てはエンジン専権 (LLM 関与不可 =「出目は正本」の配役版)。set_attribute は authored 専権のままなので LLM は役職を書き換えられない"
+  bookkeeping: "割り当てと同時に自動生成: 各 among entity の stat 生存=1、player に役職別カウンタ 生存{役職}数 = pool 人数。更新は ResolveVote の専権 (Phase C)"
+  validate: "RoleAssignmentCountMismatch (pool 合計 ≠ among 人数) / RoleAssignmentUnknownEntity (幻キャラ) / RoleAssignmentDuplicateEntity (重複配布) を load 時に弾く"
   initial_stats: { StatKey: i64 }   # "player" の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い
   hidden_stats: [StatKey]           # 表示から隠す stat キー (内部用の帳簿 stat。spec 04 追補)。タイマー(record_turn の刻み)や repeatable カウンタを提示層(UI 状態パネル/state_brief/CLI)が skip。engine 非使用・非検証の提示ヒント。全 entity に効く。x_turn 等を主人公の可視ステータスから外す
   initial_skills: [SkillId]         # "player" の初期スキル糖衣 (閉世界宣言)。NPC は CharacterDef.skills

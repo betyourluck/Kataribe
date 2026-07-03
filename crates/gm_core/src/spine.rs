@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
-    SkillId, StateOp, StatKey, TriggerId, DEFAULT_GOAL, PLAYER,
+    RngState, SkillId, StateOp, StatKey, TriggerId, DEFAULT_GOAL, PLAYER,
 };
 
 /// state に対して評価される条件。
@@ -393,8 +393,31 @@ pub enum ScenarioError {
         entity: EntityId,
         key: AttrKey,
     },
+    /// `role_assignment` の pool 人数合計と among の人数が一致しない (配りきれない/余る)。
+    RoleAssignmentCountMismatch { pool_total: u32, among: usize },
+    /// `role_assignment.among` にこのシナリオが知らない entity が居る (幻キャラへの配布)。
+    RoleAssignmentUnknownEntity { entity: EntityId },
+    /// `role_assignment.among` に同じ entity が二度居る (重複配布)。
+    RoleAssignmentDuplicateEntity { entity: EntityId },
     /// 勝利条件が無い (`goal` も `goals` も未指定)。到達不能なシナリオ。
     NoGoal,
+}
+
+/// 役職のランダム割り当て (spec 06 Phase A)。人狼/グノーシア型の秘匿役職盤面の初期化。
+///
+/// **割り当てはエンジンの専権** — [`Scenario::initial_state`] が seed から**派生した専用
+/// ストリーム** (role_rng) で決定論 shuffle し、各 entity の `attributes[key]` に書く。
+/// LLM は関与できない (「出目は正本」の配役版)。同 seed 同配役 = 再現・監査可能。
+/// 本流 `state.rng` は消費しない (配役の有無でプレイ中のダイス列が変わらない)。
+/// この宣言自体が属性キーの宣言を兼ねる (値の閉集合 = pool のキー)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleAssignment {
+    /// 書き込む属性キー (例: 役職)。
+    pub key: AttrKey,
+    /// 役職 → 人数。キー順 (BTreeMap) に展開してから shuffle するので決定論。
+    pub pool: BTreeMap<String, u32>,
+    /// 配布先 (player を含められる = グノーシア式)。人数は pool の合計と一致必須。
+    pub among: Vec<EntityId>,
 }
 
 /// 名前付き goal (エンディング)。複数を authored 順に持ち、最初に成立したものが
@@ -481,6 +504,10 @@ pub struct Scenario {
     /// キーは `allowed_flags` 宣言必須。
     #[serde(default)]
     pub hidden_flags: BTreeSet<FlagKey>,
+    /// 役職のランダム割り当て (spec 06 Phase A)。宣言があれば [`Self::initial_state`] が
+    /// 専用ストリームで shuffle して配る。詳細は [`RoleAssignment`]。
+    #[serde(default)]
+    pub role_assignment: Option<RoleAssignment>,
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
     pub initial_stats: BTreeMap<StatKey, i64>,
@@ -686,6 +713,27 @@ impl Scenario {
                 }
             }
         }
+        // 役職割り当ての整合 (spec 06 Phase A): 人数一致・幻キャラ・重複配布を load 時に弾く。
+        if let Some(ra) = &self.role_assignment {
+            let pool_total: u32 = ra.pool.values().sum();
+            if pool_total as usize != ra.among.len() {
+                errs.push(ScenarioError::RoleAssignmentCountMismatch {
+                    pool_total,
+                    among: ra.among.len(),
+                });
+            }
+            let mut seen = BTreeSet::new();
+            for entity in &ra.among {
+                if entity != PLAYER && !self.characters.contains_key(entity) {
+                    errs.push(ScenarioError::RoleAssignmentUnknownEntity { entity: entity.clone() });
+                }
+                if !seen.insert(entity) {
+                    errs.push(ScenarioError::RoleAssignmentDuplicateEntity {
+                        entity: entity.clone(),
+                    });
+                }
+            }
+        }
         // 勝利条件は最低一つ要る (goal 単一 or goals 名前付き)。
         if self.goal.is_none() && self.goals.is_empty() {
             errs.push(ScenarioError::NoGoal);
@@ -830,6 +878,32 @@ impl Scenario {
             }
             for (k, v) in &def.attributes {
                 s.set_attribute(eid, k, v);
+            }
+        }
+        // 役職のランダム割り当て (spec 06 Phase A)。seed 派生の専用ストリームで shuffle し、
+        // 本流 s.rng は消費しない (配役の有無でプレイ中のダイス列が変わらない)。
+        if let Some(ra) = &self.role_assignment {
+            // "ROLE_RNG" (ASCII) を seed に混ぜた別系列。決定論 = 同 seed 同配役。
+            const ROLE_RNG_LABEL: u64 = 0x524F_4C45_5F52_4E47;
+            let mut role_rng = RngState { seed: seed ^ ROLE_RNG_LABEL, cursor: 0 };
+            // pool をキー順に展開 (BTreeMap = 決定論) してから Fisher–Yates で混ぜる。
+            let mut roles: Vec<&String> = ra
+                .pool
+                .iter()
+                .flat_map(|(role, n)| std::iter::repeat(role).take(*n as usize))
+                .collect();
+            for i in (1..roles.len()).rev() {
+                let j = (role_rng.roll((i + 1) as u32) - 1) as usize;
+                roles.swap(i, j);
+            }
+            for (entity, role) in ra.among.iter().zip(roles) {
+                s.set_attribute(entity, &ra.key, role);
+                // bookkeeping: 勝敗集計の正本。更新は ResolveVote の専権 (Phase C)。
+                s.set_stat(entity, "生存", 1);
+            }
+            // 役職別の生存カウンタ (goal の Gate が単体比較で読めるよう player に置く)。
+            for (role, n) in &ra.pool {
+                s.set_stat(PLAYER, &format!("生存{role}数"), i64::from(*n));
             }
         }
         s

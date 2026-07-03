@@ -1307,6 +1307,117 @@ goal: { kind: always }
         assert_eq!(s.flag_turns.get("z_flag"), Some(&2), "トリガー効果で立った z も同ターンに記録");
     }
 
+    /// 【ランダム役職割り当て (spec 06 Phase A)】`role_assignment` が seed **派生の専用
+    /// ストリーム** (role_rng) で役職を shuffle して attributes に配る。同 seed 同配役
+    /// (決定論・監査可能)、本流 `state.rng` は消費しない (配役の有無でプレイ中のダイス列が
+    /// 変わらない)、bookkeeping stat (各自の 生存=1・役職別カウンタ) を自動生成する。
+    /// 割り当てはエンジンの専権 — LLM は関与できない (「出目は正本」の配役版)。
+    #[test]
+    fn role_assignment_deals_roles_deterministically_without_touching_main_rng() {
+        let yaml = r#"
+title: t
+start: village
+role_assignment:
+  key: 役職
+  pool: { 人狼: 2, 占い師: 1, 村人: 3 }
+  among: [player, alice, bob, chris, diana, eri]
+characters:
+  alice: { name: A }
+  bob: { name: B }
+  chris: { name: C }
+  diana: { name: D }
+  eri: { name: E }
+locations:
+  village: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "整合した role_assignment は健全: {:?}", sc.validate());
+        let members = ["player", "alice", "bob", "chris", "diana", "eri"];
+
+        let s1 = sc.initial_state(7);
+        let s2 = sc.initial_state(7);
+        let roles = |s: &GameState| -> Vec<String> {
+            members
+                .iter()
+                .map(|e| s.attributes.get(*e).and_then(|a| a.get("役職")).cloned().unwrap_or_default())
+                .collect()
+        };
+        // 決定論: 同 seed 同配役。
+        assert_eq!(roles(&s1), roles(&s2), "同 seed は同配役 (再現・監査可能)");
+        // 全員に配られ、人数が pool どおり。
+        let mut counts: std::collections::BTreeMap<String, u32> = Default::default();
+        for r in roles(&s1) {
+            assert!(!r.is_empty(), "全員に役職が配られる");
+            *counts.entry(r).or_insert(0) += 1;
+        }
+        assert_eq!(counts.get("人狼"), Some(&2));
+        assert_eq!(counts.get("占い師"), Some(&1));
+        assert_eq!(counts.get("村人"), Some(&3));
+        // 本流 rng は無傷 (専用ストリーム)。
+        assert_eq!(s1.rng.cursor, 0, "配役が本流のダイス列を消費しない");
+        // seed を変えると配役が変わりうる (shuffle が効いている。20 seed 中 2 通り以上)。
+        let distinct: std::collections::BTreeSet<Vec<String>> =
+            (0..20).map(|seed| roles(&sc.initial_state(seed))).collect();
+        assert!(distinct.len() >= 2, "seed で配役が変わる (shuffle 実効): {distinct:?}");
+        // bookkeeping stat の自動生成 (更新は ResolveVote の専権 = Phase C)。
+        for e in members {
+            assert_eq!(s1.stat_of(e, "生存"), 1, "{e} の生存=1");
+        }
+        assert_eq!(s1.stat_of(PLAYER, "生存人狼数"), 2);
+        assert_eq!(s1.stat_of(PLAYER, "生存占い師数"), 1);
+        assert_eq!(s1.stat_of(PLAYER, "生存村人数"), 3);
+    }
+
+    /// 【role_assignment の整合性】人数不整合・幻キャラ・重複配布は validate が load 時に弾く。
+    #[test]
+    fn validate_rejects_role_assignment_mismatches() {
+        // pool 合計 (3) ≠ among 人数 (2)。
+        let yaml = r#"
+title: t
+start: v
+role_assignment: { key: 役職, pool: { 人狼: 1, 村人: 2 }, among: [player, alice] }
+characters: { alice: { name: A } }
+locations: { v: { description: d, items: {}, exits: [] } }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(
+                e,
+                crate::spine::ScenarioError::RoleAssignmentCountMismatch { .. }
+            )),
+            "人数不整合を弾く: {:?}",
+            sc.validate()
+        );
+
+        // among に幻キャラ + 重複。
+        let yaml = r#"
+title: t
+start: v
+role_assignment: { key: 役職, pool: { 人狼: 1, 村人: 2 }, among: [player, ghost, player] }
+characters: { alice: { name: A } }
+locations: { v: { description: d, items: {}, exits: [] } }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let errs = sc.validate();
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                crate::spine::ScenarioError::RoleAssignmentUnknownEntity { entity } if entity == "ghost"
+            )),
+            "幻キャラへの配布を弾く: {errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                crate::spine::ScenarioError::RoleAssignmentDuplicateEntity { entity } if entity == "player"
+            )),
+            "重複配布を弾く: {errs:?}"
+        );
+    }
+
     /// 【内部フラグの秘匿 (hidden_flags)】タイマーの armed フラグ (`x_done` 等) のような
     /// **変数として使う帳簿フラグ**を提示層 (UI 一覧 / state_brief / 語彙節) から隠す宣言。
     /// `hidden_stats` のフラグ版 — engine 非使用・非検証、gate/トリガーは従来どおり効く。
