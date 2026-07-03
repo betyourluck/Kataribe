@@ -380,6 +380,11 @@ fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> St
                 .get(id)
                 .map(|a| {
                     a.iter()
+                        // secret 属性 (役職等, spec 06) はプレイヤー UI では本人分のみ。
+                        // NPC 分は DTO 段階で落とす (隠しゴールと同じネタバレ衛生)。
+                        .filter(|(k, _)| {
+                            id == PLAYER || !scenario.secret_attributes.contains(*k)
+                        })
                         .map(|(k, v)| StatStrView { key: k.clone(), value: v.clone() })
                         .collect()
                 })

@@ -86,6 +86,7 @@ Scenario:
   flag_turns: "GameState.flag_turns: {FlagKey: u32} (2026-07-03)。フラグが true に真化したターンを apply 末尾の差分で一括記録 (op/トリガー/challenge 帰結の全経路捕捉)。セーブ対象・transition は生き残ったフラグ分のみ持ち越し。app が chronicle の該当ターン要約と join し FlagView.cause「何をして立ったか」を UI (hover) に出す"
   hidden_flags: [FlagKey]           # 表示から隠すフラグ (hidden_stats のフラグ版, 2026-07-03)。タイマーの armed フラグ (x_done 等) のような変数用の帳簿フラグを、提示層 3 経路 (UI フラグ一覧 / state_brief の立っている状態 / scenario_brief の語彙節) が一切出さない。engine 非使用・非検証 = gate/トリガー評価は不変。キーは allowed_flags 必須 (validate HiddenFlagUndeclared)
   role_assignment: RoleAssignment?  # 役職のランダム割り当て (spec 06 Phase A, 2026-07-03)
+  secret_attributes: [AttrKey]      # ゲーム的秘匿情報の属性キー (spec 06 Phase B, 2026-07-03)。hidden_* (全提示層から隠す帳簿) とは別軸の宛先別可視性: GM=全員分 (state_brief が〔秘匿〕注記付きで surface、演じ分け規律は GM_SYSTEM が刷り込み) / プレイヤー UI=本人分のみ (app state_view が NPC 分を DTO 段階で落とす=ネタバレ衛生) / 登場人物どうし=不可 (prompt 規律)。engine 非解釈 = gate/トリガー評価は不変。キーは initial_attributes / CharacterDef.attributes / role_assignment.key のいずれかで宣言必須 (validate SecretAttributeUndeclared)
 
 # --- 役職のランダム割り当て (spec 06 Phase A。人狼/グノーシア型の秘匿役職盤面) ----
 RoleAssignment:

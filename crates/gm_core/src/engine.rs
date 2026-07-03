@@ -1369,6 +1369,43 @@ goal: { kind: always }
         assert_eq!(s1.stat_of(PLAYER, "生存村人数"), 3);
     }
 
+    /// 【宛先別秘匿 (spec 06 Phase B)】`secret_attributes` はゲーム的秘匿情報の属性キー
+    /// (役職等)。hidden_* (全提示層から隠す帳簿) とは別軸 — GM は全員分を見る (注記付き、
+    /// 提示は harness/app の責務)、プレイヤー UI は本人分のみ。engine は宣言を運ぶだけで
+    /// gate/トリガー評価は不変。キーはどこかで宣言済み (initial_attributes /
+    /// CharacterDef.attributes / role_assignment.key) 必須。
+    #[test]
+    fn secret_attributes_parse_and_validate_declaration() {
+        let yaml = r#"
+title: t
+start: v
+role_assignment: { key: 役職, pool: { 人狼: 1, 村人: 1 }, among: [player, alice] }
+secret_attributes: [役職]
+characters: { alice: { name: A } }
+locations: { v: { description: d, items: {}, exits: [] } }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "role_assignment.key の秘匿は健全: {:?}", sc.validate());
+        assert!(sc.secret_attributes.contains("役職"));
+
+        // どこにも宣言されていないキーの秘匿は幻属性 → validate が弾く。
+        let yaml = r#"
+title: t
+start: v
+secret_attributes: [幽霊属性]
+locations: { v: { description: d, items: {}, exits: [] } }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::SecretAttributeUndeclared { key } if key == "幽霊属性")),
+            "未宣言キーの秘匿を弾く: {:?}",
+            sc.validate()
+        );
+    }
+
     /// 【role_assignment の整合性】人数不整合・幻キャラ・重複配布は validate が load 時に弾く。
     #[test]
     fn validate_rejects_role_assignment_mismatches() {

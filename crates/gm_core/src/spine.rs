@@ -393,6 +393,9 @@ pub enum ScenarioError {
         entity: EntityId,
         key: AttrKey,
     },
+    /// `secret_attributes` のキーがどこにも宣言されていない (幻属性の秘匿)。
+    /// initial_attributes / CharacterDef.attributes / role_assignment.key のいずれかで宣言する。
+    SecretAttributeUndeclared { key: AttrKey },
     /// `role_assignment` の pool 人数合計と among の人数が一致しない (配りきれない/余る)。
     RoleAssignmentCountMismatch { pool_total: u32, among: usize },
     /// `role_assignment.among` にこのシナリオが知らない entity が居る (幻キャラへの配布)。
@@ -508,6 +511,14 @@ pub struct Scenario {
     /// 専用ストリームで shuffle して配る。詳細は [`RoleAssignment`]。
     #[serde(default)]
     pub role_assignment: Option<RoleAssignment>,
+    /// **ゲーム的秘匿情報**の属性キー (spec 06 Phase B。役職等)。`hidden_*` (全提示層から
+    /// 隠す帳簿) とは別軸の宛先別可視性: **GM=全員分** (秘匿注記付き、ゲームを回すのに必要) /
+    /// **プレイヤー UI=本人分のみ** (NPC 分は DTO 段階で落とす) / **登場人物どうし=不可**
+    /// (GM の演じ分け=prompt 規律)。engine は宣言を運ぶだけで gate/トリガー評価は不変。
+    /// キーはどこかで宣言済み (initial_attributes / CharacterDef.attributes /
+    /// role_assignment.key) 必須。
+    #[serde(default)]
+    pub secret_attributes: BTreeSet<AttrKey>,
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
     pub initial_stats: BTreeMap<StatKey, i64>,
@@ -711,6 +722,15 @@ impl Scenario {
                         });
                     }
                 }
+            }
+        }
+        // 秘匿属性の宣言整合 (spec 06 Phase B): 幻属性の秘匿を load 時に弾く。
+        for key in &self.secret_attributes {
+            let declared = self.initial_attributes.contains_key(key)
+                || self.characters.values().any(|c| c.attributes.contains_key(key))
+                || self.role_assignment.as_ref().is_some_and(|ra| &ra.key == key);
+            if !declared {
+                errs.push(ScenarioError::SecretAttributeUndeclared { key: key.clone() });
             }
         }
         // 役職割り当ての整合 (spec 06 Phase A): 人数一致・幻キャラ・重複配布を load 時に弾く。

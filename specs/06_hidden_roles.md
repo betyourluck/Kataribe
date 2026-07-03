@@ -1,6 +1,6 @@
 # 06. 秘匿役職とランダム割り当て — 人狼盤面（グノーシア型）
 
-Status: **In Progress（rev2 査読反映済・Phase A 実装済）** / 2026-07-03
+Status: **In Progress（rev2 査読反映済・Phase A/B 実装済）** / 2026-07-03
 Scope: 社会的推理ゲーム（人狼/グノーシア型）を Kataribe のシナリオとして書けるようにする。
 役職は**ゲーム開始時にランダム割り当て**（player 含む・グノーシア式で確定）、**各キャラは
 自分以外の役職を知らず、プレイヤーも自分以外は知らない**。新機構は3つ
@@ -139,9 +139,13 @@ secret_attributes: [役職]   # ゲーム的秘匿情報の属性キー
   PoC green: `role_assignment_deals_roles_deterministically_without_touching_main_rng`（同 seed
   同配役・pool どおりの人数・**本流 cursor 0**・20 seed で複数配役）/
   `validate_rejects_role_assignment_mismatches`。
-- **Phase B（提示層）**: `secret_attributes` — 宛先別フィルタ（GM=全員・秘匿注記 /
-  player UI=本人のみ）+ プロフィールカード + GM_SYSTEM 演じ分け規律。
-  PoC: DTO に NPC 役職が出ない / player 自身は出る / state_brief には注記付きで全員分出る。
+- **Phase B（提示層）✅2026-07-03 実装済**: `secret_attributes` — 宛先別フィルタ
+  （GM=`state_brief` が〔秘匿〕注記付きで全員分 / player UI=`state_view` が NPC 分を
+  DTO 段階で落とす=プロフィールカードも自動で秘匿）+ GM_SYSTEM 演じ分け規律
+  （互いに知らない/地の文で明かさない/役職能力の結果は当人だけの知識）+ validate
+  `SecretAttributeUndeclared`（幻属性の秘匿を弾く。role_assignment.key は宣言扱い）。
+  PoC green: `secret_attributes_parse_and_validate_declaration`（gm_core）/
+  `state_brief_marks_secret_attributes_and_gm_system_grounds_secrecy`（harness）。
 - **Phase C（engine）**: `CastVote` + `ResolveVote` — 開票の決定論 / 同数の seeded 抽選 /
   LLM の resolve_vote 却下 / 死亡の原子適用（生存 stat + presence 投影 + カウンタ・差分 stat
   再計算 + 票リセット）。

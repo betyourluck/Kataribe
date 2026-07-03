@@ -731,6 +731,34 @@ mod tests {
         assert!(!sb.contains("x_done"), "隠しフラグは載らない: {sb}");
     }
 
+    /// 【秘匿属性の prompt 接地 (spec 06 Phase B)】GM は secret 属性を全員分見る (ゲームを
+    /// 回すのに必要) が、**秘匿情報である注記**が添えられ、GM_SYSTEM が演じ分け規律
+    /// (互いに知らない/地の文で明かさない/役職能力の結果は当人だけの知識) を刷り込む。
+    #[tokio::test]
+    async fn state_brief_marks_secret_attributes_and_gm_system_grounds_secrecy() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: v\n",
+            "role_assignment: { key: 役職, pool: { 人狼: 1, 村人: 1 }, among: [player, alice] }\n",
+            "secret_attributes: [役職]\n",
+            "characters: { alice: { name: A } }\n",
+            "locations: { v: { description: d, items: {}, exits: [] } }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let s = sc.initial_state(1);
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(sb.contains("役職="), "GM には secret 属性が全員分見える: {sb}");
+        assert!(sb.contains("〔秘匿〕"), "secret 属性に秘匿注記が付く: {sb}");
+
+        let g = prompt::GM_SYSTEM;
+        assert!(g.contains("秘匿"), "GM_SYSTEM が秘匿情報の扱いを刷り込む");
+        assert!(
+            g.contains("互いに知らない") || g.contains("自分の分だけ"),
+            "登場人物どうしは互いに知らない前提の演じ分けを刷り込む"
+        );
+        assert!(g.contains("地の文"), "地の文で明かさない規律を刷り込む");
+    }
+
     /// 【presence の prompt 接地】GM は「いま誰がこの場に居るか」を presence でしか知れない —
     /// 場所説明文は静的 (退場後もキャラが書かれたまま) なので、`state_brief` が**実効 presence**
     /// (base ± override) を毎ターン surface し、GM_SYSTEM が「一覧が唯一の真実 (説明文より優先)・
