@@ -68,6 +68,14 @@ pub enum Gate {
         key: StatKey,
         turns: u32,
     },
+    /// 指定キャラの票が**現在の票箱に入っている** (spec 06 / #38)。`entity` 省略時は主人公。
+    /// 「プレイヤーが投票したら開票」をイベント駆動で書く述語 — `resolve_vote` が票を
+    /// リセットするので開票後は自然に偽へ戻り、repeatable トリガーは次サイクルで再武装する。
+    /// タイマー (`turns_since`) と `any` で束ねれば「票が入るか N ターンで強制開票」も書ける。
+    HasVoted {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+    },
     /// すべての子条件が通る (AND)。
     All { of: Vec<Gate> },
     /// いずれかの子条件が通る (OR)。
@@ -90,6 +98,7 @@ impl Gate {
                 // (stat は i64・未設定 0)。記録前は turn - 0 = turn なので flag と束ねて守る。
                 i64::from(s.turn) - s.stat_of(entity, key) >= i64::from(*turns)
             }
+            Gate::HasVoted { entity } => s.votes.contains_key(entity),
             Gate::All { of } => of.iter().all(|g| g.eval(s)),
             Gate::Any { of } => of.iter().any(|g| g.eval(s)),
         }

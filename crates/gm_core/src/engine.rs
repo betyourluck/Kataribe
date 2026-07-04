@@ -1685,6 +1685,78 @@ goal: { kind: always }
         }
     }
 
+    /// 【HasVoted gate — 投票のイベント駆動終了 (#38)】タイマー駆動 (`turns_since 投票T`) だけ
+    /// だと「プレイヤーが誰も指名しないまま空開票で流れる」— プレイヤーの票を**イベント**として
+    /// 開票を発火できる純粋述語 `has_voted` を新設。resolve_vote が votes をリセットするので
+    /// gate は開票後に自然と偽へ戻り、repeatable トリガーは次サイクルで再武装する (リセット op 不要)。
+    #[test]
+    fn has_voted_gate_fires_execution_on_player_vote() {
+        let sc = Scenario::from_yaml(
+            r#"
+title: t
+start: v
+allowed_flags: [投票フェーズ]
+role_assignment: { key: 役職, pool: { 人狼: 1, 村人: 3 }, among: [player, alice, bob, chris] }
+vote_rules:
+  - when: { kind: flag_is, key: 投票フェーズ, value: true }
+triggers:
+  - id: execution
+    repeatable: true
+    when:
+      kind: all
+      of:
+        - { kind: flag_is, key: 投票フェーズ, value: true }
+        - { kind: has_voted }
+    effects:
+      - { op: resolve_vote }
+      - { op: set_flag, key: 投票フェーズ, value: false }
+    narration: 開票された。
+characters:
+  alice: { name: A }
+  bob: { name: B }
+  chris: { name: C }
+locations:
+  v: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#,
+        )
+        .unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(3);
+        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "投票フェーズ".into(), value: true }]))
+            .unwrap();
+
+        // NPC の票だけでは発火しない — プレイヤーの票がイベント。
+        let out = apply(
+            &mut s,
+            &sc,
+            &d(vec![StateOp::CastVote { voter: "alice".into(), target: "bob".into() }]),
+        )
+        .unwrap();
+        assert!(out.fired.is_empty(), "player 未投票では開票しない: {:?}", out.fired);
+        assert!(s.flag("投票フェーズ"), "フェーズは開いたまま");
+
+        // プレイヤーの票が入った瞬間、同一 apply で開票 (処刑・票リセット・フェーズ閉じ) まで走る。
+        let out = apply(
+            &mut s,
+            &sc,
+            &d(vec![
+                StateOp::CastVote { voter: "bob".into(), target: "alice".into() },
+                StateOp::CastVote { voter: "player".into(), target: "bob".into() },
+            ]),
+        )
+        .unwrap();
+        assert!(
+            out.fired.iter().any(|f| f.id == "execution"),
+            "player の票で開票が発火: {:?}",
+            out.fired
+        );
+        // 票: alice→bob (前ターン持ち越し), bob→alice, player→bob = bob 2票で処刑。
+        assert_eq!(s.stat_of("bob", "生存"), 0, "最多得票の bob が死ぬ");
+        assert!(s.votes.is_empty(), "開票で票はリセット = has_voted は自然に偽へ再武装");
+        assert!(!s.flag("投票フェーズ"), "フェーズが閉じる");
+    }
+
     /// 【投票の無い盤面 / 生存 stat の無い盤面 (実プレイ #35)】(a) `vote_rules` の無い盤面への
     /// cast_vote は「この盤面に投票は無い」(VoteNotDeclared) で却下する — 実プレイでは
     /// EntityNotAlive (「mayu は既に生存していない」) が出た: **未宣言の 生存 stat を 0=死者と

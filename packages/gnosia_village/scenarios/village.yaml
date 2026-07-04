@@ -53,13 +53,18 @@ triggers:
       - { op: record_turn, key: 投票T }
     narration: 日が傾いた。処刑の投票の刻だ — 各々、最も疑わしい者の名を挙げよ。
 
+  # 開票はプレイヤーの票が入った瞬間に発火 (イベント駆動、has_voted #38)。
+  # 3 ターン指名しなければ強制開票 (保険。空開票の処刑流れを常態にしない)。
   - id: execution
     repeatable: true
     when:
       kind: all
       of:
         - { kind: flag_is, key: 投票フェーズ, value: true }
-        - { kind: turns_since, key: 投票T, turns: 1 }
+        - kind: any
+          of:
+            - { kind: has_voted }
+            - { kind: turns_since, key: 投票T, turns: 3 }
     effects:
       - { op: resolve_vote }
       - { op: set_flag, key: 投票フェーズ, value: false }
