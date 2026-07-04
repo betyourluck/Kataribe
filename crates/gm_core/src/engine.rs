@@ -275,8 +275,14 @@ fn validate_ops(
                 });
             }
             StateOp::CastVote { voter, target } => {
-                // 票の意図は LLM が出せる。ただし受理は「両者生存 + vote_rules のいずれかに
-                // 合致 (デフォルト拒否)」をエンジンが裁く (spec 06 Phase C)。
+                // 票の意図は LLM が出せる。ただし受理は「盤面に投票機構がある + 両者生存 +
+                // vote_rules のいずれかに合致 (デフォルト拒否)」をエンジンが裁く (spec 06 Phase C)。
+                // vote_rules が空 = 投票の無いゲーム。機構の不在を名指しで却下する
+                // (死者/局面の理由を出すと self-repair が誤った方向に直そうとする、#35)。
+                if scenario.vote_rules.is_empty() {
+                    reasons.push(RejectReason::VoteNotDeclared);
+                    continue;
+                }
                 if !scenario.knows_entity(voter) {
                     reasons.push(RejectReason::UnknownEntity { entity: voter.clone() });
                     continue;
@@ -285,11 +291,21 @@ fn validate_ops(
                     reasons.push(RejectReason::UnknownEntity { entity: target.clone() });
                     continue;
                 }
-                if state.stat_of(voter, "生存") != 1 {
+                // 生死は **生存 stat を持つ entity にだけ** 意味を持つ (role_assignment が seed
+                // する)。未宣言 = 生死の概念が無い盤面/キャラで、0 と誤読して死者扱いしない
+                // (従来は生存 seed の無い盤面で全員が死者になり投票が構造的に不可能だった、#35)。
+                let alive = |e: &str| {
+                    state
+                        .entities
+                        .get(e)
+                        .and_then(|stats| stats.get("生存"))
+                        .is_none_or(|v| *v == 1)
+                };
+                if !alive(voter) {
                     reasons.push(RejectReason::EntityNotAlive { entity: voter.clone() });
                     continue;
                 }
-                if state.stat_of(target, "生存") != 1 {
+                if !alive(target) {
                     reasons.push(RejectReason::EntityNotAlive { entity: target.clone() });
                     continue;
                 }
@@ -1667,6 +1683,66 @@ goal: { kind: always }
             ),
             Verdict::Accept => panic!("死者に投票できてはならない"),
         }
+    }
+
+    /// 【投票の無い盤面 / 生存 stat の無い盤面 (実プレイ #35)】(a) `vote_rules` の無い盤面への
+    /// cast_vote は「この盤面に投票は無い」(VoteNotDeclared) で却下する — 実プレイでは
+    /// EntityNotAlive (「mayu は既に生存していない」) が出た: **未宣言の 生存 stat を 0=死者と
+    /// 誤読**していた。(b) `vote_rules` は有るが role_assignment (生存 seed) の無い盤面では、
+    /// 生存 stat を持たない entity は**生きている**扱いで投票できる (未宣言 = 生死の概念が無い
+    /// 盤面。従来は全員死者扱いで投票が構造的に不可能だった)。
+    #[test]
+    fn cast_vote_without_rules_or_survival_stats() {
+        // (a) 投票機構ゼロの盤面 (合コン等) — 死亡理由でなく「投票が無い」で却下する。
+        let sc = Scenario::from_yaml(
+            r#"
+title: t
+start: v
+characters:
+  mayu: { name: M }
+locations:
+  v: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#,
+        )
+        .unwrap();
+        let s = sc.initial_state(1);
+        let vote = d(vec![StateOp::CastVote { voter: "mayu".into(), target: "player".into() }]);
+        match adjudicate(&s, &sc, &vote) {
+            Verdict::Reject { reasons } => {
+                assert!(
+                    reasons.iter().any(|r| matches!(r, RejectReason::VoteNotDeclared)),
+                    "投票の無い盤面は VoteNotDeclared で名指し却下: {reasons:?}"
+                );
+                assert!(
+                    !reasons.iter().any(|r| matches!(r, RejectReason::EntityNotAlive { .. })),
+                    "生存 stat の無いキャラを死者と誤読しない: {reasons:?}"
+                );
+            }
+            Verdict::Accept => panic!("投票機構の無い盤面で票が通ってはならない"),
+        }
+
+        // (b) vote_rules 有り + 生存 stat 無し (role_assignment 無し) — 未宣言は生存扱いで投票可。
+        let sc2 = Scenario::from_yaml(
+            r#"
+title: t
+start: v
+vote_rules:
+  - when: { kind: always }
+characters:
+  mayu: { name: M }
+locations:
+  v: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#,
+        )
+        .unwrap();
+        let s2 = sc2.initial_state(1);
+        let vote2 = d(vec![StateOp::CastVote { voter: "mayu".into(), target: "player".into() }]);
+        assert!(
+            adjudicate(&s2, &sc2, &vote2).is_accept(),
+            "生存 stat 未宣言のキャラは生きている扱いで投票できる"
+        );
     }
 
     /// 【開票 (spec 06 Phase C)】ResolveVote (authored トリガー専権) が集計し、最多得票者を

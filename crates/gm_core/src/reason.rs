@@ -60,6 +60,10 @@ pub enum RejectReason {
     EntityNotAlive { entity: String },
     /// いまの局面では voter に投票権が無い (`vote_rules` のどれにも合致しない = デフォルト拒否)。
     VoteNotAllowed { voter: String },
+    /// この盤面には投票の機構が宣言されていない (`vote_rules` が空)。投票の無いゲームへの
+    /// cast_vote を「死者/局面」でなく**機構の不在**として名指し却下する — self-repair が
+    /// 一発で cast_vote を落とせる (#31 同型の診断可能性、実プレイ #35)。
+    VoteNotDeclared,
     /// 開票 (resolve_vote) は LLM が提案できない (authored トリガーの専権。開票結果の捏造遮断)。
     VoteResolveNotAllowed,
     /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
@@ -132,6 +136,10 @@ impl RejectReason {
             }
             RejectReason::VoteNotAllowed { voter } => {
                 format!("いまは {voter} が投票できる局面ではない (投票のフェーズと投票権を確認せよ)")
+            }
+            RejectReason::VoteNotDeclared => {
+                "この盤面に投票の仕組みは無い (cast_vote は使えない。意図は別の行動・語りで表せ)"
+                    .to_string()
             }
             RejectReason::VoteResolveNotAllowed => {
                 "開票はあなたが起こせない (開票は筋書きの出来事でのみ行われる)".to_string()
@@ -208,6 +216,9 @@ impl RejectReason {
             }
             RejectReason::VoteNotAllowed { voter } => {
                 format!("{voter} cannot vote in the current situation (check the phase and voting rights)")
+            }
+            RejectReason::VoteNotDeclared => {
+                "this scenario has no voting mechanism (cast_vote is unavailable; express the intent through other actions)".to_string()
             }
             RejectReason::VoteResolveNotAllowed => {
                 "you cannot resolve the vote (tallying only happens as an authored event)".to_string()
