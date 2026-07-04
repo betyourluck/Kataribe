@@ -18,6 +18,7 @@ import SettingsDialog from "./components/SettingsDialog.vue";
 import ConversationLog from "./components/ConversationLog.vue";
 import StatePanel from "./components/StatePanel.vue";
 import ActionInput from "./components/ActionInput.vue";
+import Icon from "./components/Icon.vue";
 
 const game = useGameStore();
 const showSettings = ref(false);
@@ -92,11 +93,13 @@ onMounted(() => {
       <span class="text-parchment/45 text-sm truncate">
         {{ game.title || "パッケージを選んで開始" }}
       </span>
+      <!-- 右端は定位置レイアウト: select は固定幅、ボタンはアイコンの固定スロット
+           (続きからが無い時は invisible = 場所を保ったまま消す。隣がズレない)。 -->
       <div class="ml-auto flex items-center gap-2">
         <select
           v-model="game.packagePath"
           :disabled="game.loading"
-          class="rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+          class="w-56 truncate rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
         >
           <option
             v-for="p in game.packages"
@@ -108,25 +111,25 @@ onMounted(() => {
           </option>
         </select>
         <button
-          v-if="selectedAutosaveTurn != null"
-          :disabled="game.loading"
-          class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
-          :title="`オートセーブから再開 (turn ${selectedAutosaveTurn})`"
+          :disabled="game.loading || selectedAutosaveTurn == null"
+          :class="[
+            'grid h-8 w-8 place-items-center rounded bg-ember/80 hover:bg-ember text-ink disabled:opacity-40',
+            selectedAutosaveTurn == null ? 'invisible' : '',
+          ]"
+          :title="`続きから (turn ${selectedAutosaveTurn ?? 0})`"
+          aria-label="続きから"
           @click="game.resumeGame()"
         >
-          続きから (turn {{ selectedAutosaveTurn }})
+          <Icon name="load" :size="18" />
         </button>
         <button
           :disabled="game.loading"
-          :class="[
-            'rounded px-3 py-1 text-sm font-bold disabled:opacity-40',
-            selectedAutosaveTurn != null
-              ? 'bg-ash/60 hover:bg-ash text-parchment'
-              : 'bg-ember/80 hover:bg-ember text-ink',
-          ]"
+          class="grid h-8 w-8 place-items-center rounded bg-ash/60 hover:bg-ash text-parchment disabled:opacity-40"
+          title="新しいゲーム"
+          aria-label="新しいゲーム"
           @click="game.newGame()"
         >
-          新しいゲーム
+          <Icon name="new" :size="18" />
         </button>
       </div>
     </header>

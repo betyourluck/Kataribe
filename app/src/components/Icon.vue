@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new";
   size?: number;
 }>();
 </script>
@@ -54,6 +54,19 @@ defineProps<{
       <circle cx="12" cy="12" r="9" />
       <circle cx="12" cy="12" r="5" />
       <circle cx="12" cy="12" r="1" />
+    </template>
+    <!-- ロード (続きから): 開いたフォルダ + 取り出す矢印 -->
+    <template v-else-if="name === 'load'">
+      <path d="M4 20h13a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2h-6l-2-3H5a2 2 0 0 0-2 2v10a2 2 0 0 0 1 2Z" />
+      <path d="M12 17v-5" />
+      <path d="M9.5 14.5 12 12l2.5 2.5" />
+    </template>
+    <!-- 新規作成 (新しいゲーム): 書類 + プラス -->
+    <template v-else-if="name === 'new'">
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" />
+      <path d="M14 3v5h5" />
+      <path d="M12 12v6" />
+      <path d="M9 15h6" />
     </template>
   </svg>
 </template>
