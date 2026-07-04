@@ -13,6 +13,7 @@
 //! cargo run -p harness --bin play --package packages/gnosia_village # パッケージ (player/globals/world 注入込み)
 //! cargo run -p harness --bin play --resume kataribe_autosave.yaml   # セーブから再開 (spec 07)
 //! cargo run -p harness --bin play --save my_save.yaml               # オートセーブ先の指定 (既定 kataribe_autosave.yaml)
+//! cargo run -p harness --bin play --seed 42                         # seed 固定 (テスト/再現用。省略時は毎回変わる)
 //! cargo run -p harness --bin play < actions.txt            # 台本を流し込む
 //! ```
 //!
@@ -107,6 +108,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
             PathBuf::from(DEFAULT_SAVE)
         }
         None => PathBuf::from(DEFAULT_SAVE),
+    };
+
+    // `--seed <N>` で新規開始の seed を固定 (テスト/再現用)。台本テストが env より明示的に書ける。
+    // 優先順位: --seed 引数 > KATARIBE_SEED env > 時刻エントロピー (resolve_seed)。
+    let seed_arg: Option<u64> = match args.iter().position(|a| a == "--seed") {
+        Some(i) if i + 1 < args.len() => {
+            let v = args.remove(i + 1);
+            args.remove(i);
+            match v.trim().parse::<u64>() {
+                Ok(n) => Some(n),
+                Err(_) => return Err(format!("--seed の値が数値でない: {v}").into()),
+            }
+        }
+        Some(_) => return Err("--seed の後に数値を指定してください".into()),
+        None => None,
     };
 
     // セーブから再開するなら、content 参照で起動形 (campaign/package/scenario) を選び直す。
@@ -216,8 +232,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut state = match &resume_save {
         Some(save) => save.state.clone(),
         None => {
-            let seed = resolve_seed();
-            eprintln!("[seed] {seed} (再現するには KATARIBE_SEED={seed})");
+            let seed = seed_arg.unwrap_or_else(resolve_seed);
+            eprintln!("[seed] {seed} (再現するには --seed {seed})");
             scenario.initial_state(seed)
         }
     };
