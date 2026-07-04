@@ -44,8 +44,20 @@ fn lang_from_env() -> Lang {
         _ => Lang::Ja,
     }
 }
-/// 初期 RNG seed (決定論再現用。将来は引数化)。
-const SEED: u64 = 42;
+/// 初期 RNG seed を決める。既定は**毎ゲーム変える** (時刻由来) — 固定 seed だと配役
+/// (role_assignment) も出目列も毎回同一になる (実プレイ発見: 主人公が常に占い師)。
+/// 再現したい時は `KATARIBE_SEED=42` で固定 (seed は RngState に保存されセーブにも残る)。
+fn resolve_seed() -> u64 {
+    if let Ok(v) = std::env::var("KATARIBE_SEED") {
+        if let Ok(n) = v.trim().parse::<u64>() {
+            return n;
+        }
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(42)
+}
 /// オートセーブの既定パス (spec 07)。`--save <path>` で変更可。
 const DEFAULT_SAVE: &str = "kataribe_autosave.yaml";
 
@@ -203,7 +215,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 初期 stat (HP/STR 等) をシナリオから読んで状態を作る。再開時はセーブの正本をそのまま使う。
     let mut state = match &resume_save {
         Some(save) => save.state.clone(),
-        None => scenario.initial_state(SEED),
+        None => {
+            let seed = resolve_seed();
+            eprintln!("[seed] {seed} (再現するには KATARIBE_SEED={seed})");
+            scenario.initial_state(seed)
+        }
     };
 
     // --- 開幕描写 ---

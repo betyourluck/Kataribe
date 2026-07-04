@@ -26,8 +26,20 @@ use tokio::sync::Mutex;
 
 /// 1 ターンあたりの再生成上限 (CLI `play` と同値)。
 const MAX_ATTEMPTS: u32 = 4;
-/// 初期 RNG seed (決定論再現。将来引数化)。
-const SEED: u64 = 42;
+/// 初期 RNG seed を決める。既定は**新しいゲームごとに変える** (時刻由来) — 固定 seed だと
+/// 配役 (role_assignment) も出目列も毎回同一になる (実プレイ発見: 主人公が常に占い師)。
+/// 再現したい時は `KATARIBE_SEED=42`。seed は RngState に保存されオートセーブにも残る。
+fn resolve_seed() -> u64 {
+    if let Ok(v) = std::env::var("KATARIBE_SEED") {
+        if let Ok(n) = v.trim().parse::<u64>() {
+            return n;
+        }
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(42)
+}
 /// 既定パッケージ (リポジトリ root からの相対フォルダ)。
 const DEFAULT_PACKAGE: &str = "packages/houkago";
 
@@ -683,7 +695,9 @@ async fn new_game(
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
     let client = LlmClient::new(config).map_err(|e| e.to_string())?;
 
-    let state = scenario.initial_state(SEED);
+    let seed = resolve_seed();
+    eprintln!("[seed] {seed} (再現するには KATARIBE_SEED={seed})");
+    let state = scenario.initial_state(seed);
     let title = if manifest.title.is_empty() {
         scenario.title.clone()
     } else {
