@@ -10,6 +10,7 @@
 //! cargo run -p harness --bin play                          # 既定シナリオ (対話)
 //! cargo run -p harness --bin play scenarios/foo.yaml       # 単一シナリオ指定
 //! cargo run -p harness --bin play --campaign campaigns/escape.yaml  # キャンペーン (複数モジュール通し)
+//! cargo run -p harness --bin play --package packages/gnosia_village # パッケージ (player/globals/world 注入込み)
 //! cargo run -p harness --bin play < actions.txt            # 台本を流し込む
 //! ```
 //!
@@ -71,10 +72,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     eprintln!("[接続] {} / model={}", config.base_url, config.model);
     let client = LlmClient::new(config)?;
 
-    // --- シナリオ / キャンペーン ---
-    // `--campaign <path>` でキャンペーンモード、それ以外は単一シナリオ (第1引数 or 既定)。
+    // --- シナリオ / キャンペーン / パッケージ ---
+    // `--campaign <path>` でキャンペーンモード、`--package <dir>` でパッケージモード
+    // (player/globals/world を entry シナリオへ注入 = GUI と同じ経路)、
+    // それ以外は単一シナリオ (第1引数 or 既定)。
     let args: Vec<String> = std::env::args().skip(1).collect();
     let campaign_mode = args.first().map(String::as_str) == Some("--campaign");
+    let package_mode = args.first().map(String::as_str) == Some("--package");
 
     let (campaign, mut current_module, mut scenario, root): (
         Option<Campaign>,
@@ -91,6 +95,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let scen = load_module(&camp, &root, &start)?;
         eprintln!("[キャンペーン] {} / 開始モジュール={start}", camp.title);
         (Some(camp), Some(start), scen, root)
+    } else if package_mode {
+        let dir = args
+            .get(1)
+            .ok_or("--package の後に package フォルダのパスを指定してください")?;
+        let root = PathBuf::from(dir);
+        let loaded = harness::load_package(&root)?;
+        eprintln!("[パッケージ] {}", loaded.manifest.title);
+        (None, None, loaded.scenario, root)
     } else {
         let scenario_path = args.first().cloned().unwrap_or_else(|| DEFAULT_SCENARIO.to_string());
         let yaml = std::fs::read_to_string(&scenario_path)
