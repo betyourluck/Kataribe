@@ -419,3 +419,22 @@ Phase E 指標①の漏洩 1 件。占い結果 (secret 属性との突き合わ
 and_gm_system_grounds_secrecy に隠密行動の assert を追加。【一般化】#23 系 (narration は非検証・
 prompt が唯一の防衛線) の秘匿版。禁止は**言及**と**描写**の両方を明示的に縛らないと、LLM は
 禁じられていない方のチャネルから同じ情報を流す。
+
+## crates/llm_client (2026-07-04 実プレイ報告 — Gemini 長セッションの decode エラー)
+
+### 34. 「missing field `message`」だけ残り真因が見えない → `resp.json()` 直はデコード失敗時に本文を捨てる
+【実プレイ報告 (2026-07-04, gemini-flash-latest, 長セッション ~1h で発生しやすい)】
+`エラー: 提案者エラー: HTTP エラー: error decoding response body: missing field 'message' at line 1 column 76`
+だけが出てセッションが進めなくなる。【真因の構造】HTTP **200** なのに `choices[0]` に `message` が
+無い変形応答 (Gemini の content filter / 長さ切れ / quota 系で観測されうる形。wire の `Choice.message`
+は必須フィールド) が来ると、非 debug 経路の `resp.json::<ChatResponse>()` は reqwest の decode エラー
+(→`LlmError::Http`) に化け、**応答本文が失われる** — serde の「何が欠けたか」だけ残り「サーバが実際に
+何を返したか」が診断不能。LLM_DEBUG 経路は text→parse で raw を保持しており、**debug の有無で診断力が
+非対称**だった。【解】経路を統一: 常に `text()`→`decode_chat_body(body)` (新設・純関数) で parse し、
+失敗は `LlmError::Parse { source, raw: 本文 }` — 表示に `--- raw ---` として本文が乗る (既存 Parse の
+表示形を流用)。次回発生時はエラー文面だけで真因 (finish_reason 等) が確定する。
+【PoC】decode_chat_body_keeps_raw_on_shape_mismatch (message 無し choice で本文が surface される)。
+llm_client 18→19。【watch】`choices: []` の空応答は `EmptyResponse` に落ちて本文を運ばない残り穴
+(quota 系は非 2xx=Api 経路で本文が出るので実害は限定的)。発生したらこの entry に追記。
+【一般化】#25 の source 連鎖平坦化と同族:「エラーを包む層 (reqwest/serde) は真因を隠す」。
+診断情報 (本文) は**失敗を検出した場所で**確保する — debug フラグの有無で診断力を変えない。

@@ -119,14 +119,14 @@ impl LlmClient {
                 body,
             });
         }
+        // 常に text→parse (json() 直は使わない)。2xx なのに形が合わない応答 (Gemini の
+        // content filter / 長さ切れ / quota 系の変形) でデコードに失敗した時、json() は本文を
+        // 捨て「missing field `message`」だけが残る — raw を保持して真因を診断可能にする (#34)。
+        let body = resp.text().await?;
         if debug {
-            // 生応答を読んでログ → text から ChatResponse へ (json() の代わり)。
-            let body = resp.text().await?;
             eprintln!("[LLM_DEBUG] response <- {body}");
-            return serde_json::from_str::<ChatResponse>(&body)
-                .map_err(|source| LlmError::Parse { source, raw: body });
         }
-        Ok(resp.json::<ChatResponse>().await?)
+        decode_chat_body(body)
     }
 
     /// 指数 backoff 付きで chat を叩く。一過性エラーのみリトライ (tenacity 同型)。
@@ -147,6 +147,14 @@ impl LlmClient {
             }
         }
     }
+}
+
+/// 2xx 応答の本文を [`ChatResponse`] へ。形が合わなければ [`LlmError::Parse`] で
+/// **本文 (raw) を保持**する — serde の「missing field」だけでは真因 (content filter /
+/// 長さ切れ等のサーバ都合の変形応答) が見えないため (#34)。
+pub(crate) fn decode_chat_body(body: String) -> Result<ChatResponse, LlmError> {
+    serde_json::from_str::<ChatResponse>(&body)
+        .map_err(|source| LlmError::Parse { source, raw: body })
 }
 
 /// no-tools モードで「schema に従う JSON だけを出力せよ」と指示する system メッセージ本文。

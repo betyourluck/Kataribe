@@ -419,6 +419,20 @@ mod tests {
         }
     }
 
+    /// 【200 なのに形が合わない応答は本文を保持する (#34)】Gemini 実プレイで観測:
+    /// 長セッション中に HTTP 200 で `choices[0]` に `message` が無い応答が返り、
+    /// `resp.json()` 直はデコード失敗時に**本文を捨てる**ため
+    /// 「missing field `message` at line 1 column 76」だけが残り真因 (content filter /
+    /// 長さ切れ / quota 系の変形応答) が診断不能だった。text→parse に統一し raw を保持する。
+    #[test]
+    fn decode_chat_body_keeps_raw_on_shape_mismatch() {
+        let body = r#"{"choices":[{"finish_reason":"content_filter","index":0}],"created":1}"#;
+        let err = client::decode_chat_body(body.to_string()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("content_filter"), "応答本文 (真因) が surface される: {msg}");
+        assert!(msg.contains("message"), "何が欠けたか (missing field) も出る: {msg}");
+    }
+
     /// 【narration 掃除】モデルが narration 本文に漏らした tool-call マークアップを除去する
     /// (実プレイで観測: `</narration>` / `<parameter name="ops">` が語りに混入)。
     #[test]
