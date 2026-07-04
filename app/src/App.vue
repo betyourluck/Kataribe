@@ -99,7 +99,7 @@ onMounted(() => {
         <select
           v-model="game.packagePath"
           :disabled="game.loading"
-          class="w-56 truncate rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+          class="w-[28rem] max-w-[50vw] truncate rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
         >
           <option
             v-for="p in game.packages"
@@ -122,9 +122,10 @@ onMounted(() => {
         >
           <Icon name="load" :size="18" />
         </button>
+        <!-- 新しいゲーム: 通常は枠なし (アイコンのみ)、hover で従来の箱が浮かぶ。 -->
         <button
           :disabled="game.loading"
-          class="grid h-8 w-8 place-items-center rounded bg-ash/60 hover:bg-ash text-parchment disabled:opacity-40"
+          class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
           title="新しいゲーム"
           aria-label="新しいゲーム"
           @click="game.newGame()"
