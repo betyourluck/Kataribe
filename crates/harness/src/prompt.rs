@@ -71,7 +71,9 @@ cast_vote op で並べること** (voter にその NPC の id、target に投票
 あなたが決めてよい — それが推理劇の演出である。プレイヤーの票はプレイヤーの行動文の意図から \
 汲んで cast_vote にせよ。投票権が一部の者に絞られた局面 (夜の狩り等) でも同じ — **その局面で \
 投票できる者が生きているなら、その者の票を必ず cast_vote で出せ** (プレイヤーの行動が別のこと \
-でも忘れるな)。票を出さなければその局面では何も起きない (狩りの不発)。逆に、盤面の資料に \
+でも忘れるな)。票を出さなければその局面では何も起きない (狩りの不発)。現在の状態に \
+**「いま投票が開いている」の行が出ていたら、それが合図である — そこに列挙された者の票を \
+このターンの ops に必ず並べよ**。逆に、盤面の資料に \
 **『## 投票』の節が無ければ、このゲームに投票の機構は存在しない — cast_vote を一切提案するな** \
 (多数決らしい場面でも、意図は語りと他の op で表す)。**開票・処刑・襲撃の \
 帰結はあなたが起こせない** (筋書きの出来事が確定する) — 誰が死ぬかを先取りして語るな。\n\
@@ -349,9 +351,53 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    // いま条件が真になっている投票規則 (#37)。静的な規則 (scenario_brief) + 一般義務 (GM_SYSTEM)
+    // だけでは絞られた局面 (夜の狩り) で票が出ないことが実測で再発したため、第三層として
+    // 「いま誰が票を出せるか」を生存・属性で絞った名前列挙にし、現在形の義務として突きつける。
+    let alive = |e: &str| {
+        state.entities.get(e).and_then(|s| s.get("生存")).is_none_or(|v| *v == 1)
+    };
+    let mut open_votes: Vec<String> = Vec::new();
+    for rule in &scenario.vote_rules {
+        if !rule.when.eval(state) {
+            continue;
+        }
+        let mut ids: Vec<String> = vec![gm_core::PLAYER.to_string()];
+        ids.extend(scenario.characters.keys().cloned());
+        let eligible: Vec<String> = ids
+            .into_iter()
+            .filter(|id| alive(id))
+            .filter(|id| match &rule.voter_attribute {
+                None => true,
+                Some(va) => state.attribute_of(id, &va.key) == va.value,
+            })
+            .map(|id| match scenario.characters.get(&id).map(|c| c.name.trim()) {
+                Some(name) if !name.is_empty() && name != id => format!("{name} ({id})"),
+                _ => id,
+            })
+            .collect();
+        if eligible.is_empty() {
+            continue;
+        }
+        let who = match &rule.voter_attribute {
+            Some(va) => format!("{}={} の生存者", va.key, va.value),
+            None => "生存者なら誰でも".to_string(),
+        };
+        open_votes.push(format!("{who} → {}", eligible.join(", ")));
+    }
+    let open_votes = if open_votes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n- ⚠ **いま投票が開いている**。票を出せる者: {}。**この者たち全員の票を、\
+             このターンの ops に cast_vote で必ず並べよ** — 票を出さなければこの局面では\
+             何も起きない。誰に入れるかは各自の性格・疑念・秘匿役職からあなたが決めてよい。",
+            open_votes.join(" ／ ")
+        )
+    };
     format!(
-        "# 現在の状態 (turn {})\n- 現在地: {}\n- この場にいる: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}\n- 使える能力: {}\n- 属性: {}",
-        state.turn, state.location, present, inv, flags, entities, skills, attributes,
+        "# 現在の状態 (turn {})\n- 現在地: {}\n- この場にいる: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}\n- 使える能力: {}\n- 属性: {}{}",
+        state.turn, state.location, present, inv, flags, entities, skills, attributes, open_votes,
     )
 }
 

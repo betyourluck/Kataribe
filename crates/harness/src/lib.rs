@@ -375,6 +375,75 @@ mod tests {
         );
     }
 
+    /// 【いま開いている投票の動的 surfacing (#37)】静的な規則 (scenario_brief) + 一般義務
+    /// (GM_SYSTEM #32) だけでは、絞られた局面 (夜の狩り) で票が出ない事象が実測で再発した
+    /// (信頼度 ~1/3: gnosia 1周目✗ → 修正 → 2周目○ → vampire ✗)。第三層として state_brief が
+    /// **条件が真になっている vote_rule** を現在形で surface — 「いま票を出せる者」を生存・
+    /// 属性で絞った**名前列挙**にし、このターンの義務として接地する。
+    #[test]
+    fn state_brief_surfaces_open_votes_with_eligible_names() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: v\n",
+            "allowed_flags: [投票フェーズ, 夜フェーズ]\n",
+            "vote_rules:\n",
+            "  - when: { kind: flag_is, key: 投票フェーズ, value: true }\n",
+            "  - when: { kind: flag_is, key: 夜フェーズ, value: true }\n",
+            "    voter_attribute: { key: 役職, value: 人狼 }\n",
+            "initial_attributes: { 役職: 村人 }\n",
+            "characters:\n",
+            "  alice: { name: アリス, attributes: { 役職: 人狼 } }\n",
+            "  bob: { name: ボブ, attributes: { 役職: 村人 } }\n",
+            "locations: { v: { description: d, present: [alice, bob], items: {}, exits: [] } }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let mut s = sc.initial_state(1);
+
+        // どの規則も条件が偽 → 動的節は出ない (GM_SYSTEM の「節が無ければ出すな」と対)。
+        let brief = prompt::state_brief(&s, &sc);
+        assert!(!brief.contains("いま投票が開いている"), "フェーズ外では出ない: {brief}");
+
+        // 夜: 人狼 (アリス) だけが列挙される。村人 (ボブ) は出ない。
+        s.flags.insert("夜フェーズ".into(), true);
+        let brief = prompt::state_brief(&s, &sc);
+        let line = brief
+            .lines()
+            .find(|l| l.contains("いま投票が開いている"))
+            .expect("夜は動的節が出る");
+        assert!(line.contains("アリス (alice)"), "投票できる者を名前 (id) で列挙: {line}");
+        assert!(!line.contains("ボブ"), "投票できない者は列挙しない: {line}");
+        assert!(
+            line.contains("cast_vote") && line.contains("必ず"),
+            "このターンの義務として接地: {line}"
+        );
+
+        // 昼: 生存者なら誰でも → player もアリスもボブも列挙。
+        s.flags.insert("夜フェーズ".into(), false);
+        s.flags.insert("投票フェーズ".into(), true);
+        let brief = prompt::state_brief(&s, &sc);
+        let line = brief.lines().find(|l| l.contains("いま投票が開いている")).unwrap();
+        assert!(
+            line.contains("player") && line.contains("アリス") && line.contains("ボブ"),
+            "昼は生存者全員: {line}"
+        );
+
+        // 死者は列挙しない: 人狼が全滅した夜は該当者ゼロ = 節ごと出ない。
+        s.flags.insert("投票フェーズ".into(), false);
+        s.flags.insert("夜フェーズ".into(), true);
+        s.entities.entry("alice".into()).or_default().insert("生存".into(), 0);
+        let brief = prompt::state_brief(&s, &sc);
+        assert!(
+            !brief.contains("いま投票が開いている"),
+            "票を出せる生存者がいなければ節は出ない: {brief}"
+        );
+
+        // GM_SYSTEM が動的節を合図として結びつける。
+        assert!(
+            prompt::GM_SYSTEM.contains("いま投票が開いている"),
+            "GM_SYSTEM が動的節を義務の合図として言及する"
+        );
+    }
+
     /// 【セーブ / ロード (spec 07 Phase A)】進行中セッションの正本 (state: rng カーソル・
     /// votes・present_overrides・flags 込み) と語りの継続性 (chronicle/last_narration/
     /// pending_*) が YAML 1 file を roundtrip して同値に戻る。骨格は保存しない (content 参照
