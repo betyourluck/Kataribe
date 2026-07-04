@@ -11,6 +11,8 @@
 //! cargo run -p harness --bin play scenarios/foo.yaml       # 単一シナリオ指定
 //! cargo run -p harness --bin play --campaign campaigns/escape.yaml  # キャンペーン (複数モジュール通し)
 //! cargo run -p harness --bin play --package packages/gnosia_village # パッケージ (player/globals/world 注入込み)
+//! cargo run -p harness --bin play --resume kataribe_autosave.yaml   # セーブから再開 (spec 07)
+//! cargo run -p harness --bin play --save my_save.yaml               # オートセーブ先の指定 (既定 kataribe_autosave.yaml)
 //! cargo run -p harness --bin play < actions.txt            # 台本を流し込む
 //! ```
 //!
@@ -44,6 +46,8 @@ fn lang_from_env() -> Lang {
 }
 /// 初期 RNG seed (決定論再現用。将来は引数化)。
 const SEED: u64 = 42;
+/// オートセーブの既定パス (spec 07)。`--save <path>` で変更可。
+const DEFAULT_SAVE: &str = "kataribe_autosave.yaml";
 
 /// `parent/parent` を repo root とみなす (scenarios/ campaigns/ characters/ memoria/ の親)。
 fn root_of(path: &str) -> PathBuf {
@@ -72,39 +76,117 @@ async fn main() -> Result<(), Box<dyn Error>> {
     eprintln!("[接続] {} / model={}", config.base_url, config.model);
     let client = LlmClient::new(config)?;
 
-    // --- シナリオ / キャンペーン / パッケージ ---
+    // --- シナリオ / キャンペーン / パッケージ / 再開 ---
     // `--campaign <path>` でキャンペーンモード、`--package <dir>` でパッケージモード
     // (player/globals/world を entry シナリオへ注入 = GUI と同じ経路)、
+    // `--resume <file>` でセーブから再開 (content 参照から起動形を再構成)、
     // それ以外は単一シナリオ (第1引数 or 既定)。
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let campaign_mode = args.first().map(String::as_str) == Some("--campaign");
-    let package_mode = args.first().map(String::as_str) == Some("--package");
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+
+    // `--save <path>` はどのモードにも重ねられる (オートセーブ先。既定 DEFAULT_SAVE)。
+    let save_path = match args.iter().position(|a| a == "--save") {
+        Some(i) if i + 1 < args.len() => {
+            let p = args.remove(i + 1);
+            args.remove(i);
+            PathBuf::from(p)
+        }
+        Some(i) => {
+            args.remove(i);
+            PathBuf::from(DEFAULT_SAVE)
+        }
+        None => PathBuf::from(DEFAULT_SAVE),
+    };
+
+    // セーブから再開するなら、content 参照で起動形 (campaign/package/scenario) を選び直す。
+    let resume_save: Option<harness::SessionSave> =
+        if args.first().map(String::as_str) == Some("--resume") {
+            let p = args
+                .get(1)
+                .ok_or("--resume の後にセーブファイルのパスを指定してください")?;
+            let save = harness::load_session(Path::new(p))?;
+            eprintln!("[再開] {} (turn {})", p, save.state.turn);
+            Some(save)
+        } else {
+            None
+        };
+
+    // 起動形の解決: resume 時はセーブの content、通常時は引数から。
+    let (campaign_arg, package_arg, scenario_arg): (Option<String>, Option<String>, Option<String>) =
+        match &resume_save {
+            Some(save) => match &save.content {
+                harness::SavedContent::Campaign { path } => (Some(path.clone()), None, None),
+                harness::SavedContent::Package { path } => (None, Some(path.clone()), None),
+                harness::SavedContent::Scenario { path } => (None, None, Some(path.clone())),
+            },
+            None => match args.first().map(String::as_str) {
+                Some("--campaign") => (
+                    Some(
+                        args.get(1)
+                            .ok_or("--campaign の後に campaign file のパスを指定してください")?
+                            .clone(),
+                    ),
+                    None,
+                    None,
+                ),
+                Some("--package") => (
+                    None,
+                    Some(
+                        args.get(1)
+                            .ok_or("--package の後に package フォルダのパスを指定してください")?
+                            .clone(),
+                    ),
+                    None,
+                ),
+                Some(p) => (None, None, Some(p.to_string())),
+                None => (None, None, Some(DEFAULT_SCENARIO.to_string())),
+            },
+        };
+
+    // オートセーブに刻む content 参照 (再開時の再ロード元)。
+    let content_ref: harness::SavedContent = if let Some(p) = &campaign_arg {
+        harness::SavedContent::Campaign { path: p.clone() }
+    } else if let Some(p) = &package_arg {
+        harness::SavedContent::Package { path: p.clone() }
+    } else {
+        harness::SavedContent::Scenario {
+            path: scenario_arg.clone().unwrap_or_default(),
+        }
+    };
+    let mut package_version = String::new();
 
     let (campaign, mut current_module, mut scenario, root): (
         Option<Campaign>,
         Option<String>,
         Scenario,
         PathBuf,
-    ) = if campaign_mode {
-        let camp_path = args
-            .get(1)
-            .ok_or("--campaign の後に campaign file のパスを指定してください")?;
+    ) = if let Some(camp_path) = &campaign_arg {
         let camp = load_campaign(Path::new(camp_path))?;
         let root = root_of(camp_path);
-        let start = camp.start.clone();
+        // 再開時はセーブに刻まれたモジュールから (無ければ開始モジュール)。
+        let start = resume_save
+            .as_ref()
+            .and_then(|s| s.module.clone())
+            .unwrap_or_else(|| camp.start.clone());
         let scen = load_module(&camp, &root, &start)?;
-        eprintln!("[キャンペーン] {} / 開始モジュール={start}", camp.title);
+        eprintln!("[キャンペーン] {} / モジュール={start}", camp.title);
         (Some(camp), Some(start), scen, root)
-    } else if package_mode {
-        let dir = args
-            .get(1)
-            .ok_or("--package の後に package フォルダのパスを指定してください")?;
+    } else if let Some(dir) = &package_arg {
         let root = PathBuf::from(dir);
         let loaded = harness::load_package(&root)?;
         eprintln!("[パッケージ] {}", loaded.manifest.title);
+        // 版不一致は警告のみ (typo 修正でセーブが全滅しないよう拒否しない)。
+        if let Some(save) = &resume_save {
+            if save.package_version != loaded.manifest.version {
+                eprintln!(
+                    "[警告] package の版がセーブ時 ({}) と異なる ({})。content 変更により整合しない可能性",
+                    save.package_version, loaded.manifest.version
+                );
+            }
+        }
+        package_version = loaded.manifest.version.clone();
         (None, None, loaded.scenario, root)
     } else {
-        let scenario_path = args.first().cloned().unwrap_or_else(|| DEFAULT_SCENARIO.to_string());
+        let scenario_path = scenario_arg.unwrap_or_else(|| DEFAULT_SCENARIO.to_string());
         let yaml = std::fs::read_to_string(&scenario_path)
             .map_err(|e| format!("シナリオを読めません ({scenario_path}): {e}"))?;
         let mut scen = Scenario::from_yaml(&yaml)?;
@@ -118,30 +200,70 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let lore = load_lore(&root.join("memoria"))?;
     eprintln!("[伏線] {} 件ロード", lore.len());
 
-    // 初期 stat (HP/STR 等) をシナリオから読んで状態を作る。
-    let mut state = scenario.initial_state(SEED);
+    // 初期 stat (HP/STR 等) をシナリオから読んで状態を作る。再開時はセーブの正本をそのまま使う。
+    let mut state = match &resume_save {
+        Some(save) => save.state.clone(),
+        None => scenario.initial_state(SEED),
+    };
 
     // --- 開幕描写 ---
     println!("=== {} ===", scenario.title);
     if let Some(loc) = scenario.location(&state.location) {
         println!("{}\n", loc.description);
     }
+    if let Some(save) = &resume_save {
+        println!("── セーブから再開 (turn {}) ──", save.state.turn);
+        if !save.last_narration.is_empty() {
+            println!("（前回までの語り）\n{}\n", save.last_narration);
+        }
+    }
     println!("(行動を入力。Ctrl-D / Ctrl-Z で終了)\n");
+    eprintln!("[オートセーブ] {}", save_path.display());
 
     // --- ターンループ ---
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
     // 直前ターンの発火で recall された伏線。次ターンの語りに織り込ませる (memoria_bridge, 輪の閉じ)。
-    let mut pending_lore: Vec<harness::MemoryFragment> = Vec::new();
+    // 語りの継続性 (pending_*/last_narration/history) も再開時はセーブから戻す —
+    // state だけでは「経緯を忘れる GM」に戻る (chronicle は state と独立の第二チャネル)。
+    let mut pending_lore: Vec<harness::MemoryFragment> =
+        resume_save.as_ref().map(|s| s.pending_lore.clone()).unwrap_or_default();
     // 直前ターンの技能判定の結果。次ターンの語りに還流する (出目は apply 後確定)。
-    let mut pending_checks: Vec<gm_core::CheckOutcome> = Vec::new();
+    let mut pending_checks: Vec<gm_core::CheckOutcome> =
+        resume_save.as_ref().map(|s| s.pending_checks.clone()).unwrap_or_default();
     // 直前ターンの語り。次ターンに「続く情景」として渡し、既出描写の繰り返しを防ぐ (継続性)。
-    let mut last_narration = String::new();
+    let mut last_narration =
+        resume_save.as_ref().map(|s| s.last_narration.clone()).unwrap_or_default();
     // 経緯ログ (chronicle)。GM の書く summary を蓄積し「これまでの経緯」として還流する (中期記憶)。
-    let mut history: Vec<harness::TurnLog> = Vec::new();
+    let mut history: Vec<harness::TurnLog> =
+        resume_save.as_ref().map(|s| s.history.clone()).unwrap_or_default();
     // campaign の場所フラグ記憶 (spec 02)。再訪したモジュールで persistent フラグを復元する。
-    let mut campaign_memory = harness::CampaignMemory::new();
+    let mut campaign_memory = resume_save
+        .as_ref()
+        .map(|s| s.campaign_memory.clone())
+        .unwrap_or_default();
     loop {
+        // オートセーブ (spec 07): 受理ターンと campaign 遷移が全て確定したこの地点で書く。
+        // turn 0 (未プレイ) では書かない — 既存セーブを起動しただけで潰さないため。
+        if state.turn > 0 {
+            let save = harness::SessionSave {
+                version: harness::SAVE_VERSION,
+                content: content_ref.clone(),
+                package_version: package_version.clone(),
+                module: current_module.clone(),
+                state: state.clone(),
+                campaign_memory: campaign_memory.clone(),
+                history: history.clone(),
+                last_narration: last_narration.clone(),
+                pending_checks: pending_checks.clone(),
+                pending_lore: pending_lore.clone(),
+            };
+            if let Err(e) = harness::save_session(&save_path, &save) {
+                // 救済機構がセッション本体を殺さない: 警告して続行。
+                eprintln!("[警告] オートセーブ失敗: {e}");
+            }
+        }
+
         print!("> ");
         io::stdout().flush().ok();
 

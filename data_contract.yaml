@@ -451,6 +451,18 @@ Campaign:
   rejected_check_tiers_on_op: "却下した代替: tier/flag を Check op に畳む案。Check は LLM 提案 op なので op に tier を乗せると LLM が帰結(fumble→flag)を author できる=#23/#24 の穴。tier/flag は Scenario.challenges(authored)に置き、AttemptChallenge は challenge 名の参照のみ(LLM は選ぶだけ)。閉世界の三例目"
   rejected: "LLM シナリオ/フラグ生成・validate_scenario・二エンジン同期・オーサリング editor は棄却(2026-06-24 設計対話で収束)。将来リプレイ性で生成を入れる時も、生成部は load-bearing な gate の外側(goal を gate しない flavor のみ)に閉じ込め、骨格は authored のまま"
 
+SessionSave:                        # ✅spec 07 Phase A+B (2026-07-04): セーブ/ロードの凍結スキーマ (YAML 1 file)
+  version: "u32 = 1 (SAVE_VERSION)。不一致はロード拒否 (v1 は実験的 — 黙って壊れた再開をしない)"
+  content: "{kind: package|campaign|scenario, path} — 何を遊んでいたか。骨格は保存しない (再ロード = 単一真実源・content 修正が生きる)。非互換変更の破れは engine の閉世界却下が守る"
+  package_version: "記録時の manifest.version。不一致はロード時に警告のみ (typo 修正でセーブを全滅させない)"
+  module: "Option<ModuleId> — campaign 中の現在モジュール (単発は null)"
+  state: "GameState 丸ごと (rng/turn/fired/votes/flag_turns/taken_items/present_overrides 込み = 出目まで再現)"
+  campaign_memory: "spec 02 の persistent フラグ蓄積 (save 永続化の積み残しを本 spec で解決)"
+  carryovers: "history(chronicle 全量)/last_narration/pending_checks/pending_lore(fragment 丸ごと=自己完結) — 語りの継続性。state だけでは再開時に『経緯を忘れる GM』に戻る (#27 系の第二チャネル)"
+  atomicity: "save_session は tmp→rename の原子的置換 (受理ターン毎上書きで書きかけ file がセーブを壊さない)"
+  autosave: "CLI: 受理ターン+遷移が確定したループ先頭で書く (turn 0 は書かない = 起動しただけで既存セーブを潰さない)。--save <path> 既定 kataribe_autosave.yaml、--resume <file> で再開"
+  gui: "Phase C (査読待ち): app data dir に per-package autosave + 「続きから」提示"
+
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
   memoria_neural: "LoreStore の bigram TF-IDF cosine を**神経 embedding** に格上げ (同 Memoria trait 裏で差し替え)。usage-over-extension: TF-IDF cosine が不足と接地できてから。語彙の表層に依らない真の意味近傍が要る時のみ。recall→prompt 注入・bigram cosine は ✅実装済"

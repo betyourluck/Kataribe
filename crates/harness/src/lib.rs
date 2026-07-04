@@ -15,6 +15,7 @@ mod memoria;
 mod package;
 pub mod prompt;
 mod proposer;
+mod save;
 mod turn;
 
 pub use asset::{resolve_asset, AssetKind};
@@ -30,6 +31,7 @@ pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use proposer::DeltaProposer;
+pub use save::{load_session, save_session, SavedContent, SessionSave, SAVE_VERSION};
 pub use turn::{carryover_narration, chronicle_entry, run_turn, TurnLog, TurnOutcome};
 
 // =============================================================================
@@ -371,6 +373,49 @@ mod tests {
             "ビートが出来事として併記される: {}",
             e.summary
         );
+    }
+
+    /// 【セーブ / ロード (spec 07 Phase A)】進行中セッションの正本 (state: rng カーソル・
+    /// votes・present_overrides・flags 込み) と語りの継続性 (chronicle/last_narration/
+    /// pending_*) が YAML 1 file を roundtrip して同値に戻る。骨格は保存しない (content 参照
+    /// のみ)。版不一致のセーブは**黙って壊れた再開をせず**拒否する。
+    #[test]
+    fn session_save_roundtrips_state_and_carryovers() {
+        let sc = scenario();
+        let mut state = fresh(&sc);
+        // 進行中らしい状態を作る (どの可変状態も丸ごと運ばれることの見本)。
+        state.turn = 7;
+        state.flags.insert("door_open".into(), true);
+        state.votes.insert("mira".into(), "yuren".into());
+        state.present_overrides.insert("alice".into(), false);
+        let _ = state.rng.roll(20); // rng カーソルを進める (出目まで再現の証拠)
+
+        let save = SessionSave {
+            version: SAVE_VERSION,
+            content: SavedContent::Package { path: "packages/gnosia_village".into() },
+            package_version: "0.1.0".into(),
+            module: None,
+            state: state.clone(),
+            campaign_memory: CampaignMemory::new(),
+            history: vec![TurnLog { turn: 1, player: "見回す".into(), summary: "六人が集った".into() }],
+            last_narration: "霧が窓を這う。".into(),
+            pending_checks: vec![],
+            pending_lore: vec![],
+        };
+        let path = std::env::temp_dir().join("kataribe_poc_session_save.yaml");
+        save_session(&path, &save).expect("保存できる");
+        let loaded = load_session(&path).expect("読める");
+        assert_eq!(loaded.state, state, "正本が丸ごと同値で戻る (rng カーソル込み)");
+        assert_eq!(loaded.history.len(), 1, "chronicle が戻る");
+        assert_eq!(loaded.last_narration, "霧が窓を這う。", "継続性が戻る");
+        assert!(matches!(loaded.content, SavedContent::Package { ref path } if path.contains("gnosia")));
+
+        // 版不一致は拒否 (v1 は実験的 — 黙って壊れた再開をしない)。
+        let mut old = save.clone();
+        old.version = 999;
+        save_session(&path, &old).expect("保存はできる");
+        assert!(load_session(&path).is_err(), "版不一致はロード拒否");
+        std::fs::remove_file(&path).ok();
     }
 
     /// 【経緯の予算】history_note は文字予算内で新しい方を残し、古い方から省略する
