@@ -10,7 +10,7 @@
  * 状態の真実は backend (GameState) が握る。ここは command が返す view を描画するだけ。
  * パッケージパスの追加/削除は PackageDialog、その他設定は SettingsDialog に分離。
  */
-import { ref, watch, onMounted } from "vue";
+import { computed, ref, watch, onMounted } from "vue";
 import { useGameStore } from "./stores/game";
 import TitleBar from "./components/TitleBar.vue";
 import PackageDialog from "./components/PackageDialog.vue";
@@ -22,6 +22,11 @@ import ActionInput from "./components/ActionInput.vue";
 const game = useGameStore();
 const showSettings = ref(false);
 const showPackages = ref(false);
+
+// 選択中パッケージのオートセーブ (spec 07 Phase C)。在れば「続きから (turn N)」を提示する。
+const selectedAutosaveTurn = computed(
+  () => game.packages.find((p) => p.path === game.packagePath)?.autosave_turn ?? null,
+);
 
 // ループ BGM の <audio> 要素。store.bgm (場所の BGM) を src に流し、音量はミュート/音量設定に追従。
 // 状態の真実は store が握り、ここは再生デバイスとして従う (CG/SE と分業: SE は one-shot で store が鳴らす)。
@@ -103,8 +108,22 @@ onMounted(() => {
           </option>
         </select>
         <button
+          v-if="selectedAutosaveTurn != null"
           :disabled="game.loading"
           class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
+          :title="`オートセーブから再開 (turn ${selectedAutosaveTurn})`"
+          @click="game.resumeGame()"
+        >
+          続きから (turn {{ selectedAutosaveTurn }})
+        </button>
+        <button
+          :disabled="game.loading"
+          :class="[
+            'rounded px-3 py-1 text-sm font-bold disabled:opacity-40',
+            selectedAutosaveTurn != null
+              ? 'bg-ash/60 hover:bg-ash text-parchment'
+              : 'bg-ember/80 hover:bg-ember text-ink',
+          ]"
           @click="game.newGame()"
         >
           新しいゲーム

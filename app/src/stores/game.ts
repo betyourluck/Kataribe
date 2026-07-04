@@ -42,6 +42,8 @@ export interface PackageEntry {
   description: string;
   playable: boolean; // manifest が読めれば true (単発・campaign-entry 双方)。読込エラー時のみ false
   error: string | null;
+  // オートセーブが在ればその時点のターン数 (「続きから (turn N)」ボタンの提示素)。無ければ null。
+  autosave_turn: number | null;
 }
 
 // localStorage からパス一覧を読む (壊れていれば同梱既定にフォールバック)。
@@ -203,6 +205,27 @@ export const useGameStore = defineStore("game", {
       this.refreshPackages();
     },
 
+    // new_game / resume_game 共通の view 反映。resume なら再開マーカーと前回までの語りをログに出す。
+    applyGameView(view: GameView, path: string) {
+      this.started = true;
+      this.packagePath = path;
+      this.title = view.title;
+      this.state = view.state;
+      this.background = assetUrl(view.background);
+      this.bgm = assetUrl(view.bgm);
+      this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
+      this.log = [{ kind: "opening", text: view.description }];
+      if (view.resumed) {
+        this.log.push({ kind: "system", text: `── 続きから (turn ${view.resumed.turn}) ──` });
+        if (view.resumed.last_narration) {
+          this.log.push({ kind: "narration", text: view.resumed.last_narration });
+        }
+        for (const w of view.resumed.warnings) {
+          this.log.push({ kind: "system", text: `⚠ ${w}` });
+        }
+      }
+    },
+
     async newGame(packagePath?: string) {
       const path = packagePath ?? this.packagePath;
       if (!path) return;
@@ -212,14 +235,24 @@ export const useGameStore = defineStore("game", {
         // 言語設定タブの選択 (localStorage) を backend へ。却下理由の localize に効く。
         const lang = localStorage.getItem("kataribe.lang") || null;
         const view = await invoke<GameView>("new_game", { packagePath: path, lang });
-        this.started = true;
-        this.packagePath = path;
-        this.title = view.title;
-        this.state = view.state;
-        this.background = assetUrl(view.background);
-        this.bgm = assetUrl(view.bgm);
-        this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
-        this.log = [{ kind: "opening", text: view.description }];
+        this.applyGameView(view, path);
+      } catch (e) {
+        this.error = String(e);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    // オートセーブから再開 (spec 07 Phase C)。正本と語りの継続性は backend が復元する。
+    async resumeGame(packagePath?: string) {
+      const path = packagePath ?? this.packagePath;
+      if (!path) return;
+      this.loading = true;
+      this.error = null;
+      try {
+        const lang = localStorage.getItem("kataribe.lang") || null;
+        const view = await invoke<GameView>("resume_game", { packagePath: path, lang });
+        this.applyGameView(view, path);
       } catch (e) {
         this.error = String(e);
       } finally {

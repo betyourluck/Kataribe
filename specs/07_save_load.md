@@ -1,6 +1,6 @@
 # 07. セーブ / ロード — セッションの器を file にする
 
-Status: **Draft rev1（Phase A+B 実装済・Phase C=GUI は査読待ち）** / 2026-07-04
+Status: **Done（Phase A+B+C 実装済。査読 3 点はユーザー確定: app data dir / 選択時自動提示 / autosave のみ）** / 2026-07-04
 Scope: 進行中のセッション（正本 state + 語りの継続性）を 1 file に保存し、後から再開できる
 ようにする。動機は実プレイの実害: Gemini 長セッション（~1h, 2〜300 円分）が provider 側の
 エラー（quota / 変形応答, failures.md #34）で打ち切られると全て失われる。
@@ -60,8 +60,19 @@ pending_lore: [ ... ]           # 発火済み recall の持ち越し (MemoryFra
   `kataribe_autosave.yaml`）へ自動保存、`--resume <file>` で再開（content 種別に応じ
   package/campaign/scenario を再ロードし、state/chronicle/継続性を復元。campaign は
   current_module + campaign_memory も復元）。
-- **Phase C（査読待ち）**: GUI — `play_turn` 毎に app data dir へ autosave、パッケージ選択時に
-  autosave が在れば「続きから / 最初から」を提示。Tauri command `resume_game` + frontend。
+- **Phase C（✅実装済 2026-07-04、査読 3 点確定）**: GUI —
+  - **置き場 = app data dir**（`app_data_dir/saves/<パッケージパスの FNV-1a ハッシュ>.yaml`。
+    配布 zip を差し替えてもセーブが消えない・パッケージフォルダを汚さない。パッケージ別 1 autosave）
+  - **書き込み**: `play_turn` の受理ターン + campaign 遷移確定後に上書き（却下では書かない、
+    失敗は警告のみ = 救済機構が本体を殺さない）
+  - **提示 = パッケージ選択時に自動**: `list_packages` が各パッケージの `autosave_turn` を返し、
+    選択中パッケージに autosave が在ればヘッダーに「続きから (turn N)」ボタン（ember 主ボタン化、
+    「新しいゲーム」は控えめ配色へ後退 = 誤クリックで上書き進行しにくい）
+  - **再開**: Tauri command `resume_game` — `open_package`（new_game と共通化した scope 許可 +
+    entry 分岐ロード、campaign はセーブの `module` を注入込みで開く）→ 正本 + 継続性を復元、
+    `GameView.resumed {turn, last_narration, warnings}` で開幕ログに「── 続きから (turn N) ──」+
+    前回までの語り + 版不一致警告を表示
+  - **手動スロットは Phase D 送り**（まず「消失しない」を守る）
 - **Phase D（将来）**: 手動セーブスロット・セーブ一覧 UI・メタ表示（ターン数/場所/日時）。
 
 ## スコープ外
@@ -70,15 +81,12 @@ pending_lore: [ ... ]           # 発火済み recall の持ち越し (MemoryFra
 - リプレイ再生（TurnLog 全量保存が将来の素材にはなる）。
 - クラウド同期。
 
-## 未決（査読事項）
+## 未決（査読事項）→ 確定 (2026-07-04 ユーザー回答)
 
-1. **GUI のセーブ置き場**: app data dir（OS 標準・アンインストールで消える）vs パッケージ隣接
-   （見つけやすい・配布フォルダを汚す）。推奨は app data dir + パッケージ path のハッシュで
-   1 autosave。
-2. **「続きから」の UX**: パッケージ選択時に自動提示（推奨）vs 明示のロードボタン。
-3. **手動スロット**: Phase D に送るか、Phase C に含めるか。
-4. **セーブ版数の互換ポリシー**: v1 は実験的（版上げで切り捨て可）とするか、migration を約束
-   するか。推奨は「v1 は実験的」宣言（serde(default) で前方互換の余地は残る）。
-5. **エラー時の自動リトライ強化**: 本 spec の外だが同じ実害への対策 — 429 の Retry-After 尊重 /
-   backoff 上限引き上げ（現状 1s→10s 上限・3 回）。セーブがあれば致命傷ではなくなるため優先度は
-   下がる。
+1. **GUI のセーブ置き場**: → **app data dir** + パッケージ path の FNV ハッシュで 1 autosave。
+2. **「続きから」の UX**: → **パッケージ選択時に自動提示**（ヘッダーのボタンで常時可視）。
+3. **手動スロット**: → **Phase D に送る**（Phase C は autosave のみ）。
+4. **セーブ版数の互換ポリシー**: 「v1 は実験的」宣言のまま（版不一致はロード拒否、
+   serde(default) で前方互換の余地は残す）。
+5. **エラー時の自動リトライ強化**（429 Retry-After 尊重 / backoff 引き上げ）: 本 spec 外に残置。
+   autosave により実害（セッション消失）が消えたため優先度低。

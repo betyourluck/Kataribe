@@ -101,6 +101,18 @@ export interface GameView {
   bgm: string | null;
   /** 現在地に居る NPC (顔アイコン行)。 */
   present_characters: CharacterView[];
+  /** オートセーブから再開したときの再開情報 (spec 07 Phase C)。新規開始なら null。 */
+  resumed: ResumeView | null;
+}
+
+/** セーブから再開したとき開幕ログへ出す情報。 */
+export interface ResumeView {
+  /** 再開時点のターン数。 */
+  turn: number;
+  /** 前回までの語り (「前回のあらすじ」としてログに出す)。 */
+  last_narration: string;
+  /** 版不一致などの警告 (拒否はしない)。 */
+  warnings: string[];
 }
 
 /** campaign のモジュール遷移 (前モジュールの結末 → 次モジュールへ state を糸通しして差し替え)。 */

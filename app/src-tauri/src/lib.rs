@@ -14,9 +14,10 @@ use std::path::{Component, Path, PathBuf};
 use gm_core::{is_goal, CheckOutcome, GameState, ImageMode, Lang, Scenario, PLAYER};
 use harness::{
     advance_campaign_injected, carryover_narration, chronicle_entry, is_campaign_entry,
-    load_campaign_package, load_lore, load_package, read_manifest, resolve_asset, resolve_recall,
-    run_turn, AssetKind, Campaign, CampaignMemory, LoreStore, MemoryFragment, ModuleId,
-    PackageManifest, TurnLog, TurnOutcome,
+    load_campaign_package, load_lore, load_module_injected, load_package, load_session,
+    read_manifest, resolve_asset, resolve_recall, run_turn, save_session, AssetKind, Campaign,
+    CampaignMemory, LoreStore, MemoryFragment, ModuleId, PackageManifest, SavedContent,
+    SessionSave, TurnLog, TurnOutcome, SAVE_VERSION,
 };
 use llm_client::{LlmClient, LlmConfig};
 use serde::Serialize;
@@ -149,6 +150,19 @@ struct GameView {
     bgm: Option<String>,
     /// 現在地に居る NPC (顔アイコン行)。
     present_characters: Vec<CharacterView>,
+    /// オートセーブから再開したときの再開情報 (spec 07 Phase C)。新規開始なら None。
+    resumed: Option<ResumeView>,
+}
+
+/// セーブから再開したときに frontend が開幕ログへ出す情報。
+#[derive(Serialize)]
+struct ResumeView {
+    /// 再開時点のターン数。
+    turn: u32,
+    /// 前回までの語り (継続文脈のスナップショット。ログに「前回のあらすじ」として出す)。
+    last_narration: String,
+    /// 版不一致などの警告 (拒否はしない — content の軽微な修正でセーブを殺さない)。
+    warnings: Vec<String>,
 }
 
 /// 1 ターンの結果 view (play_turn の戻り)。
@@ -293,6 +307,10 @@ struct GameSession {
     campaign_memory: CampaignMemory,
     /// package manifest (campaign 前進で遷移先モジュールへ player/globals/world を継承させるのに要る)。
     manifest: PackageManifest,
+    /// オートセーブの書き先 (app data dir。解決不能なら None = セーブ無効で続行)。spec 07 Phase C。
+    save_path: Option<PathBuf>,
+    /// 起動時に指定されたパッケージパス (SessionSave.content に刻む再ロード参照)。
+    package_path: String,
 }
 
 /// new_game 前は None。
@@ -325,6 +343,21 @@ fn normalize_path(p: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// パッケージ別オートセーブの置き場 (spec 07 Phase C): `app_data_dir/saves/<パスのFNVハッシュ>.yaml`。
+/// app data dir = OS 標準のアプリデータ置き場 — 配布 zip を差し替えてもセーブが消えない
+/// (パッケージフォルダを汚さない)。パスの安定ハッシュでパッケージ別 1 autosave。
+fn autosave_path(app: &tauri::AppHandle, pkg_dir: &Path) -> Option<PathBuf> {
+    let dir = app.path().app_data_dir().ok()?.join("saves");
+    let key = pkg_dir.to_string_lossy();
+    // FNV-1a 64bit (依存ゼロ・プロセス/バージョン非依存の安定ハッシュ)。
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Some(dir.join(format!("{h:016x}.yaml")))
 }
 
 /// 却下理由の表示言語。`KATARIBE_LANG=en` で英語、既定は日本語 (CLI と同値)。
@@ -458,12 +491,14 @@ struct PackageEntry {
     playable: bool,
     /// package.yaml が読めない等のエラー (一覧から外さず理由を表示する)。
     error: Option<String>,
+    /// オートセーブが在ればその時点のターン数 (「続きから (turn N)」の提示素。無ければ None)。
+    autosave_turn: Option<u32>,
 }
 
 /// localStorage 由来のパス列について、各 `package.yaml` の manifest を読み一覧 view を返す。
 /// entry は解決しない (一覧は title/description だけ要る、campaign パッケージも一覧には出す)。
 #[tauri::command]
-async fn list_packages(paths: Vec<String>) -> Vec<PackageEntry> {
+async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<PackageEntry> {
     let root = repo_root();
     paths
         .into_iter()
@@ -473,6 +508,10 @@ async fn list_packages(paths: Vec<String>) -> Vec<PackageEntry> {
             } else {
                 root.join(&p)
             };
+            // オートセーブの有無 (spec 07 Phase C)。読めない/版不一致は「続き無し」扱い (寛容)。
+            let autosave_turn = autosave_path(&app, &normalize_path(&dir))
+                .and_then(|sp| load_session(&sp).ok())
+                .map(|s| s.state.turn);
             match read_manifest(&dir) {
                 Ok(m) => {
                     // 単発シナリオも campaign-entry も playable (new_game が entry を分岐)。
@@ -483,6 +522,7 @@ async fn list_packages(paths: Vec<String>) -> Vec<PackageEntry> {
                         description: m.description,
                         playable,
                         error: None,
+                        autosave_turn,
                     }
                 }
                 Err(e) => PackageEntry {
@@ -491,6 +531,7 @@ async fn list_packages(paths: Vec<String>) -> Vec<PackageEntry> {
                     description: String::new(),
                     playable: false,
                     error: Some(e.to_string()),
+                    autosave_turn: None,
                 },
             }
         })
@@ -584,19 +625,18 @@ fn upsert_env(path: &Path, updates: &[(String, String)]) -> std::io::Result<()> 
     std::fs::write(path, out.join("\n") + "\n")
 }
 
-#[tauri::command]
-async fn new_game(
-    app: tauri::AppHandle,
-    package_path: Option<String>,
-    lang: Option<String>,
-    session: tauri::State<'_, SharedSession>,
-) -> Result<GameView, String> {
+/// パッケージを開く共通部 (new_game / resume_game): scope 許可 + entry 分岐ロード + 注入。
+/// `module` 指定で campaign のそのモジュールを開く (再開用。単発パッケージでは無視)。
+fn open_package(
+    app: &tauri::AppHandle,
+    rel: &str,
+    module: Option<&ModuleId>,
+) -> Result<(PathBuf, Scenario, Option<Campaign>, ModuleId, PackageManifest), String> {
     let root = repo_root();
-    let rel = package_path.unwrap_or_else(|| DEFAULT_PACKAGE.to_string());
-    let pkg_dir = if Path::new(&rel).is_absolute() {
-        PathBuf::from(&rel)
+    let pkg_dir = if Path::new(rel).is_absolute() {
+        PathBuf::from(rel)
     } else {
-        root.join(&rel)
+        root.join(rel)
     };
     // `..` を畳む (asset protocol は `..` 入りパスを 403 拒否。scope 許可・解決の前に必須)。
     let pkg_dir = normalize_path(&pkg_dir);
@@ -607,16 +647,35 @@ async fn new_game(
         .allow_directory(&pkg_dir, true)
         .map_err(|e| format!("アセット scope の許可に失敗: {e}"))?;
 
-    // entry が campaign.yaml なら開始モジュールを、単発なら entry シナリオを読む。
+    // entry が campaign.yaml なら開始 (または指定) モジュールを、単発なら entry シナリオを読む。
     // どちらも package の player/globals/world を注入する (campaign は各モジュールへ継承)。
     let manifest = read_manifest(&pkg_dir).map_err(|e| e.to_string())?;
-    let (scenario, campaign, current_module, manifest) = if is_campaign_entry(&manifest.entry) {
+    if is_campaign_entry(&manifest.entry) {
         let loaded = load_campaign_package(&pkg_dir).map_err(|e| e.to_string())?;
-        (loaded.scenario, Some(loaded.campaign), loaded.start_module, loaded.manifest)
+        let target = module.cloned().unwrap_or_else(|| loaded.start_module.clone());
+        let scenario = if target == loaded.start_module {
+            loaded.scenario
+        } else {
+            // 再開: セーブに刻まれた途中モジュールを注入込みで開く。
+            load_module_injected(&loaded.campaign, &pkg_dir, &loaded.manifest, &target)
+                .map_err(|e| e.to_string())?
+        };
+        Ok((pkg_dir, scenario, Some(loaded.campaign), target, loaded.manifest))
     } else {
         let loaded = load_package(&pkg_dir).map_err(|e| e.to_string())?;
-        (loaded.scenario, None, ModuleId::new(), loaded.manifest)
-    };
+        Ok((pkg_dir, loaded.scenario, None, ModuleId::new(), loaded.manifest))
+    }
+}
+
+#[tauri::command]
+async fn new_game(
+    app: tauri::AppHandle,
+    package_path: Option<String>,
+    lang: Option<String>,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<GameView, String> {
+    let rel = package_path.unwrap_or_else(|| DEFAULT_PACKAGE.to_string());
+    let (pkg_dir, scenario, campaign, current_module, manifest) = open_package(&app, &rel, None)?;
     // 伏線 (パッケージ内 memoria/) をロード。無ければ空。
     let lore = load_lore(&pkg_dir.join("memoria")).map_err(|e| e.to_string())?;
 
@@ -641,8 +700,10 @@ async fn new_game(
         background: background_for(&scenario, &state, &pkg_dir),
         bgm: bgm_for(&scenario, &state, &pkg_dir),
         present_characters: present_characters(&scenario, &state, &pkg_dir),
+        resumed: None,
     };
 
+    let save_path = autosave_path(&app, &pkg_dir);
     *session.lock().await = Some(GameSession {
         state,
         scenario,
@@ -657,7 +718,94 @@ async fn new_game(
         current_module,
         campaign_memory: CampaignMemory::new(),
         manifest,
+        save_path,
+        package_path: rel,
         // 言語設定タブ由来の lang を優先、無ければ env 既定。
+        lang: match lang.as_deref() {
+            Some("en") | Some("En") | Some("EN") => Lang::En,
+            Some("ja") | Some("Ja") | Some("JA") => Lang::Ja,
+            _ => lang_from_env(),
+        },
+    });
+    Ok(view)
+}
+
+/// オートセーブから再開する (spec 07 Phase C)。パッケージは content 参照から再ロード
+/// (骨格の単一真実源)、正本 state と語りの継続性 (chronicle/last_narration/pending_*) は
+/// セーブから復元する。campaign は途中モジュール + campaign_memory も復元。
+#[tauri::command]
+async fn resume_game(
+    app: tauri::AppHandle,
+    package_path: String,
+    lang: Option<String>,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<GameView, String> {
+    // セーブを先に読む (campaign の途中モジュール指定が open_package に要る)。
+    let root = repo_root();
+    let dir0 = if Path::new(&package_path).is_absolute() {
+        PathBuf::from(&package_path)
+    } else {
+        root.join(&package_path)
+    };
+    let save_path =
+        autosave_path(&app, &normalize_path(&dir0)).ok_or("アプリデータフォルダを解決できない")?;
+    let save = load_session(&save_path).map_err(|e| e.to_string())?;
+
+    let (pkg_dir, scenario, campaign, current_module, manifest) =
+        open_package(&app, &package_path, save.module.as_ref())?;
+    let lore = load_lore(&pkg_dir.join("memoria")).map_err(|e| e.to_string())?;
+    let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
+    let client = LlmClient::new(config).map_err(|e| e.to_string())?;
+
+    // 版不一致は警告のみ (typo 修正でセーブを全滅させない。壊れは engine の閉世界却下が守る)。
+    let mut warnings = Vec::new();
+    if save.package_version != manifest.version {
+        warnings.push(format!(
+            "パッケージの版がセーブ時 ({}) と異なります ({})。内容変更により整合しない可能性があります",
+            save.package_version, manifest.version
+        ));
+    }
+
+    let state = save.state;
+    let title = if manifest.title.is_empty() {
+        scenario.title.clone()
+    } else {
+        manifest.title.clone()
+    };
+    let view = GameView {
+        title,
+        location: state.location.clone(),
+        description: scenario
+            .location(&state.location)
+            .map(|l| l.description.clone())
+            .unwrap_or_default(),
+        state: state_view(&state, &scenario, &save.history),
+        background: background_for(&scenario, &state, &pkg_dir),
+        bgm: bgm_for(&scenario, &state, &pkg_dir),
+        present_characters: present_characters(&scenario, &state, &pkg_dir),
+        resumed: Some(ResumeView {
+            turn: state.turn,
+            last_narration: normalize(&save.last_narration),
+            warnings,
+        }),
+    };
+
+    *session.lock().await = Some(GameSession {
+        state,
+        scenario,
+        lore,
+        client,
+        pending_lore: save.pending_lore,
+        pending_checks: save.pending_checks,
+        package_root: pkg_dir,
+        last_narration: save.last_narration,
+        history: save.history,
+        campaign,
+        current_module,
+        campaign_memory: save.campaign_memory,
+        manifest,
+        save_path: Some(save_path),
+        package_path,
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
             Some("ja") | Some("Ja") | Some("JA") => Lang::Ja,
@@ -864,6 +1012,31 @@ async fn play_turn(
         }
     }
 
+    // オートセーブ (spec 07 Phase C): 受理ターン + campaign 遷移が全て確定したこの地点で書く。
+    // 却下では書かない (state 無傷 = セーブも不変)。失敗は警告のみ (救済機構が本体を殺さない)。
+    if view.accepted {
+        if let Some(path) = sess.save_path.clone() {
+            let save = SessionSave {
+                version: SAVE_VERSION,
+                content: SavedContent::Package { path: sess.package_path.clone() },
+                package_version: sess.manifest.version.clone(),
+                module: sess.campaign.is_some().then(|| sess.current_module.clone()),
+                state: sess.state.clone(),
+                campaign_memory: sess.campaign_memory.clone(),
+                history: sess.history.clone(),
+                last_narration: sess.last_narration.clone(),
+                pending_checks: sess.pending_checks.clone(),
+                pending_lore: sess.pending_lore.clone(),
+            };
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = save_session(&path, &save) {
+                eprintln!("[警告] オートセーブ失敗: {e}");
+            }
+        }
+    }
+
     Ok(view)
 }
 
@@ -872,6 +1045,7 @@ pub fn run() {
         .manage(SharedSession::new(None))
         .invoke_handler(tauri::generate_handler![
             new_game,
+            resume_game,
             play_turn,
             list_packages,
             get_llm_config,
