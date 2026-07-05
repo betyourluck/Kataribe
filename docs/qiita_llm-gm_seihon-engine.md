@@ -1,5 +1,7 @@
 # LLMにTRPGのゲームマスターをやらせると「忘れる・矛盾する」。だから状態の真実をRustの決定論エンジンに奪わせた
 
+<!-- 公開版: https://qiita.com/outcast_zari/items/fdff41b2cd5d2d7d3506 -->
+
 **著者: ザリ・ロブステル**
 
 ---
