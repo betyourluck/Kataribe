@@ -167,7 +167,24 @@ pub async fn run_turn<P: DeltaProposer>(
     let mut rejected: Vec<Vec<RejectReason>> = Vec::new();
 
     for attempt in 1..=max_attempts.max(1) {
-        let delta = proposer.propose(&messages).await?;
+        // 壊れた構造化出力 (JSON パース失敗) は却下と同じく「raw を戻して再提出」させる —
+        // 「パース失敗は raw を保持し再生成の燃料にする」(llm_client #4) の結線 (#40)。
+        // 実測: Gemini が `"ops": "\n"` 等を出した時、従来はターンが丸ごとエラーで蒸発した。
+        let delta = match proposer.propose(&messages).await {
+            Ok(d) => d,
+            Err(HarnessError::Proposer(llm_client::LlmError::Parse { raw, source }))
+                if attempt < max_attempts.max(1) =>
+            {
+                messages.push(ChatMessage::assistant(raw));
+                messages.push(ChatMessage::user(format!(
+                    "あなたの前回の出力は JSON として壊れていて読めなかった ({source})。\
+                     同じ内容を、スキーマに従う**正しい JSON だけ**で再提出せよ \
+                     (narration / ops / summary。ops は必ず配列。前置き・注釈・フェンスは不要)。"
+                )));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
 
         match adjudicate(state, scenario, &delta) {
             Verdict::Accept => {

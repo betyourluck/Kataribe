@@ -323,7 +323,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         pending_checks = Vec::new();
         match outcome {
             Ok(TurnOutcome::Accepted { narration, summary, rolls, checks, fired, attempts, rejected }) => {
-                println!("\n{narration}");
+                // literal `\n` を実改行へ (#16 の CLI 版。正本は触らない提示層の掃除)。
+                println!("\n{}", narration.replace("\\n", "\n"));
                 // 発火ビートを先に解決 (表示と GM への還流の素)。ビートは GM が見ていない
                 // 筋書きの出来事なので、経緯ログと継続文脈の両方へ併記する。
                 let beats = resolve_recall(&lore, &fired);

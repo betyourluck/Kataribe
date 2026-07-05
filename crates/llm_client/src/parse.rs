@@ -130,7 +130,7 @@ pub fn sanitize_narration(s: &str) -> String {
 pub fn extract<T: DeserializeOwned>(message: &ResponseMessage) -> Result<T, LlmError> {
     if let Some(call) = message.tool_calls.first() {
         let raw = &call.function.arguments;
-        return serde_json::from_str::<T>(raw).map_err(|source| LlmError::Parse {
+        return from_str_lenient::<T>(raw).map_err(|source| LlmError::Parse {
             source,
             raw: raw.clone(),
         });
@@ -144,16 +144,48 @@ pub fn extract<T: DeserializeOwned>(message: &ResponseMessage) -> Result<T, LlmE
             // まず素直にパース。失敗したら prose に包まれた JSON を balanced な `{...}` から救済する。
             // StateDelta は serde(default) で空 object すら通るので、**最後の** object を採る
             // (答えは推論の後に来る = 前置きの断片でなく本体を拾う)。
-            return match serde_json::from_str::<T>(&cleaned) {
+            return match from_str_lenient::<T>(&cleaned) {
                 Ok(v) => Ok(v),
                 Err(source) => json_objects(&content)
                     .into_iter()
                     .rev()
-                    .find_map(|obj| serde_json::from_str::<T>(obj).ok())
+                    .find_map(|obj| from_str_lenient::<T>(obj).ok())
                     .ok_or(LlmError::Parse { source, raw: cleaned }),
             };
         }
     }
 
     Err(LlmError::NoStructuredOutput)
+}
+
+/// JSON テキストを `T` へ。素直な from_str が失敗したら、実 LLM で観測した崩れ形を
+/// **決定論的に**直してから再試行する (#28/#30 と同族のソース後処理、#40):
+/// - `"ops"` が**文字列** (Gemini が `"ops": "\n"` や JSON 配列を二重エンコードした文字列を
+///   出す) → 空白のみなら `[]`、JSON 配列としてパースできればその配列に差し替える。
+///
+/// 失敗時は**最初の** serde エラーを返す (崩れの一次症状を診断に残す)。
+fn from_str_lenient<T: DeserializeOwned>(raw: &str) -> Result<T, serde_json::Error> {
+    let first = match serde_json::from_str::<T>(raw) {
+        Ok(v) => return Ok(v),
+        Err(e) => e,
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Err(first);
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return Err(first);
+    };
+    let Some(ops_str) = obj.get("ops").and_then(|v| v.as_str()) else {
+        return Err(first);
+    };
+    let fixed = if ops_str.trim().is_empty() {
+        serde_json::Value::Array(Vec::new())
+    } else {
+        match serde_json::from_str::<serde_json::Value>(ops_str.trim()) {
+            Ok(arr @ serde_json::Value::Array(_)) => arr,
+            _ => return Err(first),
+        }
+    };
+    obj.insert("ops".to_string(), fixed);
+    serde_json::from_value::<T>(value).map_err(|_| first)
 }

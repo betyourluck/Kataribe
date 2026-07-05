@@ -360,43 +360,59 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
     let alive = |e: &str| {
         state.entities.get(e).and_then(|s| s.get("生存")).is_none_or(|v| *v == 1)
     };
+    // NPC 分は「必ず並べよ」の義務、player 分は**代行禁止** (#39: 票はプレイヤーの選択であり、
+    // 未指名なら narration で促す = 夜の襲撃先/占い先を「聞くターン」が成立する)。
     let mut open_votes: Vec<String> = Vec::new();
     for rule in &scenario.vote_rules {
         if !rule.when.eval(state) {
             continue;
         }
-        let mut ids: Vec<String> = vec![gm_core::PLAYER.to_string()];
-        ids.extend(scenario.characters.keys().cloned());
-        let eligible: Vec<String> = ids
-            .into_iter()
-            .filter(|id| alive(id))
-            .filter(|id| match &rule.voter_attribute {
-                None => true,
-                Some(va) => state.attribute_of(id, &va.key) == va.value,
-            })
-            .map(|id| match scenario.characters.get(&id).map(|c| c.name.trim()) {
+        let matches_rule = |id: &str| match &rule.voter_attribute {
+            None => true,
+            Some(va) => state.attribute_of(id, &va.key) == va.value,
+        };
+        let npcs: Vec<String> = scenario
+            .characters
+            .keys()
+            .filter(|id| alive(id) && matches_rule(id))
+            .map(|id| match scenario.characters.get(id).map(|c| c.name.trim()) {
                 Some(name) if !name.is_empty() && name != id => format!("{name} ({id})"),
-                _ => id,
+                _ => id.clone(),
             })
             .collect();
-        if eligible.is_empty() {
+        let player_ok = alive(gm_core::PLAYER) && matches_rule(gm_core::PLAYER);
+        if npcs.is_empty() && !player_ok {
             continue;
         }
         let who = match &rule.voter_attribute {
             Some(va) => format!("{}={} の生存者", va.key, va.value),
             None => "生存者なら誰でも".to_string(),
         };
-        open_votes.push(format!("{who} → {}", eligible.join(", ")));
+        let mut note = format!("({who}) ");
+        if !npcs.is_empty() {
+            note.push_str(&format!(
+                "{} — **この者たちの票をこのターンの ops に cast_vote で必ず並べよ** \
+                 (各自の視点から独立に決める。票を出さなければこの局面では何も起きない)。",
+                npcs.join(", ")
+            ));
+        }
+        if player_ok {
+            if state.votes.contains_key(gm_core::PLAYER) {
+                note.push_str("プレイヤー (player) の票は受領済み。");
+            } else {
+                note.push_str(
+                    "プレイヤー (player) にも投票権がある — **票を代行するな**。\
+                     行動文で対象を指名していれば cast_vote に汲み、まだ指名していなければ \
+                     narration の結びでプレイヤーに対象の指名を促せ。",
+                );
+            }
+        }
+        open_votes.push(note);
     }
     let open_votes = if open_votes.is_empty() {
         String::new()
     } else {
-        format!(
-            "\n- ⚠ **いま投票が開いている**。票を出せる者: {}。**この者たち全員の票を、\
-             このターンの ops に cast_vote で必ず並べよ** — 票を出さなければこの局面では\
-             何も起きない。誰に入れるかは各自の性格・疑念・秘匿役職からあなたが決めてよい。",
-            open_votes.join(" ／ ")
-        )
+        format!("\n- ⚠ **いま投票が開いている**。{}", open_votes.join(" ／ "))
     };
     format!(
         "# 現在の状態 (turn {})\n- 現在地: {}\n- この場にいる: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}\n- 使える能力: {}\n- 属性: {}{}",

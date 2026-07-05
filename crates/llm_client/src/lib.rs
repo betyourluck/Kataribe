@@ -407,6 +407,23 @@ mod tests {
         assert!(LlmConfig::new("u", "k", "m").use_tools, "既定は tool-use ON");
     }
 
+    /// 【ops が文字列に化ける崩れの救済 (#40)】Gemini 実プレイで観測: `"ops": "\n"` (配列で
+    /// あるべき場所に文字列) を出し、パース失敗で 9 ターン中 4 ターンが丸ごと蒸発した。
+    /// 決定論的に救済する — 空白のみの文字列 → 空配列、JSON 配列の二重エンコード → その配列。
+    #[test]
+    fn ops_as_string_is_rescued() {
+        let resp = response_with_tool_args(r#"{"narration":"夜が更ける","ops":"\n"}"#);
+        let d: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        assert_eq!(d.narration, "夜が更ける");
+        assert!(d.ops.is_empty(), "空白のみの ops 文字列は空配列として救済");
+
+        let resp = response_with_tool_args(
+            r#"{"narration":"n","ops":"[{\"op\":\"set_flag\",\"key\":\"k\",\"value\":true}]"}"#,
+        );
+        let d: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        assert_eq!(d.ops.len(), 1, "二重エンコードされた ops は配列として救済");
+    }
+
     /// 【再生成の燃料】壊れた JSON は raw を保持した Parse エラーになる
     /// (却下→再生成ループが raw を LLM に戻せること = self_repair 同型の前提)。
     #[test]

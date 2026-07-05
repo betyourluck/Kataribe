@@ -375,6 +375,55 @@ mod tests {
         );
     }
 
+    /// 【パース失敗の self-repair 結線 (#40)】壊れた構造化出力 (LlmError::Parse) は却下と
+    /// 同じく「raw + 修正指示を戻して再提出」させる — 従来はターンが丸ごとエラーで蒸発した
+    /// (Gemini 実測: `"ops": "\n"` で 9 ターン中 4 ターン消失)。raw 保持 (llm_client #4) の
+    /// 「再生成の燃料」がここで初めて燃える。
+    #[tokio::test]
+    async fn parse_failure_is_fed_back_and_retried() {
+        struct FlakyProposer {
+            calls: Mutex<u32>,
+        }
+        impl DeltaProposer for FlakyProposer {
+            async fn propose(
+                &self,
+                messages: &[ChatMessage],
+            ) -> Result<StateDelta, HarnessError> {
+                let mut n = self.calls.lock().unwrap();
+                *n += 1;
+                if *n == 1 {
+                    // 1 回目: 壊れた JSON (実測の ops 文字列崩れを模す)。
+                    let bad = r#"{"narration":"x","ops":"@@"}"#;
+                    let source = serde_json::from_str::<StateDelta>(bad).unwrap_err();
+                    return Err(HarnessError::Proposer(llm_client::LlmError::Parse {
+                        source,
+                        raw: bad.to_string(),
+                    }));
+                }
+                // 2 回目: 修正指示が messages に積まれていることを確認してから正しい提案。
+                let fed_back = messages
+                    .iter()
+                    .any(|m| m.content.contains("JSON として壊れていて読めなかった"));
+                assert!(fed_back, "raw+修正指示が還流されている");
+                Ok(StateDelta::new("直した", vec![]))
+            }
+        }
+
+        let sc = scenario();
+        let mut state = fresh(&sc);
+        let p = FlakyProposer { calls: Mutex::new(0) };
+        let out = run_turn(&p, &mut state, &sc, "調べる", 3, Lang::Ja, &[], &[], "", &[])
+            .await
+            .expect("パース失敗はエラーでなく再生成で回復する");
+        match out {
+            TurnOutcome::Accepted { narration, attempts, .. } => {
+                assert_eq!(narration, "直した");
+                assert_eq!(attempts, 2, "1 回目=壊れ、2 回目=修復");
+            }
+            other => panic!("Accepted であるべき: {other:?}"),
+        }
+    }
+
     /// 【いま開いている投票の動的 surfacing (#37)】静的な規則 (scenario_brief) + 一般義務
     /// (GM_SYSTEM #32) だけでは、絞られた局面 (夜の狩り) で票が出ない事象が実測で再発した
     /// (信頼度 ~1/3: gnosia 1周目✗ → 修正 → 2周目○ → vampire ✗)。第三層として state_brief が
@@ -403,7 +452,7 @@ mod tests {
         let brief = prompt::state_brief(&s, &sc);
         assert!(!brief.contains("いま投票が開いている"), "フェーズ外では出ない: {brief}");
 
-        // 夜: 人狼 (アリス) だけが列挙される。村人 (ボブ) は出ない。
+        // 夜: 人狼 (アリス) だけが列挙される。村人 (ボブ) は出ず、player (村人) の促し節も出ない。
         s.flags.insert("夜フェーズ".into(), true);
         let brief = prompt::state_brief(&s, &sc);
         let line = brief
@@ -414,18 +463,31 @@ mod tests {
         assert!(!line.contains("ボブ"), "投票できない者は列挙しない: {line}");
         assert!(
             line.contains("cast_vote") && line.contains("必ず"),
-            "このターンの義務として接地: {line}"
+            "NPC 分はこのターンの義務として接地: {line}"
         );
+        assert!(!line.contains("促せ"), "player に投票権が無ければ促し節は出ない: {line}");
 
-        // 昼: 生存者なら誰でも → player もアリスもボブも列挙。
+        // 昼: 生存者なら誰でも → NPC は義務列挙、player は**代行禁止 + 未指名なら促し** (#39)。
         s.flags.insert("夜フェーズ".into(), false);
         s.flags.insert("投票フェーズ".into(), true);
         let brief = prompt::state_brief(&s, &sc);
         let line = brief.lines().find(|l| l.contains("いま投票が開いている")).unwrap();
         assert!(
             line.contains("player") && line.contains("アリス") && line.contains("ボブ"),
-            "昼は生存者全員: {line}"
+            "昼は生存者全員が現れる: {line}"
         );
+        assert!(
+            line.contains("代行") && line.contains("促せ"),
+            "player の票は代行禁止・未指名なら narration で促す: {line}"
+        );
+
+        // player が投票済みなら促さない (受領済みの明示)。
+        s.votes.insert("player".into(), "alice".into());
+        let brief = prompt::state_brief(&s, &sc);
+        let line = brief.lines().find(|l| l.contains("いま投票が開いている")).unwrap();
+        assert!(line.contains("受領済み"), "投票済みなら促しでなく受領を示す: {line}");
+        assert!(!line.contains("促せ"), "投票済みで促さない: {line}");
+        s.votes.clear();
 
         // 死者は列挙しない: 人狼が全滅した夜は該当者ゼロ = 節ごと出ない。
         s.flags.insert("投票フェーズ".into(), false);
