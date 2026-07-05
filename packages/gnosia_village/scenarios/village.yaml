@@ -74,6 +74,9 @@ triggers:
       - { op: record_turn, key: 夜T }
     narration: 票が読み上げられ、最も疑われた者が村外れの櫓へ引かれてゆく。やがて夜が落ち、霧が濃くなる — 狼の刻だ。村人たちは戸を閉ざす。
 
+  # 夜の長さはプレイヤーの役職で変わる (#39): ただの村人なら 1 ターンで夜明け (dawn)。
+  # 人狼/占い師なら 2 ターン (dawn_after_choice) — 1 ターン目に GM が襲撃先/占い先の指名を促し、
+  # 2 ターン目のプレイヤーの指名で夜が決着する。
   - id: dawn
     repeatable: true
     when:
@@ -81,6 +84,20 @@ triggers:
       of:
         - { kind: flag_is, key: 夜フェーズ, value: true }
         - { kind: turns_since, key: 夜T, turns: 1 }
+        - { kind: attribute_is, entity: player, key: 役職, value: 村人 }
+    effects:
+      - { op: resolve_vote }
+      - { op: set_flag, key: 夜フェーズ, value: false }
+      - { op: record_turn, key: 議論T }
+    narration: 夜が明けた。生き残った者たちが集会所に戻り、無事な顔ぶれを数える。村は再び議論に戻る。
+
+  - id: dawn_after_choice
+    repeatable: true
+    when:
+      kind: all
+      of:
+        - { kind: flag_is, key: 夜フェーズ, value: true }
+        - { kind: turns_since, key: 夜T, turns: 2 }
     effects:
       - { op: resolve_vote }
       - { op: set_flag, key: 夜フェーズ, value: false }
