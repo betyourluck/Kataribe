@@ -402,8 +402,10 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
             } else {
                 note.push_str(
                     "プレイヤー (player) にも投票権がある — **票を代行するな**。\
-                     行動文で対象を指名していれば cast_vote に汲み、まだ指名していなければ \
-                     narration の結びでプレイヤーに対象の指名を促せ。",
+                     行動文で対象を指名していれば (襲う/占う/投票する等の言い回しを問わず) \
+                     **その票を必ず voter=player の cast_vote として ops に含めよ — \
+                     narration で襲撃や占いを描写するだけでは正本には何も起きていない**。\
+                     まだ指名していなければ narration の結びでプレイヤーに対象の指名を促せ。",
                 );
             }
         }

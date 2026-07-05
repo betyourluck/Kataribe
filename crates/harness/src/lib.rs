@@ -480,6 +480,12 @@ mod tests {
             line.contains("代行") && line.contains("促せ"),
             "player の票は代行禁止・未指名なら narration で促す: {line}"
         );
+        // 実測 (vampire seed 8 run3): GM が吸血シーンを丸ごと語ったのに cast_vote を出さず、
+        // 物語と正本が乖離した。「描写だけでは起きていない」を player 節にも明記する。
+        assert!(
+            line.contains("描写するだけでは"),
+            "narration 描写だけでは票にならないことを player 節でも接地: {line}"
+        );
 
         // player が投票済みなら促さない (受領済みの明示)。
         s.votes.insert("player".into(), "alice".into());
