@@ -32,6 +32,43 @@ function loadAudioVolume(): number {
 function loadAudioMuted(): boolean {
   return localStorage.getItem(AUDIO_MUTED_KEY) === "true";
 }
+// --- 本文テキスト設定 (GM の語りの見た目。提示層のみ・localStorage 永続) ---
+const MSG_FONT_KEY = "kataribe.msgFont";
+const MSG_COLOR_KEY = "kataribe.msgColor";
+const MSG_SHADOW_KEY = "kataribe.msgShadow";
+/** 既定の本文色 (tailwind の parchment)。カラーピッカーの初期値と「既定に戻す」に使う。 */
+export const DEFAULT_MSG_COLOR = "#e8ddc8";
+/** 本文フォントの選択肢 (id → CSS font-family)。OS 同梱フォントへのフォールバック連鎖で環境差を吸収。 */
+export const MESSAGE_FONTS: { id: string; label: string; family: string }[] = [
+  { id: "default", label: "標準 (UI と同じ)", family: "" },
+  {
+    id: "mincho",
+    label: "明朝",
+    family: '"Yu Mincho", "游明朝", "Hiragino Mincho ProN", "MS PMincho", serif',
+  },
+  {
+    id: "gothic",
+    label: "ゴシック",
+    family: '"Yu Gothic", "游ゴシック", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif',
+  },
+  {
+    id: "maru",
+    label: "丸ゴシック",
+    family: '"HG丸ｺﾞｼｯｸM-PRO", "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif',
+  },
+];
+function loadMsgFont(): string {
+  const v = localStorage.getItem(MSG_FONT_KEY) || "default";
+  return MESSAGE_FONTS.some((f) => f.id === v) ? v : "default";
+}
+function loadMsgColor(): string {
+  return localStorage.getItem(MSG_COLOR_KEY) || "";
+}
+function loadMsgShadow(): number {
+  const v = Number(localStorage.getItem(MSG_SHADOW_KEY));
+  return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 0;
+}
+
 // 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。
 const BUILTIN_PACKAGES = ["packages/houkago", "packages/promise_demo", "packages/escape"];
 
@@ -78,6 +115,12 @@ interface GameState {
   presentCharacters: CharacterView[];
   // 背景の明るさ 0..100 (大きいほど画像が明るく見える=暗幕が薄い)。グラフィック設定。
   bgBrightness: number;
+  // 本文フォント (MESSAGE_FONTS の id)。表示設定。
+  msgFont: string;
+  // 本文の文字色 (hex)。空 = テーマ既定 (parchment)。表示設定。
+  msgColor: string;
+  // 本文の影の濃さ 0..100 (0=なし)。背景画像の上の可読性向上。表示設定。
+  msgShadow: number;
   // 音量 0..100 (BGM/SE 共通)。サウンド設定。
   audioVolume: number;
   // ミュート (true なら音を出さない)。サウンド設定。
@@ -104,6 +147,9 @@ export const useGameStore = defineStore("game", {
       bgm: null,
       presentCharacters: [],
       bgBrightness: loadBgBrightness(),
+      msgFont: loadMsgFont(),
+      msgColor: loadMsgColor(),
+      msgShadow: loadMsgShadow(),
       audioVolume: loadAudioVolume(),
       audioMuted: loadAudioMuted(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
@@ -130,6 +176,22 @@ export const useGameStore = defineStore("game", {
     },
     // 実効音量 0..1 (BGM/SE 共通)。ミュート時は 0。<audio>.volume と new Audio に渡す。
     audioGain: (s): number => (s.audioMuted ? 0 : Math.max(0, Math.min(1, s.audioVolume / 100))),
+    // 本文フォント (会話ログの container に inherit させる。空 = UI 既定のまま)。
+    messageFontFamily: (s): string =>
+      MESSAGE_FONTS.find((f) => f.id === s.msgFont)?.family ?? "",
+    // 本文 (語り系要素) の色 + 影。inline style なので class (text-parchment 等) より優先される。
+    narrationStyle: (s): Record<string, string> => {
+      const style: Record<string, string> = {};
+      if (s.msgColor) style.color = s.msgColor;
+      if (s.msgShadow > 0) {
+        const a = s.msgShadow / 100;
+        // 二層の影: 輪郭 (下 1px) + にじみ (広め)。濃さはスライダーに比例。
+        style.textShadow =
+          `0 1px ${(1 + a * 5).toFixed(1)}px rgba(0,0,0,${(a * 0.95).toFixed(2)}), ` +
+          `0 0 ${Math.round(a * 14)}px rgba(0,0,0,${(a * 0.6).toFixed(2)})`;
+      }
+      return style;
+    },
   },
 
   actions: {
@@ -137,6 +199,23 @@ export const useGameStore = defineStore("game", {
     setBgBrightness(v: number) {
       this.bgBrightness = Math.max(0, Math.min(100, Math.round(v)));
       localStorage.setItem(BG_BRIGHTNESS_KEY, String(this.bgBrightness));
+    },
+
+    // 本文フォントを設定 (即時反映 + localStorage 永続化)。表示設定タブから呼ぶ。
+    setMsgFont(id: string) {
+      this.msgFont = MESSAGE_FONTS.some((f) => f.id === id) ? id : "default";
+      localStorage.setItem(MSG_FONT_KEY, this.msgFont);
+    },
+    // 本文の文字色を設定 (空 = テーマ既定へ戻す)。
+    setMsgColor(hex: string) {
+      this.msgColor = hex;
+      if (hex) localStorage.setItem(MSG_COLOR_KEY, hex);
+      else localStorage.removeItem(MSG_COLOR_KEY);
+    },
+    // 本文の影の濃さを設定 (0 = なし)。
+    setMsgShadow(v: number) {
+      this.msgShadow = Math.max(0, Math.min(100, Math.round(v)));
+      localStorage.setItem(MSG_SHADOW_KEY, String(this.msgShadow));
     },
 
     // 音量を設定 (即時反映 + localStorage 永続化)。サウンド設定タブから呼ぶ。

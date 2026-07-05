@@ -7,9 +7,9 @@
  * - AIモデル: .env の LLM 設定 (base_url/model/api_key) を編集 → backend が env 即時反映 + .env 永続化
  * - ヘルプ: 操作の手引き
  */
-import { ref, onMounted } from "vue";
+import { computed, ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { useGameStore } from "../stores/game";
+import { DEFAULT_MSG_COLOR, MESSAGE_FONTS, useGameStore } from "../stores/game";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const game = useGameStore();
@@ -32,6 +32,16 @@ function applyFont() {
   document.documentElement.style.fontSize = `${fontScale.value}px`;
   localStorage.setItem(FONT_KEY, String(fontScale.value));
 }
+
+// --- 本文テキスト (フォント/色/影 — store が localStorage 永続を担う) ---
+const messageFonts = MESSAGE_FONTS;
+// カラーピッカーは常に具体値が要る (空 = テーマ既定 parchment を表示)。
+const msgColorValue = computed(() => game.msgColor || DEFAULT_MSG_COLOR);
+// プレビュー: 本文フォント + 色/影を実際の見た目で確認する。
+const previewStyle = computed(() => ({
+  fontFamily: game.messageFontFamily,
+  ...game.narrationStyle,
+}));
 
 // --- 言語設定 ---
 const LANG_KEY = "kataribe.lang";
@@ -115,6 +125,59 @@ onMounted(loadLlm);
               </select>
             </label>
             <p class="text-parchment/40 text-xs">UI 全体の基準フォントサイズを変えます（即時適用・localStorage に保存）。</p>
+
+            <hr class="border-ash/60" />
+            <h3 class="text-parchment font-bold">本文テキスト（GM の語り）</h3>
+            <label class="block text-sm text-parchment/70">
+              フォント
+              <select
+                :value="game.msgFont"
+                class="mt-1 block w-56 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                @change="game.setMsgFont(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="f in messageFonts" :key="f.id" :value="f.id">{{ f.label }}</option>
+              </select>
+            </label>
+            <div class="flex items-end gap-3">
+              <label class="block text-sm text-parchment/70">
+                文字色
+                <input
+                  type="color"
+                  :value="msgColorValue"
+                  class="mt-1 block h-8 w-16 cursor-pointer rounded bg-ash/40 p-0.5"
+                  @input="game.setMsgColor(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+              <button
+                class="rounded bg-ash/40 hover:bg-ash/70 px-2 py-1 text-xs text-parchment/70"
+                :disabled="!game.msgColor"
+                :class="{ 'opacity-40': !game.msgColor }"
+                @click="game.setMsgColor('')"
+              >
+                既定に戻す
+              </button>
+            </div>
+            <label class="block text-sm text-parchment/70">
+              文字の影（{{ game.msgShadow }}）
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="5"
+                :value="game.msgShadow"
+                class="mt-2 block w-64 accent-ember"
+                @input="game.setMsgShadow(+($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <!-- プレビュー: 現在の背景 (あれば) の上に本文サンプルを敷いて実際の見え方を確認 -->
+            <div class="mt-1 w-full max-w-md rounded border border-ash px-4 py-3" :style="game.backgroundStyle">
+              <p class="whitespace-pre-wrap leading-relaxed text-parchment" :style="previewStyle">
+                霧が窓の外を這う。囲炉裏の火が爆ぜて、誰かが息を呑んだ。—— 本文はこの見た目で表示されます。
+              </p>
+            </div>
+            <p class="text-parchment/40 text-xs">
+              会話ログの語りの文章に適用されます（即時適用・localStorage に保存）。影は背景画像の上での読みやすさに効きます。
+            </p>
           </section>
 
           <!-- グラフィック -->

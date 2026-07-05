@@ -5,10 +5,15 @@ const game = useGameStore();
 </script>
 
 <template>
-  <div class="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+  <!-- 本文フォントは container で inherit (空なら UI 既定のまま)。色+影は語り系要素にだけ当てる。 -->
+  <div class="flex-1 overflow-y-auto px-6 py-5 space-y-4" :style="{ fontFamily: game.messageFontFamily }">
     <template v-for="(entry, i) in game.log" :key="i">
       <!-- 開幕描写 -->
-      <p v-if="entry.kind === 'opening'" class="text-glow/90 italic whitespace-pre-wrap leading-relaxed">
+      <p
+        v-if="entry.kind === 'opening'"
+        class="text-glow/90 italic whitespace-pre-wrap leading-relaxed"
+        :style="game.narrationStyle"
+      >
         {{ entry.text }}
       </p>
 
@@ -20,13 +25,17 @@ const game = useGameStore();
       </div>
 
       <!-- GM の語り -->
-      <p v-else-if="entry.kind === 'narration'" class="whitespace-pre-wrap leading-relaxed text-parchment">
+      <p
+        v-else-if="entry.kind === 'narration'"
+        class="whitespace-pre-wrap leading-relaxed text-parchment"
+        :style="game.narrationStyle"
+      >
         {{ entry.text }}
       </p>
 
       <!-- 反応ビート + 想起された伏線 -->
       <div v-else-if="entry.kind === 'beat'" class="border-l-2 border-ember/60 pl-3 space-y-1">
-        <p class="text-ember">✦ {{ entry.narration }}</p>
+        <p class="text-ember" :style="{ textShadow: game.narrationStyle.textShadow ?? '' }">✦ {{ entry.narration }}</p>
         <p
           v-for="(line, j) in entry.recalled"
           :key="j"
@@ -52,7 +61,7 @@ const game = useGameStore();
             <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ c.success ? "成功" : "失敗" }}</span>
           </p>
           <!-- authored 結末ナレーション (毎回・同ターン)。失敗を必ず描く。 -->
-          <p v-if="c.narration" class="text-parchment/90 whitespace-pre-wrap">{{ c.narration }}</p>
+          <p v-if="c.narration" class="text-parchment/90 whitespace-pre-wrap" :style="game.narrationStyle">{{ c.narration }}</p>
         </template>
       </div>
 
