@@ -172,6 +172,10 @@ impl LocationItem {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
+    /// 人間向け**表示名** (id=機械用セレクタ / title=表示名 の三層思想、[`GoalDef`] の title と
+    /// 同類)。提示層 (GUI の現在地) が使う非検証の提示素材。空なら提示層が id へフォールバック。
+    #[serde(default)]
+    pub title: String,
     #[serde(default)]
     pub description: String,
     /// 背景画像のアセット ID (`images/` 配下のファイル名)。提示層が解決して背景にする。
@@ -416,6 +420,9 @@ pub enum ScenarioError {
     /// `secret_attributes` のキーがどこにも宣言されていない (幻属性の秘匿)。
     /// initial_attributes / CharacterDef.attributes / role_assignment.key のいずれかで宣言する。
     SecretAttributeUndeclared { key: AttrKey },
+    /// `hidden_attributes` のキーがどこにも宣言されていない (幻属性の本人未知秘匿)。
+    /// 宣言先は `SecretAttributeUndeclared` と同じ。
+    HiddenAttributeUndeclared { key: AttrKey },
     /// `vote_rules` の voter_attribute キーがどこにも宣言されていない (幻属性の投票権)。
     VoteRuleAttributeUndeclared { key: AttrKey },
     /// challenge の effects に `attempt_challenge` が入っている (A→A の無限再帰の芽)。
@@ -566,6 +573,14 @@ pub struct Scenario {
     /// role_assignment.key) 必須。
     #[serde(default)]
     pub secret_attributes: BTreeSet<AttrKey>,
+    /// **当人にも見えない**属性キー (呪い・自覚のない正体等)。`secret_attributes`
+    /// (本人分は見える = 人狼の自役職) より一段強い秘匿: **プレイヤー UI = 本人分ごと落とす** /
+    /// **GM = 全員分** (「本人未知」注記付き — 当人にすら明かさない語りの規律は prompt 層) /
+    /// 登場人物どうし = 不可。engine は宣言を運ぶだけで gate/トリガー評価は不変。
+    /// キーの宣言必須は secret と同じ (initial_attributes / CharacterDef.attributes /
+    /// role_assignment.key)。
+    #[serde(default)]
+    pub hidden_attributes: BTreeSet<AttrKey>,
     /// 投票権の宣言 (spec 06 Phase C)。CastVote はこのいずれかに合致したときだけ受理
     /// (デフォルト拒否)。詳細は [`VoteRule`]。
     #[serde(default)]
@@ -832,6 +847,15 @@ impl Scenario {
                 || self.role_assignment.as_ref().is_some_and(|ra| &ra.key == key);
             if !declared {
                 errs.push(ScenarioError::SecretAttributeUndeclared { key: key.clone() });
+            }
+        }
+        // 本人未知の秘匿属性も同じ宣言整合 (幻属性の秘匿を load 時に弾く)。
+        for key in &self.hidden_attributes {
+            let declared = self.initial_attributes.contains_key(key)
+                || self.characters.values().any(|c| c.attributes.contains_key(key))
+                || self.role_assignment.as_ref().is_some_and(|ra| &ra.key == key);
+            if !declared {
+                errs.push(ScenarioError::HiddenAttributeUndeclared { key: key.clone() });
             }
         }
         // 役職割り当ての整合 (spec 06 Phase A): 人数一致・幻キャラ・重複配布を load 時に弾く。

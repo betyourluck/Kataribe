@@ -75,6 +75,7 @@ triggers:
 
 locations:
   gate:
+    title: 祠の入口          # GUI 現在地の表示名 (id=機械用 / title=表示名)
     image: gate.svg          # images/gate.svg を背景に
     bgm: shrine_ambient.wav  # audios/shrine_ambient.wav をループ BGM に
     description: |
@@ -88,6 +89,7 @@ locations:
       - { to: altar, gate: { kind: flag_is, key: door_open, value: true } }
 
   altar:
+    title: 祭壇の間          # GUI 現在地の表示名
     image: altar.svg         # images/altar.svg を背景に
     bgm: shrine_ambient.wav  # 同じ環境音をループ (場所が変わっても切らさない＝同一 URL なら再代入しない)
     description: |

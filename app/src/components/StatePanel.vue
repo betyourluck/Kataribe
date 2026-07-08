@@ -42,6 +42,18 @@ function initials(name: string): string {
 }
 function onKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") selectedId.value = null;
+  // IME 変換中はショートカットを発火させない (変換候補操作のキーを奪わない)。
+  if (e.isComposing) return;
+  if (!e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.key === "Tab") {
+    // Ctrl+Tab: 進行⇄状態のトグル (2 枚なので往復が最速。Shift 併用も同じトグル)。
+    e.preventDefault();
+    activeTab.value = activeTab.value === "progress" ? "world" : "progress";
+  } else if (e.key === "1" || e.key === "2") {
+    // Ctrl+1/2: 直接選択 (タブが増えた時の拡張枠と同じ慣習)。
+    e.preventDefault();
+    activeTab.value = e.key === "1" ? "progress" : "world";
+  }
 }
 onMounted(() => window.addEventListener("keydown", onKeydown));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
@@ -59,7 +71,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             ? 'border-ember text-glow'
             : 'border-transparent text-parchment opacity-40 hover:opacity-90'
         "
-        title="進行 (ターン・目標・この場にいる)"
+        title="進行 (ターン・目標・この場にいる) — Ctrl+1 / Ctrl+Tab で切替"
         @click="activeTab = 'progress'"
       >
         <Icon name="target" :size="12" />
@@ -72,7 +84,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             ? 'border-ember text-glow'
             : 'border-transparent text-parchment opacity-40 hover:opacity-90'
         "
-        title="状態 (現在地・所持品・フラグ)"
+        title="状態 (現在地・所持品・フラグ) — Ctrl+2 / Ctrl+Tab で切替"
         @click="activeTab = 'world'"
       >
         <Icon name="location" :size="12" />
@@ -157,7 +169,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         <template v-else>
           <div class="mb-3">
             <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="location" />現在地</div>
-            <div class="text-parchment">{{ game.state.location }}</div>
+            <!-- 表示は authored title を優先、無ければ id (機械用セレクタ) へフォールバック。hover で id。 -->
+            <div class="text-parchment" :title="game.state.location">
+              {{ game.state.location_title || game.state.location }}
+            </div>
           </div>
 
           <div class="mb-3">

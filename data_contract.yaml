@@ -87,6 +87,7 @@ Scenario:
   hidden_flags: [FlagKey]           # 表示から隠すフラグ (hidden_stats のフラグ版, 2026-07-03)。タイマーの armed フラグ (x_done 等) のような変数用の帳簿フラグを、提示層 3 経路 (UI フラグ一覧 / state_brief の立っている状態 / scenario_brief の語彙節) が一切出さない。engine 非使用・非検証 = gate/トリガー評価は不変。キーは allowed_flags 必須 (validate HiddenFlagUndeclared)
   role_assignment: RoleAssignment?  # 役職のランダム割り当て (spec 06 Phase A, 2026-07-03)
   secret_attributes: [AttrKey]      # ゲーム的秘匿情報の属性キー (spec 06 Phase B, 2026-07-03)。hidden_* (全提示層から隠す帳簿) とは別軸の宛先別可視性: GM=全員分 (state_brief が〔秘匿〕注記付きで surface、演じ分け規律は GM_SYSTEM が刷り込み) / プレイヤー UI=本人分のみ (app state_view が NPC 分を DTO 段階で落とす=ネタバレ衛生) / 登場人物どうし=不可 (prompt 規律)。engine 非解釈 = gate/トリガー評価は不変。キーは initial_attributes / CharacterDef.attributes / role_assignment.key のいずれかで宣言必須 (validate SecretAttributeUndeclared)
+  hidden_attributes: [AttrKey]      # 当人にも見えない属性キー (呪い・自覚のない正体等, 2026-07-08)。secret (本人分は見える=人狼の自役職) より一段強い秘匿: プレイヤー UI=本人分ごと落とす (app state_view が全 entity 分を DTO 段階で除外) / GM=全員分 (state_brief が〔秘匿:本人未知〕注記で surface、GM_SYSTEM が「当人にも明かすな・効果は原因を伏せて現象だけ描く」を刷り込み)。engine 非解釈 = gate/トリガー評価は不変。宣言必須は secret と同じ (validate HiddenAttributeUndeclared)
 
 # --- 役職のランダム割り当て (spec 06 Phase A。人狼/グノーシア型の秘匿役職盤面) ----
 RoleAssignment:
@@ -195,6 +196,7 @@ Reached:
   is_goal: "is_goal(state,scenario)=reached().is_some()。既存シナリオ(goal のみ)は不変"
 
 Location:
+  title: "string (既定空)。人間向け表示名 (id=機械用セレクタ / title=表示名 の三層思想、GoalDef.title / flag_titles と同類)。提示層 (GUI 現在地) が使う非検証の提示素材、空なら id へフォールバック。GM prompt は従来どおり id (move の宛先=id、description が語りの素材) (2026-07-08)"
   description: string
   image: String?                    # 背景画像のアセット ID (images/ 配下のファイル名)。engine は不解釈の不透明 string。提示層が resolve_asset で背景に (spec 01 Phase 1)
   bgm: String?                      # ループ BGM のアセット ID (audios/ 配下)。engine 不解釈の不透明 string。提示層が <audio loop> で再生 (spec 01 Phase 3)

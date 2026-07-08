@@ -5,7 +5,7 @@
 
 use gm_core::{
     adjudicate, apply, CheckOutcome, FiredTrigger, GameState, Lang, RejectReason, RollOutcome,
-    Scenario, StateDelta, Verdict,
+    Scenario, StateDelta, Verdict, PLAYER,
 };
 
 use crate::memoria::MemoryFragment;
@@ -21,7 +21,7 @@ use crate::prompt;
 /// 「これまでの経緯」として prompt に還流される (recent_narration=直前 1 ターンの中期記憶版)。
 /// 語り素材であって正本状態ではない (Memoria 同様、可変世界状態は持たない)。Serialize 派生は
 /// 将来のセーブ同梱用。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TurnLog {
     /// 適用後のターン番号。
     pub turn: u32,
@@ -29,6 +29,38 @@ pub struct TurnLog {
     pub player: String,
     /// そのターンの経緯 1 行 (GM の summary、fallback は narration 冒頭)。
     pub summary: String,
+    // --- spec 08-B: engine 接地の機械タグ (受理時点の確定事実、LLM 非関与) ---
+    // retrieval (spec 08-A) の検索を LLM の summary 品質に依存させないための正本由来タグ。
+    // 全て serde default = 旧セーブ (spec 07) のタグ無し TurnLog もそのまま読める。
+    /// 適用後の現在地。
+    #[serde(default)]
+    pub location: String,
+    /// 適用後にその場に居た NPC (実効 presence)。
+    #[serde(default)]
+    pub present: Vec<String>,
+    /// このターンに真化したフラグ (`flag_turns` の差分 = op/トリガー/challenge の全経路捕捉)。
+    #[serde(default)]
+    pub flags_set: Vec<String>,
+    /// 技能判定の要約 (「STR 1d20+3=17 vs DC15 成功」)。
+    #[serde(default)]
+    pub checks: Vec<String>,
+    /// 所持品の増減 (apply 前後の inventory 差分、「+祠の鍵」「alice:+花」)。
+    #[serde(default)]
+    pub items: Vec<String>,
+}
+
+/// 受理ターンの engine 事実タグ (spec 08-B)。[`run_turn`] が apply の前後から機械計上し、
+/// [`TurnOutcome::Accepted`] で運ぶ。呼び出し側は [`chronicle_entry`] へ渡すだけ。
+#[derive(Debug, Clone, Default)]
+pub struct ChronicleTags {
+    /// 適用後の現在地。
+    pub location: String,
+    /// 適用後の実効 presence。
+    pub present: Vec<String>,
+    /// このターンに真化したフラグ。
+    pub flags_set: Vec<String>,
+    /// 所持品の増減 (「+アイテム」「-アイテム」、NPC は「id:+アイテム」)。
+    pub items: Vec<String>,
 }
 
 /// 受理ターンから経緯ログの 1 エントリを作る。GM が `summary` を書いていればそれを、
@@ -43,6 +75,8 @@ pub fn chronicle_entry(
     summary: &str,
     narration: &str,
     beats: &[String],
+    tags: &ChronicleTags,
+    checks: &[CheckOutcome],
 ) -> TurnLog {
     let mut summary = if summary.trim().is_empty() {
         let flat = narration.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -62,27 +96,120 @@ pub fn chronicle_entry(
     if !beats.is_empty() {
         summary.push_str(&format!("／出来事: {}", beats.join("、")));
     }
-    TurnLog { turn, player: player.to_string(), summary }
+    // 判定の authored 結末文 (#41)。GM の summary は結果確定前に書かれる (「試みた」止まり)
+    // ので、確定した結末を中期記憶にも併記する (ビートの「出来事」と同じ理由)。
+    let outcomes: Vec<String> = checks
+        .iter()
+        .filter(|c| !c.narration.trim().is_empty())
+        .map(|c| c.narration.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    if !outcomes.is_empty() {
+        summary.push_str(&format!("／判定の結末: {}", outcomes.join("、")));
+    }
+    TurnLog {
+        turn,
+        player: player.to_string(),
+        summary,
+        location: tags.location.clone(),
+        present: tags.present.clone(),
+        flags_set: tags.flags_set.clone(),
+        checks: checks
+            .iter()
+            .map(|c| {
+                format!(
+                    "{} {} 1d{}{:+}={} vs DC{} {}",
+                    c.entity,
+                    c.stat,
+                    c.sides,
+                    c.modifier,
+                    c.total,
+                    c.dc,
+                    if c.success { "成功" } else { "失敗" }
+                )
+            })
+            .collect(),
+        items: tags.items.clone(),
+    }
 }
 
-/// 次ターンへ持ち越す「直前までの語り」を組む。GM の narration に発火ビート (authored の
-/// 筋書きの出来事) を連結する — ビートはプレイヤーには表示されるが GM は見ていないため、
-/// ここで継続文脈に含めないと GM が出来事を知らないまま続きを語る (#27 のトリガー版)。
-pub fn carryover_narration(narration: &str, beats: &[String]) -> String {
+/// 次ターンへ持ち越す「直前までの語り」を組む。GM の narration に、**GM が見ていない**
+/// authored テキスト 2 種を連結する: 発火ビート (筋書きの出来事、#27 のトリガー版) と
+/// **判定の結末文** (`CheckOutcome.narration`、#41) — 出目は apply 後に確定するので GM の
+/// 語りは「試みる」止まりで、authored 結末 (「見事に仕留めた」) はプレイヤーにだけ表示される。
+/// ここで継続文脈に含めないと GM が出来事・結末を知らないまま続きを語る。
+pub fn carryover_narration(narration: &str, beats: &[String], checks: &[CheckOutcome]) -> String {
     let beats: Vec<&String> = beats.iter().filter(|b| !b.trim().is_empty()).collect();
-    if beats.is_empty() {
+    // 結末文を持つ判定だけ (素の Check は check_outcome_note が次ターンに「語れ」と要求する
+    // 別経路 — こちらは「語られ済みの事実を知らせる」経路で、役割を分ける)。
+    let outcomes: Vec<&str> = checks
+        .iter()
+        .filter(|c| !c.narration.trim().is_empty())
+        .map(|c| c.narration.as_str())
+        .collect();
+    if beats.is_empty() && outcomes.is_empty() {
         return narration.to_string();
     }
     let mut s = narration.trim_end().to_string();
-    s.push_str("\n（直後に筋書きの出来事が起きた）");
-    for b in beats {
-        s.push('\n');
-        s.push_str(b.trim());
+    if !beats.is_empty() {
+        s.push_str("\n（直後に筋書きの出来事が起きた）");
+        for b in beats {
+            s.push('\n');
+            s.push_str(b.trim());
+        }
+    }
+    if !outcomes.is_empty() {
+        s.push_str("\n（直後に判定の結末が確定した）");
+        for o in outcomes {
+            s.push('\n');
+            s.push_str(o.trim());
+        }
     }
     s
 }
 
+/// 受理適用の直後に engine 事実からタグを機械計上する (spec 08-B)。LLM は関与しない。
+/// `state` は適用後、`inv_before` は適用前の inventory の写し。
+fn chronicle_tags(
+    state: &GameState,
+    scenario: &Scenario,
+    inv_before: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+) -> ChronicleTags {
+    // このターンに真化したフラグ = flag_turns がこのターン番号を刻んだもの
+    // (op / トリガー効果 / challenge 帰結の全経路を apply が捕捉済み)。
+    let flags_set: Vec<String> = state
+        .flag_turns
+        .iter()
+        .filter(|(_, &t)| t == state.turn)
+        .map(|(k, _)| k.clone())
+        .collect();
+    // 所持品の増減 (前後差分)。player は素のまま、NPC は "id:" を前置。
+    let mut items: Vec<String> = Vec::new();
+    let empty = std::collections::BTreeSet::new();
+    let entities: std::collections::BTreeSet<&String> =
+        inv_before.keys().chain(state.inventory.keys()).collect();
+    for eid in entities {
+        let before = inv_before.get(eid).unwrap_or(&empty);
+        let after = state.inventory.get(eid).unwrap_or(&empty);
+        let prefix = if eid == PLAYER { String::new() } else { format!("{eid}:") };
+        for gained in after.difference(before) {
+            items.push(format!("{prefix}+{gained}"));
+        }
+        for lost in before.difference(after) {
+            items.push(format!("{prefix}-{lost}"));
+        }
+    }
+    ChronicleTags {
+        location: state.location.clone(),
+        present: scenario.present_at(state).into_iter().collect(),
+        flags_set,
+        items,
+    }
+}
+
 /// 1 ターンの結末。
+// Accepted は語り+判定+タグを丸ごと運ぶので Rejected よりずっと大きいが、ターン毎に 1 個
+// 生まれてすぐ消える一時値 — Box 化の複雑さに見合わない (clippy::large_enum_variant は承知)。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum TurnOutcome {
     /// 受理されて state に適用された。
@@ -101,6 +228,8 @@ pub enum TurnOutcome {
         /// 受理前に却下された各試行の理由 (試行順)。空なら一発合格。提示層が「なぜ筋を通すのに
         /// N 回かかったか」を author に見せる素 (Grok 等で却下が多い時の診断)。
         rejected: Vec<Vec<RejectReason>>,
+        /// engine 事実の機械タグ (spec 08-B)。呼び出し側が [`chronicle_entry`] へ渡す。
+        tags: ChronicleTags,
     },
     /// 最大試行回数まで却下され続けた。**state は無傷**。理由は構造化 (表示は localize)。
     Rejected {
@@ -154,7 +283,16 @@ pub async fn run_turn<P: DeltaProposer>(
         ChatMessage::user(format!(
             "{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
             prompt::state_brief(state, scenario),
-            prompt::history_note(history),
+            // spec 08-A: 現在の文脈 (行動文 + 現在地 + presence) をクエリに、直近は無条件・
+            // それより古い経緯は関連するものだけ想起する二層注入。
+            prompt::history_note(
+                history,
+                &prompt::HistoryQuery {
+                    action: player_action,
+                    location: &state.location,
+                    present: scenario.present_at(state).into_iter().collect(),
+                }
+            ),
             prompt::check_outcome_note(recent_checks),
             prompt::recalled_lore_note(recalled_lore),
             prompt::recent_narration_note(recent_narration),
@@ -188,10 +326,13 @@ pub async fn run_turn<P: DeltaProposer>(
 
         match adjudicate(state, scenario, &delta) {
             Verdict::Accept => {
+                // spec 08-B: 所持品差分の計上用に apply 前の inventory を写す (小さい map)。
+                let inv_before = state.inventory.clone();
                 // adjudicate が通ったので apply は成功するはず。RNG はここで決定論的に振られ、
                 // 適用後に発火した反応ビート (Phase C) も返る。
                 let out = apply(state, scenario, &delta)
                     .expect("adjudicate 済みなら apply は成功する");
+                let tags = chronicle_tags(state, scenario, &inv_before);
                 return Ok(TurnOutcome::Accepted {
                     narration: delta.narration,
                     summary: delta.summary,
@@ -200,6 +341,7 @@ pub async fn run_turn<P: DeltaProposer>(
                     fired: out.fired,
                     attempts: attempt,
                     rejected,
+                    tags,
                 });
             }
             Verdict::Reject { reasons } => {

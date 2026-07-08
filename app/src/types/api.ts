@@ -33,7 +33,10 @@ export interface FlagView {
 
 export interface StateView {
   turn: number;
+  /** 現在地の LocationId (機械用セレクタ)。 */
   location: string;
+  /** 現在地の表示名 (Location.title)。空なら id へフォールバックして表示する。 */
+  location_title: string;
   inventory: string[];
   flags: FlagView[];
   entities: EntityView[];
@@ -162,3 +165,36 @@ export type LogEntry =
   | { kind: "reject"; reasons: string[]; attempts: number }
   | { kind: "retries"; reasons: string[][] }
   | { kind: "system"; text: string };
+
+// ============================================================================
+// 配布サイト「Kataribe 書庫」統合 (spec 05 Phase C)
+// ============================================================================
+
+/** 書庫 API `/api/packages` の一覧 1 項目 (backend RemotePackage のミラー)。 */
+export interface RemotePackage {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  /** 性・流血描写の自己申告。倫理制約の強い LLM ではプレイできない可能性の目印。 */
+  is_mature: boolean;
+  file_size: number;
+  uploader_display_name: string;
+  download_count: number;
+  avg_rating: number | null;
+  review_count: number;
+}
+
+/** 書庫の一覧応答 (items + ページネーション)。 */
+export interface RemoteList {
+  items: RemotePackage[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+/** 取得結果 (packagePaths へ登録する絶対パス + 表示用 title)。 */
+export interface InstalledPackage {
+  path: string;
+  title: string;
+}

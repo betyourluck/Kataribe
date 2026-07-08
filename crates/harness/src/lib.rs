@@ -32,7 +32,7 @@ pub use loader::{inject_cast, load_characters};
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use proposer::DeltaProposer;
 pub use save::{load_session, save_session, SavedContent, SessionSave, SAVE_VERSION};
-pub use turn::{carryover_narration, chronicle_entry, run_turn, TurnLog, TurnOutcome};
+pub use turn::{carryover_narration, chronicle_entry, run_turn, ChronicleTags, TurnLog, TurnOutcome};
 
 // =============================================================================
 // PoC: GM ターンループの実証 (Red→Green)
@@ -298,8 +298,18 @@ mod tests {
         d0.summary = "机の引き出しをこじ開けた".into();
         let p = ScriptedProposer::new(vec![d0]);
         let history = vec![
-            TurnLog { turn: 1, player: "部屋を見回す".into(), summary: "古びた書斎を調べ始めた".into() },
-            TurnLog { turn: 2, player: "机に近づく".into(), summary: "机上の蝋燭に火を灯した".into() },
+            TurnLog {
+                turn: 1,
+                player: "部屋を見回す".into(),
+                summary: "古びた書斎を調べ始めた".into(),
+                ..Default::default()
+            },
+            TurnLog {
+                turn: 2,
+                player: "机に近づく".into(),
+                summary: "机上の蝋燭に火を灯した".into(),
+                ..Default::default()
+            },
         ];
 
         let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &history)
@@ -339,13 +349,13 @@ mod tests {
     #[test]
     fn chronicle_entry_falls_back_to_truncated_narration() {
         let long = "夕暮れの書斎。埃をかぶった机の引き出しに手をかけると、軋みながら開いた。".repeat(5);
-        let e = chronicle_entry(3, "引き出しを開ける", "", &long, &[]);
+        let e = chronicle_entry(3, "引き出しを開ける", "", &long, &[], &ChronicleTags::default(), &[]);
         assert!(e.summary.chars().count() <= 81, "narration 冒頭へ切り詰める (…込み)");
         assert!(e.summary.starts_with("夕暮れの書斎"), "冒頭から取る");
         assert_eq!(e.turn, 3);
         assert_eq!(e.player, "引き出しを開ける");
 
-        let e2 = chronicle_entry(4, "話す", "アリスに約束を打ち明けた", &long, &[]);
+        let e2 = chronicle_entry(4, "話す", "アリスに約束を打ち明けた", &long, &[], &ChronicleTags::default(), &[]);
         assert_eq!(e2.summary, "アリスに約束を打ち明けた", "summary があればそのまま");
     }
 
@@ -358,21 +368,81 @@ mod tests {
         let beats = vec!["石壁が轟音とともに崩れ、隠し通路が現れた。".to_string()];
 
         // 継続文脈: GM の語り + 筋書きの出来事の連結。
-        let carry = carryover_narration("祭壇に手を触れると、微かに紋様が光った。", &beats);
+        let carry = carryover_narration("祭壇に手を触れると、微かに紋様が光った。", &beats, &[]);
         assert!(carry.contains("紋様が光った"), "GM の語りが残る");
         assert!(carry.contains("筋書きの出来事"), "ビートが筋書きの出来事として連結される");
         assert!(carry.contains("隠し通路が現れた"), "ビート本文が入る");
         // ビートが無ければそのまま (余計なマーカーを足さない)。
-        assert_eq!(carryover_narration("素の語り", &[]), "素の語り");
+        assert_eq!(carryover_narration("素の語り", &[], &[]), "素の語り");
 
         // 経緯ログ: summary にビートを併記 (GM の summary はビートを知らないため)。
-        let e = chronicle_entry(5, "祭壇に触れる", "祭壇に触れて紋様が光った", "（語り）", &beats);
+        let e = chronicle_entry(
+            5,
+            "祭壇に触れる",
+            "祭壇に触れて紋様が光った",
+            "（語り）",
+            &beats,
+            &ChronicleTags::default(),
+            &[],
+        );
         assert!(e.summary.contains("祭壇に触れて紋様が光った"), "GM の summary が残る");
         assert!(
             e.summary.contains("出来事") && e.summary.contains("隠し通路"),
             "ビートが出来事として併記される: {}",
             e.summary
         );
+    }
+
+    /// 【判定結末文の GM 還流 (#41)】authored 結末文つき判定 (「見事に仕留めた」) は
+    /// 同ターンにプレイヤーへ表示されるが、check_outcome_note は二重語り回避で除外する —
+    /// その結果 **GM がどのチャネルからも結末を知らなかった** (言語チャネル接地漏れの 5 例目)。
+    /// ビート還流 (2026-07-03) と同型に、継続文脈 (carryover) と chronicle summary の両方へ
+    /// 「語られ済みの事実」として併記する (再描写の要求はしない = 二重語り回避は維持)。
+    #[test]
+    fn check_outcome_narration_flows_into_carryover_and_chronicle() {
+        let check = gm_core::CheckOutcome {
+            entity: "player".into(),
+            stat: "サバイバル".into(),
+            sides: 6,
+            roll: 4,
+            modifier: 6,
+            total: 10,
+            dc: 4,
+            success: true,
+            tier: None,
+            narration: "気配を殺して槍を突き出し、見事に仕留めた。".into(),
+        };
+        // 継続文脈: 結末文が「判定の結末」として連結され、次ターンの GM が知る。
+        let carry =
+            carryover_narration("全身の体重を乗せて槍を突き出した——", &[], std::slice::from_ref(&check));
+        assert!(carry.contains("判定の結末"), "結末マーカーが入る: {carry}");
+        assert!(carry.contains("見事に仕留めた"), "結末文が入る: {carry}");
+        // 結末文の無い素の Check は連結しない (check_outcome_note の「語れ」経路に任せる)。
+        let plain = gm_core::CheckOutcome { narration: String::new(), ..check.clone() };
+        assert_eq!(
+            carryover_narration("素の語り", &[], std::slice::from_ref(&plain)),
+            "素の語り"
+        );
+
+        // chronicle: summary に「判定の結末」が併記され、中期記憶にも残る。
+        let e = chronicle_entry(
+            7,
+            "ウサギを狩る",
+            "茂みから槍を突き出した",
+            "（語り）",
+            &[],
+            &ChronicleTags::default(),
+            &[check],
+        );
+        assert!(
+            e.summary.contains("判定の結末") && e.summary.contains("仕留めた"),
+            "結末が summary に併記される: {}",
+            e.summary
+        );
+        // 素の Check は summary に足さない (数字は検索タグ checks に残るだけ)。
+        let e2 = chronicle_entry(8, "殴る", "殴りかかった", "（語り）", &[], &ChronicleTags::default(), &[plain]);
+        assert!(!e2.summary.contains("判定の結末"), "{}", e2.summary);
+        assert_eq!(e2.checks.len(), 1, "数字の要約はタグに残る");
     }
 
     /// 【パース失敗の self-repair 結線 (#40)】壊れた構造化出力 (LlmError::Parse) は却下と
@@ -534,7 +604,12 @@ mod tests {
             module: None,
             state: state.clone(),
             campaign_memory: CampaignMemory::new(),
-            history: vec![TurnLog { turn: 1, player: "見回す".into(), summary: "六人が集った".into() }],
+            history: vec![TurnLog {
+                turn: 1,
+                player: "見回す".into(),
+                summary: "六人が集った".into(),
+                ..Default::default()
+            }],
             last_narration: "霧が窓を這う。".into(),
             pending_checks: vec![],
             pending_lore: vec![],
@@ -556,7 +631,8 @@ mod tests {
     }
 
     /// 【経緯の予算】history_note は文字予算内で新しい方を残し、古い方から省略する
-    /// (省略した旨も明示)。無限に伸びて prompt を食い潰さない。
+    /// (省略した旨も明示)。無限に伸びて prompt を食い潰さない。関連 0 件 (空クエリ) では
+    /// spec 08-A の retrieval 層は働かず、直近層が全予算へ拡張される (旧挙動と同一)。
     #[test]
     fn history_note_respects_budget_drops_oldest() {
         let history: Vec<TurnLog> = (1..=200)
@@ -564,12 +640,101 @@ mod tests {
                 turn: i,
                 player: format!("行動{i}"),
                 summary: format!("ターン{i}の出来事があった。廊下を歩き、扉を確かめ、灯りを整えた。"),
+                ..Default::default()
             })
             .collect();
-        let note = prompt::history_note(&history);
+        let q = prompt::HistoryQuery { action: "", location: "", present: vec![] };
+        let note = prompt::history_note(&history, &q);
         assert!(note.contains("ターン200の出来事"), "最新は必ず残る");
         assert!(!note.contains("ターン1の出来事"), "最古は予算で落ちる");
         assert!(note.contains("省略"), "省略した旨を明示する");
+    }
+
+    /// 【二層注入 (spec 08-A) = 60 ターンの序盤想起】長編で予算から溢れ「完全に忘れて」いた
+    /// 序盤の出来事 (T3 で銀の鍵を入手) が、終盤 (T60 相当) の関連する行動
+    /// (「銀の鍵を使う」) をクエリに retrieval され「(関連)」として再掲される。
+    /// 無関係な序盤エントリは再掲されず、直近層は従来どおり残る。決定論 (TF-IDF cosine +
+    /// engine タグ増幅) なので想起の成否はこの assert が固定する。
+    #[test]
+    fn history_note_two_layer_recalls_relevant_early_entry() {
+        let mut history: Vec<TurnLog> = Vec::new();
+        for i in 1..=59u32 {
+            if i == 3 {
+                history.push(TurnLog {
+                    turn: 3,
+                    player: "祭壇の裏を探る".into(),
+                    summary: "祭壇の裏で銀の鍵を見つけて拾った".into(),
+                    location: "altar".into(),
+                    items: vec!["+銀の鍵".into()],
+                    ..Default::default()
+                });
+            } else {
+                // 語彙の重ならないノイズターン (食堂の雑談)。総予算 2400 字を溢れさせ、
+                // retrieval 経路 (二層注入) に入る長さにする。
+                history.push(TurnLog {
+                    turn: i,
+                    player: format!("雑談{i}"),
+                    summary: format!(
+                        "食堂で仲間と空模様の話をした。パンの焼ける匂いが漂い、猫が窓辺で眠り、暖炉の薪がはぜていた ({i})"
+                    ),
+                    location: "hall".into(),
+                    ..Default::default()
+                });
+            }
+        }
+        let q = prompt::HistoryQuery { action: "銀の鍵を扉に使う", location: "altar", present: vec![] };
+        let note = prompt::history_note(&history, &q);
+        assert!(
+            note.contains("(関連) T3") && note.contains("銀の鍵を見つけて拾った"),
+            "序盤のアイテム入手が関連として想起される: {note}"
+        );
+        assert!(note.contains("省略"), "無関係な古い経緯は従来どおり省略");
+        assert!(note.contains("(59)"), "直近層は従来どおり残る");
+        assert!(!note.contains("(関連) T5 "), "無関係な序盤エントリまでは再掲しない");
+    }
+
+    /// 【機械タグ計上 (spec 08-B)】受理ターンの engine 事実 (真化フラグ・所持品差分・
+    /// 現在地) が `TurnOutcome::Accepted.tags` に機械計上される — LLM の summary 品質に
+    /// 依存しない retrieval の接地。
+    #[tokio::test]
+    async fn chronicle_tags_are_stamped_from_engine_facts() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = ScriptedProposer::new(vec![
+            delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
+            delta(vec![StateOp::AddItem { item: "rusty_key".into() }]),
+        ]);
+        let o1 = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[])
+            .await
+            .unwrap();
+        match o1 {
+            TurnOutcome::Accepted { tags, .. } => {
+                assert_eq!(tags.location, "cell", "適用後の現在地が刻まれる");
+                assert_eq!(tags.flags_set, vec!["drawer_opened".to_string()], "真化フラグが刻まれる");
+                assert!(tags.items.is_empty(), "所持品は動いていない");
+            }
+            _ => panic!("受理されるはず"),
+        }
+        let o2 = run_turn(&p, &mut s, &sc, "鍵を取る", 3, Lang::Ja, &[], &[], "", &[])
+            .await
+            .unwrap();
+        match o2 {
+            TurnOutcome::Accepted { tags, .. } => {
+                assert_eq!(tags.items, vec!["+rusty_key".to_string()], "拾得が +item で刻まれる");
+                assert!(tags.flags_set.is_empty(), "このターンに真化したフラグは無い");
+            }
+            _ => panic!("受理されるはず"),
+        }
+    }
+
+    /// 【旧セーブ互換 (spec 08-B)】タグフィールドの無い旧 TurnLog yaml (spec 07 世代の
+    /// セーブ) がそのまま読める (serde default)。
+    #[test]
+    fn turnlog_without_tags_deserializes_for_old_saves() {
+        let yaml = "turn: 5\nplayer: 見回す\nsummary: 六人が集った\n";
+        let log: TurnLog = serde_yaml::from_str(yaml).expect("旧形式が読める");
+        assert_eq!(log.turn, 5);
+        assert!(log.location.is_empty() && log.present.is_empty() && log.items.is_empty());
     }
 
     /// GM_SYSTEM が「summary に経緯 1 行を書け」を刷り込む (書かれなければ経緯が残らない)。
@@ -1005,6 +1170,70 @@ mod tests {
         assert!(
             g.contains("隠密") && g.contains("結果だけ"),
             "秘匿属性に基づく隠密行動 (夜の襲撃等) は実行者を伏せ、結果だけを描く規律"
+        );
+    }
+
+    /// 【本人未知属性の prompt 接地 (2026-07-08)】`hidden_attributes` は当人にも見えない属性
+    /// (呪い・自覚のない正体等)。GM は全員分見る (ゲームを回すのに必要) が、**〔秘匿:本人未知〕**
+    /// の注記で secret (本人は知っている) と区別され、GM_SYSTEM が「当人にすら明かさない・
+    /// 効果は原因を伏せて現象だけ描く」規律を刷り込む。
+    #[tokio::test]
+    async fn state_brief_marks_hidden_attributes_and_gm_system_grounds_self_unknown() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: v\n",
+            "role_assignment: { key: 真の正体, pool: { 吸血鬼: 1, 人間: 1 }, among: [player, alice] }\n",
+            "hidden_attributes: [真の正体]\n",
+            "characters: { alice: { name: A } }\n",
+            "locations: { v: { description: d, items: {}, exits: [] } }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let s = sc.initial_state(1);
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(sb.contains("真の正体="), "GM には hidden 属性が全員分見える: {sb}");
+        assert!(sb.contains("〔秘匿:本人未知〕"), "本人未知の注記が付く (secret と区別): {sb}");
+
+        let g = prompt::GM_SYSTEM;
+        assert!(
+            g.contains("本人未知"),
+            "GM_SYSTEM が本人未知属性の扱いを刷り込む"
+        );
+        assert!(
+            g.contains("当人にも明かすな") || g.contains("当人すら知らない"),
+            "当人にすら明かさない規律 (自覚・独白としても描かない)"
+        );
+    }
+
+    /// 【移動の接地 (#42)】一度却下されると LLM は move を出さなくなり、語りだけで移動した
+    /// 気になる (回避学習 → narration/state 乖離)。対策の二層: (a) `state_brief` が**いま通れる
+    /// 出口**を毎ターン動的 surface (#37 の移動版 — 現在形の事実+固有名が過去の却下経験を
+    /// 上書きする)、(b) GM_SYSTEM が「移動は move op でのみ起きる/現在地の行が唯一の真実/
+    /// 語りだけで移動した事にするな」を刷り込む。
+    #[test]
+    fn state_brief_surfaces_passable_exits_and_gm_system_grounds_move_truth() {
+        let sc = scenario(); // locked_room: cell → corridor (gate: door_unlocked)
+        let mut s = fresh(&sc);
+
+        // 条件未達: 出口はあるが通れない — その事実を明示する (誤 move の抑制)。
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(
+            sb.contains("いま移動できる") && !sb.contains("いま移動できる: corridor"),
+            "未達の出口は通れる先として出さない: {sb}"
+        );
+
+        // gate 成立: 通れる先が固有名で現れる (回避学習を現在形の事実で上書き)。
+        s.flags.insert("door_unlocked".into(), true);
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(sb.contains("いま移動できる: corridor"), "通れる出口が固有名で出る: {sb}");
+
+        let g = prompt::GM_SYSTEM;
+        assert!(
+            g.contains("move") && g.contains("現在地"),
+            "移動は move op でのみ起きる規律を刷り込む"
+        );
+        assert!(
+            g.contains("語り") && (g.contains("移動した事にしない") || g.contains("移動済みとして語るな")),
+            "語りだけの移動 (narration/state 乖離) を禁じる"
         );
     }
 

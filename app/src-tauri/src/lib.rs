@@ -9,6 +9,8 @@
 //! - `new_game(scenario_path?)`: シナリオ + characters + 伏線をロードし初期 state を作って session に格納
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
+mod site;
+
 use std::path::{Component, Path, PathBuf};
 
 use gm_core::{is_goal, CheckOutcome, GameState, ImageMode, Lang, Scenario, PLAYER};
@@ -20,7 +22,7 @@ use harness::{
     SessionSave, TurnLog, TurnOutcome, SAVE_VERSION,
 };
 use llm_client::{LlmClient, LlmConfig};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tokio::sync::Mutex;
 
@@ -78,7 +80,10 @@ struct StatStrView {
 #[derive(Serialize)]
 struct StateView {
     turn: u32,
+    /// 現在地の LocationId (機械用セレクタ)。
     location: String,
+    /// 現在地の表示名 (`Location.title`)。空なら frontend が id へフォールバック。
+    location_title: String,
     inventory: Vec<String>,
     flags: Vec<FlagView>,
     entities: Vec<EntityView>,
@@ -427,8 +432,11 @@ fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> St
                     a.iter()
                         // secret 属性 (役職等, spec 06) はプレイヤー UI では本人分のみ。
                         // NPC 分は DTO 段階で落とす (隠しゴールと同じネタバレ衛生)。
+                        // hidden 属性 (本人未知) は**本人分も含め全員分**落とす — 当人すら
+                        // 知らない正体・呪いを UI が漏らさない (GM prompt だけが見る)。
                         .filter(|(k, _)| {
-                            id == PLAYER || !scenario.secret_attributes.contains(*k)
+                            !scenario.hidden_attributes.contains(*k)
+                                && (id == PLAYER || !scenario.secret_attributes.contains(*k))
                         })
                         .map(|(k, v)| StatStrView { key: k.clone(), value: v.clone() })
                         .collect()
@@ -451,6 +459,11 @@ fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> St
     StateView {
         turn: state.turn,
         location: state.location.clone(),
+        // 表示名 (authored title)。空なら frontend が id へフォールバック (FlagView と同じ流儀)。
+        location_title: scenario
+            .location(&state.location)
+            .map(|l| l.title.clone())
+            .unwrap_or_default(),
         // 上段の「所持品」は主人公の物 (NPC の所持物は登場人物ブロックに出る)。
         inventory: state
             .inventory
@@ -635,6 +648,191 @@ fn upsert_env(path: &Path, updates: &[(String, String)]) -> std::io::Result<()> 
         }
     }
     std::fs::write(path, out.join("\n") + "\n")
+}
+
+// =============================================================================
+// 配布サイト「Kataribe 書庫」統合 (spec 05 Phase C)
+// =============================================================================
+
+/// 書庫 API `/api/packages` の一覧 1 項目 (サーバ応答の写し。outcast Spec 23)。
+/// 必須フィールドで受ける — 形が合わなければ沈黙の空欄でなくエラーにする (寛容な
+/// deserialize は失敗を隠す)。サーバ側の追加フィールドは serde が黙って無視する。
+#[derive(Serialize, Deserialize)]
+struct RemotePackage {
+    id: String,
+    title: String,
+    description: String,
+    category: String,
+    /// 性・流血描写の自己申告。倫理制約の強い LLM ではプレイできない可能性の目印。
+    is_mature: bool,
+    file_size: i64,
+    uploader_display_name: String,
+    download_count: i64,
+    avg_rating: Option<f64>,
+    review_count: i64,
+}
+
+/// 書庫の一覧応答 (items + ページネーション)。
+#[derive(Serialize, Deserialize)]
+struct RemoteList {
+    items: Vec<RemotePackage>,
+    total: i64,
+    page: i64,
+    page_size: i64,
+}
+
+/// サイト URL を検証して正規形 (末尾スラッシュなし) に整える。
+fn normalize_site_url(site_url: &str) -> Result<String, String> {
+    let base = site_url.trim().trim_end_matches('/').to_string();
+    if base.starts_with("http://") || base.starts_with("https://") {
+        Ok(base)
+    } else {
+        Err("サイト URL は http:// または https:// で始めてください".to_string())
+    }
+}
+
+/// 書庫クライアント (一覧 fetch / zip DL 共用)。呼び出しはユーザー操作の頻度なので都度生成。
+fn site_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP クライアントの初期化に失敗: {e}"))
+}
+
+/// 配布サイトのパッケージ一覧を取得する (無認証の公開 API)。
+/// q/category/sort は空文字なら送らない (サーバ既定 = 全件・新着順)。
+#[tauri::command]
+async fn fetch_site_packages(
+    site_url: String,
+    page: Option<i64>,
+    q: Option<String>,
+    category: Option<String>,
+    sort: Option<String>,
+) -> Result<RemoteList, String> {
+    let base = normalize_site_url(&site_url)?;
+    let mut query: Vec<(&str, String)> = vec![("page", page.unwrap_or(1).max(1).to_string())];
+    if let Some(v) = q.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        query.push(("q", v));
+    }
+    if let Some(v) = category.filter(|s| !s.is_empty()) {
+        query.push(("category", v));
+    }
+    if let Some(v) = sort.filter(|s| !s.is_empty()) {
+        query.push(("sort", v));
+    }
+    let res = site_client()?
+        .get(format!("{base}/api/packages"))
+        .query(&query)
+        .send()
+        .await
+        .map_err(|e| format!("配布サイトに接続できません: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("配布サイトがエラーを返しました: {}", res.status()));
+    }
+    res.json::<RemoteList>()
+        .await
+        .map_err(|e| format!("一覧の形式が読めません (配布サイトではない URL の可能性): {e}"))
+}
+
+/// 取得結果 (packagePaths へ登録する絶対パス + 表示用 title)。
+#[derive(Serialize)]
+struct InstalledPackage {
+    path: String,
+    title: String,
+}
+
+/// DL 受入上限 — サーバのファイル上限 100MB + 余裕 (無限ストリームへの蓋)。
+const MAX_DOWNLOAD_BYTES: u64 = 110 * 1024 * 1024;
+
+/// 配布サイトからパッケージ zip を DL し、検証・展開して packages 置き場に据える。
+/// 展開先は `app_data_dir/packages/<フォルダ名>` (spec 07 saves と同じ流儀 — repo を汚さず、
+/// 配布 zip の差し替えでも消えない)。zip 検証は `site::extract_package_zip`
+/// (クライアント側でも zip slip 遮断 = サーバを信用しない二層)。
+#[tauri::command]
+async fn install_site_package(
+    app: tauri::AppHandle,
+    site_url: String,
+    id: String,
+) -> Result<InstalledPackage, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("アプリデータ置き場を解決できません: {e}"))?;
+    install_from_site(&site_url, &id, &data_dir).await
+}
+
+/// install_site_package の本体 (Tauri 非依存 = 実サーバ相手の統合テストが書ける)。
+async fn install_from_site(
+    site_url: &str,
+    id: &str,
+    data_dir: &Path,
+) -> Result<InstalledPackage, String> {
+    let base = normalize_site_url(site_url)?;
+    // id は URL 片に乗る。UUID の字種 (hex + ハイフン) のみ許す。
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Err("不正なパッケージ id です".to_string());
+    }
+
+    let packages_dir = data_dir.join("packages");
+    let dl_dir = data_dir.join("downloads");
+    std::fs::create_dir_all(&packages_dir).map_err(|e| format!("展開先を作成できません: {e}"))?;
+    std::fs::create_dir_all(&dl_dir).map_err(|e| format!("一時置き場を作成できません: {e}"))?;
+    let tmp = dl_dir.join(format!("{id}.zip.part"));
+
+    // --- DL (ストリームで一時ファイルへ。上限超過で即中断) ---
+    let download = async {
+        let mut res = site_client()?
+            .get(format!("{base}/api/packages/{id}/download"))
+            .send()
+            .await
+            .map_err(|e| format!("配布サイトに接続できません: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("ダウンロードに失敗しました: {}", res.status()));
+        }
+        let mut out = std::fs::File::create(&tmp)
+            .map_err(|e| format!("一時ファイルを作成できません: {e}"))?;
+        let mut written: u64 = 0;
+        while let Some(chunk) = res
+            .chunk()
+            .await
+            .map_err(|e| format!("ダウンロード中に切断されました: {e}"))?
+        {
+            written += chunk.len() as u64;
+            if written > MAX_DOWNLOAD_BYTES {
+                return Err("ファイルが大きすぎます (110MB 超)".to_string());
+            }
+            std::io::Write::write_all(&mut out, &chunk)
+                .map_err(|e| format!("一時ファイルへの書き込みに失敗: {e}"))?;
+        }
+        Ok(())
+    };
+    if let Err(e) = download.await {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    // --- 検証 + 展開 (同期 IO/CPU なので blocking プールへ) ---
+    let tmp2 = tmp.clone();
+    let pk2 = packages_dir.clone();
+    let extracted = tokio::task::spawn_blocking(move || site::extract_package_zip(&tmp2, &pk2))
+        .await
+        .map_err(|e| format!("展開タスクの実行に失敗: {e}"));
+    let _ = std::fs::remove_file(&tmp); // 一時 zip は常に破棄
+    let installed = extracted??;
+
+    // --- 受領側検証の入口: manifest が読めるか (深い検証は new_game 時の validate) ---
+    match read_manifest(&installed) {
+        Ok(m) => Ok(InstalledPackage {
+            path: installed.to_string_lossy().into_owned(),
+            title: m.title,
+        }),
+        Err(e) => {
+            // パッケージとして読めない配布物は据え置かない (一覧の恒久エラー行を作らない)。
+            let _ = std::fs::remove_dir_all(&installed);
+            Err(format!("パッケージとして読めません: {e}"))
+        }
+    }
 }
 
 /// パッケージを開く共通部 (new_game / resume_game): scope 許可 + entry 分岐ロード + 注入。
@@ -859,20 +1057,32 @@ async fn play_turn(
     .map_err(|e| e.to_string())?;
 
     let mut view = match outcome {
-        TurnOutcome::Accepted { narration, summary, rolls, checks, fired, attempts, rejected } => {
+        TurnOutcome::Accepted {
+            narration,
+            summary,
+            rolls,
+            checks,
+            fired,
+            attempts,
+            rejected,
+            tags,
+        } => {
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
             // ビートは GM が見ていない筋書きの出来事 — 継続文脈と経緯ログの両方へ併記する。
             let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
             // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止。ビート込み)。
-            sess.last_narration = carryover_narration(&narration, &beat_texts);
-            // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback)。
+            sess.last_narration = carryover_narration(&narration, &beat_texts, &checks);
+            // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback。
+            // tags/checks は engine 事実の機械タグ = retrieval の接地、spec 08-B)。
             sess.history.push(chronicle_entry(
                 sess.state.turn,
                 action.trim(),
                 &summary,
                 &narration,
                 &beat_texts,
+                &tags,
+                &checks,
             ));
             let beats = resolved
                 .iter()
@@ -1002,6 +1212,7 @@ async fn play_turn(
                     turn: sess.state.turn,
                     player: "（章の移り変わり）".into(),
                     summary: format!("『{}』へ移った", sess.scenario.title),
+                    ..Default::default()
                 });
 
                 let description = sess
@@ -1063,7 +1274,9 @@ pub fn run() {
             play_turn,
             list_packages,
             get_llm_config,
-            set_llm_config
+            set_llm_config,
+            fetch_site_packages,
+            install_site_package
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1073,6 +1286,81 @@ pub fn run() {
 mod tests {
     use super::normalize_path;
     use std::path::{Path, PathBuf};
+
+    /// 【本人未知属性の UI 秘匿 + 場所表示名 (2026-07-08)】`hidden_attributes` はプレイヤー UI
+    /// から**本人分も含め**落ちる (secret は本人分は見える、の一段上)。`Location.title` は
+    /// `StateView.location_title` として出る (空なら frontend が id へフォールバック)。
+    #[test]
+    fn state_view_drops_hidden_attributes_even_for_player_and_surfaces_location_title() {
+        let sc = gm_core::Scenario::from_yaml(concat!(
+            "title: t\nstart: v\n",
+            "initial_attributes: { クラス: 剣士, 真の正体: 吸血鬼 }\n",
+            "secret_attributes: [クラス]\n",
+            "hidden_attributes: [真の正体]\n",
+            "locations: { v: { title: 宿屋の広間, description: d, items: {}, exits: [] } }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let s = sc.initial_state(1);
+        let view = super::state_view(&s, &sc, &[]);
+
+        let player = view.entities.iter().find(|e| e.id == "player").expect("player が居る");
+        assert!(
+            player.attributes.iter().any(|a| a.key == "クラス"),
+            "secret 属性は本人分は見える (人狼の自役職と同じ)"
+        );
+        assert!(
+            !player.attributes.iter().any(|a| a.key == "真の正体"),
+            "hidden 属性は本人分も UI から落ちる (当人すら知らない)"
+        );
+        assert_eq!(view.location, "v", "id は機械用のまま");
+        assert_eq!(view.location_title, "宿屋の広間", "表示名が DTO に出る");
+    }
+
+    /// 【統合・opt-in】実書庫の一覧 API が RemoteList へ deserialize できる (DTO の契約確認)。
+    /// 実行: cargo test --lib -- --ignored fetch_site_packages_deserializes
+    #[tokio::test]
+    #[ignore = "稼働中の書庫サーバ (localhost:4000) が要る"]
+    async fn fetch_site_packages_deserializes_live_list() {
+        let base = std::env::var("KATARIBE_SITE_TEST_URL")
+            .unwrap_or_else(|_| "http://localhost:4000".to_string());
+        let list = super::fetch_site_packages(base, Some(1), None, None, Some("popular".into()))
+            .await
+            .expect("一覧が RemoteList へ deserialize できる");
+        assert!(list.page >= 1 && list.page_size > 0, "ページネーション情報がある");
+        // items が空でも契約違反ではない (dev の中身次第)。在れば必須フィールドが埋まっている。
+        if let Some(p) = list.items.first() {
+            assert!(!p.id.is_empty() && !p.title.is_empty());
+        }
+    }
+
+    /// 【統合・opt-in】書庫 (実 dev サーバ or モック) から DL→検証→展開→manifest 読みの
+    /// 全経路が通る。実行:
+    ///   KATARIBE_SITE_TEST_URL=<base> KATARIBE_SITE_TEST_ID=<uuid> \
+    ///     cargo test --lib -- --ignored install_from_site
+    #[tokio::test]
+    #[ignore = "稼働中の書庫サーバ (KATARIBE_SITE_TEST_URL) が要る"]
+    async fn install_from_site_end_to_end() {
+        let base = std::env::var("KATARIBE_SITE_TEST_URL")
+            .unwrap_or_else(|_| "http://localhost:4000".to_string());
+        let id = std::env::var("KATARIBE_SITE_TEST_ID").expect("KATARIBE_SITE_TEST_ID を設定");
+        let data_dir = std::env::temp_dir().join(format!(
+            "kataribe_site_e2e_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let installed = super::install_from_site(&base, &id, &data_dir)
+            .await
+            .expect("DL→検証→展開→manifest 読みが通る");
+        assert!(
+            Path::new(&installed.path).join("package.yaml").is_file(),
+            "展開先に package.yaml がある"
+        );
+        assert!(!installed.title.is_empty(), "manifest の title が読めている");
+    }
 
     /// 【`..` 畳み】asset protocol が拒否する `..` をパスから除去する (403 の原因対策)。
     #[test]

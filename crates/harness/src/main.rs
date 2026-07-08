@@ -322,23 +322,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
         pending_checks = Vec::new();
         match outcome {
-            Ok(TurnOutcome::Accepted { narration, summary, rolls, checks, fired, attempts, rejected }) => {
+            Ok(TurnOutcome::Accepted {
+                narration,
+                summary,
+                rolls,
+                checks,
+                fired,
+                attempts,
+                rejected,
+                tags,
+            }) => {
                 // literal `\n` を実改行へ (#16 の CLI 版。正本は触らない提示層の掃除)。
                 println!("\n{}", narration.replace("\\n", "\n"));
                 // 発火ビートを先に解決 (表示と GM への還流の素)。ビートは GM が見ていない
                 // 筋書きの出来事なので、経緯ログと継続文脈の両方へ併記する。
                 let beats = resolve_recall(&lore, &fired);
                 let beat_texts: Vec<String> = beats.iter().map(|b| b.narration.clone()).collect();
-                // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback)。
+                // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback。
+                // tags/checks は engine 事実の機械タグ = retrieval の接地、spec 08-B)。
                 history.push(harness::chronicle_entry(
                     state.turn,
                     action.trim(),
                     &summary,
                     &narration,
                     &beat_texts,
+                    &tags,
+                    &checks,
                 ));
                 // 次ターンの継続文脈に持ち越す (ビート込み)。
-                last_narration = harness::carryover_narration(&narration, &beat_texts);
+                last_narration = harness::carryover_narration(&narration, &beat_texts, &checks);
                 for r in &rolls {
                     let mark = if r.success { "成功" } else { "失敗" };
                     println!("  🎲 1d{} = {} (DC {}) → {mark}", r.sides, r.result, r.dc);
@@ -400,6 +412,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         turn: state.turn,
                                         player: "（章の移り変わり）".into(),
                                         summary: format!("『{}』へ移った", scenario.title),
+                                        ..Default::default()
                                     });
                                     println!("=== {} ===", scenario.title);
                                     if let Some(loc) = scenario.location(&state.location) {

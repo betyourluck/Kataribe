@@ -575,3 +575,52 @@ run_turn はそれを LLM に戻さずエラーとして即座に諦めていた
 【一般化】自己修復ループの入口は「意味の却下」だけでなく**「形の崩れ」も含む** — raw を
 保持する設計 (#4) は、それを戻す結線があって初めて意味を持つ。救済できる崩れ形は
 ソース後処理で決定論的に直し、直せない崩れだけを LLM に戻す (二段構え)。
+
+## crates/harness (2026-07-08 実プレイ報告 — challenge 結末文が GM に届いていない)
+
+### 41. authored 結末文つき判定の結果を GM がどのチャネルからも知らない → 継続文脈 + chronicle へ還流
+【実測発見 (2026-07-08, ユーザー報告)】サバイバル判定が成功し authored 結末文
+「見事に仕留めた。」がプレイヤーに表示されたのに、GM の語りは「槍を突き出した——」の
+試みの途中のまま (これは仕様: 出目は apply 後確定なので同ターンの語りは「試みる」止まり)。
+問題は**次ターン以降** — GM がウサギを仕留めた事実を知らずに語り続ける。
+【真因】check_outcome_note は authored narration 付き判定を**二重語り回避**で除外している
+(2026-06-26 の判断) が、これは「再描写させない」と「**結果を知らせない**」の混同だった。
+除外の結果、①判定還流 (check_outcome_note) = 除外 ②継続文脈 (carryover) = 語り+ビートのみ
+③chronicle = GM summary は結果確定前に書かれ結末文の併記なし — の三方塞がりで、
+authored 結末はプレイヤーだけが見る。**言語チャネル接地漏れの 5 例目**
+(presence #31系 / 直前 narration #27 / 経緯 chronicle / トリガービート 2026-07-03 に続く)。
+【解 (prompt/呼び出し層のみ・engine 不変)】ビート還流 (2026-07-03) と同型の二経路:
+(a) carryover_narration が結末文つき判定を「（直後に判定の結末が確定した）」として継続文脈へ
+連結、(b) chronicle_entry が summary に「／判定の結末: …」を併記 (中期記憶にも残る)。
+check_outcome_note の除外は**維持** — あちらは「結末を語れ」の要求経路で、語られ済みの判定に
+出すと二重語りに戻る。「知らせる」仕事は (a)(b) が担う (役割分離)。
+【PoC】check_outcome_narration_flows_into_carryover_and_chronicle (harness 72→73)。
+【一般化】「LLM に見せない」判断をするときは、**抑止したいのは再生成か認知か**を区別する。
+再描写の抑止は認知の遮断を意味しない — 語られ済みの事実は「既に語られた」と注記して
+知らせるのが正しい (二重語りと無知の二択は偽のジレンマ)。
+
+### 42. move 一度却下 → LLM が move を出さなくなり「語りだけで移動した気になる」 → 却下の actionable 化 + 通行可能出口の動的 surface
+【実測発見 (2026-07-08, ユーザー報告)】move が gate 未達で一度却下されると、LLM は
+「次もダメだろう」と **move op を出すこと自体をやめる** (回避学習)。その後は narration で
+「廊下へ出た」と描いて**移動済みと思い込む** — narration は非検証 (#23) なので素通りし、
+偽の移動が recent_narration → chronicle summary に載って**中期記憶の中で確定事実化**する。
+state (現在地) は正しいまま、言語チャネル側が乖離していく (継続性機構が嘘を増幅する皮肉)。
+【真因は三層】(a) 却下理由が actionable でない — 「'corridor' への移動条件が未達」は
+**何の条件か**を言わないので、LLM が学べるのは「move は失敗する」だけ (#31 の UnknownStat
+entity / FlagNotAllowed available では条件を載せていたのに、gate 未達系には未適用だった)。
+(b) 回復シグナルの不在 — gate が後で真になっても告げる行が無い (静的規則 < 義務 <
+現在形の事実+固有名、#37 の一般則の移動版)。(c) narration 移動の明示的な禁止が無かった。
+【解 (三点セット)】① `RejectReason` の gate 未達系 4 種 (Move/Flag/Item gate + ChallengeLocked)
+に **`requirement: Gate` を載せ、localize が「必要: フラグ door_unlocked が true であること。
+満たせば move は通る」と条件そのものを語る** (reason.rs に gate_ja/gate_en 新設 = 却下理由の
+言語層。harness gate_brief とは層違いの複製を許容)。② `state_brief` が**いま通れる出口**を
+毎ターン動的 surface (「いま移動できる: corridor (move op を出せば必ず受理される)」、
+未達なら「なし (条件未達。満たせば move が通る)」、出口の無い場所は行ごと省略) — エンジンが
+gate を評価し、現在形の事実+固有名で回避学習を上書きする。③ GM_SYSTEM に移動の正本規律
+(「移動は move op が受理された時にだけ起きる/現在地の行が唯一の真実/過去の語りと食い違うなら
+語りの方が誤り/語りだけで移動した事にしないこと」— presence の「一覧が唯一の真実」と同型)。
+【PoC】gate_unmet_reasons_carry_requirement (gm_core 94→95) /
+state_brief_surfaces_passable_exits_and_gm_system_grounds_move_truth (harness)。
+【一般化】**却下は次の一手だけでなく「その op クラスへの信頼」を毀損する** — 理由が
+actionable (満たすべき条件を明示) なら計画修正へ、そうでなければ回避学習へ分岐する。
+自己修復ループの理由文は「何がダメか」でなく**「何をすれば通るか」**を語ること。

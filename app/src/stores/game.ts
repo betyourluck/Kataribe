@@ -1,6 +1,14 @@
 import { defineStore } from "pinia";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import type { GameView, TurnView, StateView, LogEntry, CharacterView } from "../types/api";
+import type {
+  GameView,
+  TurnView,
+  StateView,
+  LogEntry,
+  CharacterView,
+  RemoteList,
+  InstalledPackage,
+} from "../types/api";
 
 // アセット絶対パス → asset:// URL のメモ化 (convertFileSrc を毎回呼ばない。spec 01 小論点2)。
 const assetUrlCache = new Map<string, string>();
@@ -72,6 +80,24 @@ function loadMsgShadow(): number {
 // 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。
 const BUILTIN_PACKAGES = ["packages/houkago", "packages/promise_demo", "packages/escape"];
 
+// --- 配布サイト「Kataribe 書庫」(spec 05 Phase C) ---
+// サイト URL は設定項目 (既定 = 公式)。自前サーバも指せる = Outcasts 固有ロックインを避ける。
+const SITE_URL_KEY = "kataribe.siteUrl";
+export const DEFAULT_SITE_URL = "https://kataribe.outcasts.jp";
+function loadSiteUrl(): string {
+  return localStorage.getItem(SITE_URL_KEY) || DEFAULT_SITE_URL;
+}
+/** 書庫の固定 6 カテゴリ (outcast Spec 23。id はサーバのキー、label は表示名)。 */
+export const SITE_CATEGORIES: { id: string; label: string }[] = [
+  { id: "", label: "すべて" },
+  { id: "mystery", label: "推理ゲーム" },
+  { id: "escape", label: "脱出ゲーム" },
+  { id: "daily", label: "現代日常" },
+  { id: "horror", label: "ホラー" },
+  { id: "fantasy", label: "ファンタジー" },
+  { id: "sf_cyber", label: "SF・サイバー" },
+];
+
 // backend `list_packages` が返す1項目 (フォルダ一覧表示用)。
 export interface PackageEntry {
   path: string;
@@ -131,6 +157,16 @@ interface GameState {
   packagePaths: string[];
   // 各パスの manifest を読んだ一覧 view (backend list_packages の結果)。
   packages: PackageEntry[];
+  // --- 配布サイト (spec 05 Phase C) ---
+  // 書庫サイトの URL (設定項目、localStorage 永続)。
+  siteUrl: string;
+  // 書庫の一覧応答 (fetch 済みのページ)。未取得なら null。
+  remote: RemoteList | null;
+  // 一覧 fetch / 取得中フラグとエラー (ダイアログの表示分岐)。
+  remoteLoading: boolean;
+  remoteError: string | null;
+  // 取得 (DL→展開) 中のパッケージ id。null なら待機。
+  installingId: string | null;
 }
 
 export const useGameStore = defineStore("game", {
@@ -155,6 +191,11 @@ export const useGameStore = defineStore("game", {
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
       packagePaths: paths,
       packages: [],
+      siteUrl: loadSiteUrl(),
+      remote: null,
+      remoteLoading: false,
+      remoteError: null,
+      installingId: null,
     };
   },
 
@@ -274,6 +315,57 @@ export const useGameStore = defineStore("game", {
       savePaths(this.packagePaths);
       if (this.packagePath === path) this.packagePath = this.packagePaths[0] ?? "";
       this.refreshPackages();
+    },
+
+    // 書庫サイトの URL を設定する (localStorage 永続。空なら既定 = 公式へ戻す)。
+    setSiteUrl(url: string) {
+      const u = url.trim();
+      this.siteUrl = u || DEFAULT_SITE_URL;
+      localStorage.setItem(SITE_URL_KEY, this.siteUrl);
+      // URL が変わったら前のサイトの一覧は無効。
+      this.remote = null;
+      this.remoteError = null;
+    },
+
+    // 書庫の一覧を取得する (無認証の公開 API。backend が HTTP を担い CORS を回避)。
+    async fetchSitePackages(opts?: { page?: number; q?: string; category?: string; sort?: string }) {
+      this.remoteLoading = true;
+      this.remoteError = null;
+      try {
+        this.remote = await invoke<RemoteList>("fetch_site_packages", {
+          siteUrl: this.siteUrl,
+          page: opts?.page ?? 1,
+          q: opts?.q ?? null,
+          category: opts?.category ?? null,
+          sort: opts?.sort ?? null,
+        });
+      } catch (e) {
+        this.remote = null;
+        this.remoteError = String(e);
+      } finally {
+        this.remoteLoading = false;
+      }
+    },
+
+    // 書庫からパッケージを取得する: zip DL → クライアント側検証 (zip slip 遮断) → 展開 →
+    // packagePaths へ登録。展開先は backend が app data dir に据える。成功なら登録先パスを返す。
+    async installSitePackage(id: string): Promise<InstalledPackage | null> {
+      if (this.installingId) return null; // 直列化 (多重 DL しない)
+      this.installingId = id;
+      this.remoteError = null;
+      try {
+        const installed = await invoke<InstalledPackage>("install_site_package", {
+          siteUrl: this.siteUrl,
+          id,
+        });
+        this.addPackage(installed.path);
+        return installed;
+      } catch (e) {
+        this.remoteError = String(e);
+        return null;
+      } finally {
+        this.installingId = null;
+      }
     },
 
     // パッケージ一覧を同梱既定に戻す (設定ダイアログから)。

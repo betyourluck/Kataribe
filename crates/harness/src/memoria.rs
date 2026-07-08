@@ -156,29 +156,37 @@ impl LoreStore {
             .map(|(k, t)| (k.clone(), t * self.idf.get(k).copied().unwrap_or(1.0)))
             .collect()
     }
-}
 
-impl Memoria for LoreStore {
-    fn recall(&self, cue: &str) -> Vec<MemoryFragment> {
+    /// cue に対する各 fragment のスコア列 (fragments と整列)。exact id/tag 一致 = 1.0、
+    /// 他は TF-IDF cosine (どちらも 0..=1)。[`Memoria::recall`] と chronicle retrieval
+    /// (spec 08-A の `history_note`) が共用する。
+    pub(crate) fn scores(&self, cue: &str) -> Vec<f64> {
         let cue_vec = self.vectorize(cue);
         let cue_norm = l2(&cue_vec);
-
-        let mut scored: Vec<(usize, f64)> = self
-            .fragments
+        self.fragments
             .iter()
             .enumerate()
-            .filter_map(|(i, f)| {
+            .map(|(i, f)| {
                 // authored cue の exact id/tag 一致は意味類似に依らず保証 (旧 exact 挙動の上位互換)。
-                let exact = f.id == cue || f.tags.iter().any(|t| t == cue);
-                let score = if exact {
+                if f.id == cue || f.tags.iter().any(|t| t == cue) {
                     1.0
                 } else if cue_norm == 0.0 || self.norms[i] == 0.0 {
                     0.0
                 } else {
                     dot(&cue_vec, &self.vectors[i]) / (cue_norm * self.norms[i])
-                };
-                (score >= RECALL_THRESHOLD).then_some((i, score))
+                }
             })
+            .collect()
+    }
+}
+
+impl Memoria for LoreStore {
+    fn recall(&self, cue: &str) -> Vec<MemoryFragment> {
+        let mut scored: Vec<(usize, f64)> = self
+            .scores(cue)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, score)| *score >= RECALL_THRESHOLD)
             .collect();
         // score 降順、同点は id 昇順で決定論的に。
         scored.sort_by(|a, b| {

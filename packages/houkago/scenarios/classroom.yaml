@@ -26,6 +26,7 @@ flag_titles:
 
 locations:
   classroom:
+    title: 放課後の教室   # GUI 現在地の表示名 (id=機械用 / title=表示名)
     present: [moka]   # この場に居る NPC = 顔アイコン行に表示
     description: 放課後の教室。机の上には生徒たちの教科書やノートが散らばっている。黒板の横の台には、数学の教材（math_teaching_materials）が置かれている。窓からは夕日が差し込み、教室内はオレンジ色に染まっている。モカは机に座ってスマホをいじっている。彼女はあなたに気づくと、少し驚いた表情を見せる。
     items:

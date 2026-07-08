@@ -4,6 +4,7 @@
 //! **提示の関心**であってエンジンに焼かない ── i18n・トーン差し替え・テスト頑健化の土台。
 //! ルール (所持/移動/gate の力学) はエンジンの普遍法則として残り、文面だけが言語層に分離する。
 
+use crate::spine::Gate;
 use serde::{Deserialize, Serialize};
 
 /// レンダリング言語。
@@ -22,7 +23,9 @@ pub enum RejectReason {
     CurrentLocationMissing { location: String },
     ItemAlreadyHeld { item: String },
     ItemNotHere { item: String },
-    ItemGateUnmet { item: String },
+    /// 取得条件が未達。`requirement` は満たすべき条件そのもの (#42: 「未達」とだけ言うと
+    /// LLM が op クラスごと諦める回避学習に入る — 条件を明示して計画修正へ導く)。
+    ItemGateUnmet { item: String, requirement: Gate },
     /// 備え付けアイテム (`take: fixed`)。取得は不可だが、その場で使えることを LLM に説明する。
     ItemFixed { item: String },
     /// `take: once` のアイテムを既にこの場所から持ち去っている (再取得=複製の遮断)。
@@ -35,9 +38,12 @@ pub enum RejectReason {
         #[serde(default)]
         available: Vec<String>,
     },
-    FlagGateUnmet { key: String },
+    /// フラグを立てる前提条件 (`flag_rules`) が未達。`requirement` は条件そのもの (#42)。
+    FlagGateUnmet { key: String, requirement: Gate },
     NoExit { to: String },
-    MoveGateUnmet { to: String },
+    /// 出口の gate が未達。`requirement` は条件そのもの (#42 — 「未達」だけでは LLM が
+    /// move を諦め、語りだけで移動した気になる回避学習の温床だった)。
+    MoveGateUnmet { to: String, requirement: Gate },
     DiceSidesInvalid,
     UnknownStat { entity: String, key: String },
     DivideByZero { key: String },
@@ -69,7 +75,73 @@ pub enum RejectReason {
     /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
     UnknownChallenge { challenge: String },
     /// challenge の前提条件 (`requires` Gate) が未達で、まだ挑めない (挑戦の解禁待ち)。
-    ChallengeLocked { challenge: String },
+    /// `requirement` は条件そのもの (#42)。
+    ChallengeLocked { challenge: String, requirement: Gate },
+}
+
+// Gate を人間可読の条件文にする (却下理由用、Ja/En)。harness の `gate_brief` (prompt 用)
+// と役割は同じだが、こちらは**却下理由の言語層** — self-repair する LLM が「何を満たせば
+// 通るか」を読むための文。層が違うので複製を許容する (i18n はこちらだけが持つ)。
+fn gate_ja(gate: &Gate) -> String {
+    match gate {
+        Gate::Always => "条件なし".to_string(),
+        Gate::HasItem { entity, item } => format!("{entity} が「{item}」を所持していること"),
+        Gate::FlagIs { key, value } => format!("フラグ「{key}」が {value} であること"),
+        Gate::LocationIs { at } => format!("「{at}」にいること"),
+        Gate::StatAtLeast { entity, key, value } => {
+            format!("{entity} の「{key}」が {value} 以上であること")
+        }
+        Gate::StatAtMost { entity, key, value } => {
+            format!("{entity} の「{key}」が {value} 以下であること")
+        }
+        Gate::HasSkill { entity, skill } => format!("{entity} が能力「{skill}」を持っていること"),
+        Gate::AttributeIs { entity, key, value } => {
+            format!("{entity} の「{key}」が「{value}」であること")
+        }
+        Gate::TurnsSince { entity, key, turns } => {
+            format!("{entity} の「{key}」から {turns} ターン以上経つこと")
+        }
+        Gate::HasVoted { entity } => format!("{entity} が投票を済ませていること"),
+        Gate::All { of } => {
+            let parts: Vec<String> = of.iter().map(gate_ja).collect();
+            format!("すべて満たす({})", parts.join(" / "))
+        }
+        Gate::Any { of } => {
+            let parts: Vec<String> = of.iter().map(gate_ja).collect();
+            format!("いずれか満たす({})", parts.join(" / "))
+        }
+    }
+}
+
+fn gate_en(gate: &Gate) -> String {
+    match gate {
+        Gate::Always => "no condition".to_string(),
+        Gate::HasItem { entity, item } => format!("{entity} holds '{item}'"),
+        Gate::FlagIs { key, value } => format!("flag '{key}' is {value}"),
+        Gate::LocationIs { at } => format!("being at '{at}'"),
+        Gate::StatAtLeast { entity, key, value } => {
+            format!("{entity}'s '{key}' is at least {value}")
+        }
+        Gate::StatAtMost { entity, key, value } => {
+            format!("{entity}'s '{key}' is at most {value}")
+        }
+        Gate::HasSkill { entity, skill } => format!("{entity} has the skill '{skill}'"),
+        Gate::AttributeIs { entity, key, value } => {
+            format!("{entity}'s '{key}' is '{value}'")
+        }
+        Gate::TurnsSince { entity, key, turns } => {
+            format!("at least {turns} turns have passed since {entity}'s '{key}'")
+        }
+        Gate::HasVoted { entity } => format!("{entity} has cast a vote"),
+        Gate::All { of } => {
+            let parts: Vec<String> = of.iter().map(gate_en).collect();
+            format!("all of ({})", parts.join(" / "))
+        }
+        Gate::Any { of } => {
+            let parts: Vec<String> = of.iter().map(gate_en).collect();
+            format!("any of ({})", parts.join(" / "))
+        }
+    }
 }
 
 impl RejectReason {
@@ -88,8 +160,8 @@ impl RejectReason {
             }
             RejectReason::ItemAlreadyHeld { item } => format!("'{item}' は既に所持している"),
             RejectReason::ItemNotHere { item } => format!("'{item}' はこの場所には存在しない"),
-            RejectReason::ItemGateUnmet { item } => {
-                format!("'{item}' はまだ取得できない (前提条件が未達)")
+            RejectReason::ItemGateUnmet { item, requirement } => {
+                format!("'{item}' はまだ取得できない (必要: {})", gate_ja(requirement))
             }
             RejectReason::ItemFixed { item } => {
                 format!("'{item}' は備え付けで持ち運べない (取得せず、その場で使える)")
@@ -105,9 +177,16 @@ impl RejectReason {
                     format!("フラグ '{key}' は存在しない (使えるフラグ: {})", available.join(", "))
                 }
             }
-            RejectReason::FlagGateUnmet { key } => format!("フラグ '{key}' を立てる前提条件が未達"),
+            RejectReason::FlagGateUnmet { key, requirement } => {
+                format!("フラグ '{key}' はまだ立てられない (必要: {})", gate_ja(requirement))
+            }
             RejectReason::NoExit { to } => format!("'{to}' への出口は存在しない"),
-            RejectReason::MoveGateUnmet { to } => format!("'{to}' への移動条件が未達"),
+            RejectReason::MoveGateUnmet { to, requirement } => {
+                format!(
+                    "'{to}' へはまだ移動できない (必要: {}。満たせば move は通る — 語りだけで移動した事にしないこと)",
+                    gate_ja(requirement)
+                )
+            }
             RejectReason::DiceSidesInvalid => "ダイスの面数は1以上でなければならない".to_string(),
             RejectReason::UnknownStat { entity, key } => {
                 format!("{entity} は stat '{key}' を持っていない (NPC の数値なら entity にその NPC を指定すること)")
@@ -147,8 +226,8 @@ impl RejectReason {
             RejectReason::UnknownChallenge { challenge } => {
                 format!("'{challenge}' という挑戦はこのシナリオに存在しない")
             }
-            RejectReason::ChallengeLocked { challenge } => {
-                format!("'{challenge}' にはまだ挑めない (前提条件が満たされていない)")
+            RejectReason::ChallengeLocked { challenge, requirement } => {
+                format!("'{challenge}' にはまだ挑めない (必要: {})", gate_ja(requirement))
             }
         }
     }
@@ -160,8 +239,8 @@ impl RejectReason {
             }
             RejectReason::ItemAlreadyHeld { item } => format!("'{item}' is already in your inventory"),
             RejectReason::ItemNotHere { item } => format!("'{item}' is not present in this location"),
-            RejectReason::ItemGateUnmet { item } => {
-                format!("'{item}' cannot be taken yet (prerequisite unmet)")
+            RejectReason::ItemGateUnmet { item, requirement } => {
+                format!("'{item}' cannot be taken yet (requires: {})", gate_en(requirement))
             }
             RejectReason::ItemFixed { item } => {
                 format!("'{item}' is a fixture and cannot be carried (use it where it is, without taking it)")
@@ -179,9 +258,16 @@ impl RejectReason {
                     format!("flag '{key}' does not exist (available flags: {})", available.join(", "))
                 }
             }
-            RejectReason::FlagGateUnmet { key } => format!("prerequisite to set flag '{key}' is unmet"),
+            RejectReason::FlagGateUnmet { key, requirement } => {
+                format!("flag '{key}' cannot be set yet (requires: {})", gate_en(requirement))
+            }
             RejectReason::NoExit { to } => format!("there is no exit to '{to}'"),
-            RejectReason::MoveGateUnmet { to } => format!("the condition to move to '{to}' is unmet"),
+            RejectReason::MoveGateUnmet { to, requirement } => {
+                format!(
+                    "cannot move to '{to}' yet (requires: {}. once met, move will succeed — do not narrate the move as done)",
+                    gate_en(requirement)
+                )
+            }
             RejectReason::DiceSidesInvalid => "a die must have at least 1 side".to_string(),
             RejectReason::UnknownStat { entity, key } => {
                 format!("{entity} has no stat '{key}' (for an NPC's stat, set entity to that NPC)")
@@ -205,8 +291,8 @@ impl RejectReason {
             RejectReason::UnknownEntity { entity } => {
                 format!("cannot give to '{entity}' because it does not exist in this scenario")
             }
-            RejectReason::ChallengeLocked { challenge } => {
-                format!("'{challenge}' cannot be attempted yet (its prerequisite is unmet)")
+            RejectReason::ChallengeLocked { challenge, requirement } => {
+                format!("'{challenge}' cannot be attempted yet (requires: {})", gate_en(requirement))
             }
             RejectReason::UnknownChallenge { challenge } => {
                 format!("there is no challenge '{challenge}' in this scenario")

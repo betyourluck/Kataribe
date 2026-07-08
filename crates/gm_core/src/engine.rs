@@ -140,7 +140,10 @@ fn validate_ops(
                         }
                         _ => {
                             if !li.when().eval(state) {
-                                reasons.push(RejectReason::ItemGateUnmet { item: item.clone() });
+                                reasons.push(RejectReason::ItemGateUnmet {
+                                    item: item.clone(),
+                                    requirement: li.when().clone(),
+                                });
                             }
                         }
                     },
@@ -171,15 +174,25 @@ fn validate_ops(
                     });
                     continue;
                 }
-                if *value && !scenario.flag_gate(key).eval(state) {
-                    reasons.push(RejectReason::FlagGateUnmet { key: key.clone() });
+                if *value {
+                    let gate = scenario.flag_gate(key);
+                    if !gate.eval(state) {
+                        reasons.push(RejectReason::FlagGateUnmet {
+                            key: key.clone(),
+                            requirement: gate,
+                        });
+                    }
                 }
             }
             StateOp::Move { to } => match loc.exits.iter().find(|e| &e.to == to) {
                 None => reasons.push(RejectReason::NoExit { to: to.clone() }),
                 Some(exit) => {
                     if !exit.gate.eval(state) {
-                        reasons.push(RejectReason::MoveGateUnmet { to: to.clone() });
+                        // 必要条件を理由に載せる (#42): 「未達」だけでは LLM が move を諦める。
+                        reasons.push(RejectReason::MoveGateUnmet {
+                            to: to.clone(),
+                            requirement: exit.gate.clone(),
+                        });
                     }
                 }
             },
@@ -210,6 +223,7 @@ fn validate_ops(
                             if !req.eval(state) {
                                 reasons.push(RejectReason::ChallengeLocked {
                                     challenge: challenge.clone(),
+                                    requirement: req.clone(),
                                 });
                             }
                         }
@@ -299,7 +313,8 @@ fn validate_ops(
                         .entities
                         .get(e)
                         .and_then(|stats| stats.get("生存"))
-                        .is_none_or(|v| *v == 1)
+                        // MSRV 1.80 のため is_none_or (1.82〜) は使わない。
+                        .map_or(true, |v| *v == 1)
                 };
                 if !alive(voter) {
                     reasons.push(RejectReason::EntityNotAlive { entity: voter.clone() });
@@ -1940,6 +1955,115 @@ goal: { kind: always }
         );
     }
 
+    /// 【却下理由の actionable 化 (#42)】gate 未達系の却下 (move/flag/item/challenge) は
+    /// **満たすべき条件そのもの**を理由に載せる。「移動条件が未達」だけでは LLM が
+    /// 「move は失敗する」としか学べず、以後 move を出さなくなり語りだけで移動した気になる
+    /// (回避学習)。条件を明示すれば「条件を満たす計画」へ転じる (#31 の UnknownStat entity /
+    /// FlagNotAllowed available と同じ診断可能性の一般化)。
+    #[test]
+    fn gate_unmet_reasons_carry_requirement() {
+        let yaml = r#"
+title: t
+start: cell
+allowed_flags: [drawer_opened, door_unlocked]
+flag_rules:
+  door_unlocked: { kind: has_item, item: rusty_key }
+locations:
+  cell:
+    description: d
+    items:
+      rusty_key: { kind: flag_is, key: drawer_opened, value: true }
+    exits:
+      - { to: corridor, gate: { kind: flag_is, key: door_unlocked, value: true } }
+  corridor: { description: d, items: {}, exits: [] }
+goal: { kind: location_is, at: corridor }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let s = sc.initial_state(1);
+
+        // move: 未達の gate (door_unlocked) が理由文に現れる。
+        let d1 = d(vec![StateOp::Move { to: "corridor".into() }]);
+        match adjudicate(&s, &sc, &d1) {
+            Verdict::Reject { reasons } => {
+                let text = reasons[0].localize(crate::Lang::Ja);
+                assert!(text.contains("door_unlocked"), "必要条件を明示する: {text}");
+            }
+            _ => panic!("却下されるはず"),
+        }
+        // set_flag: flag_rules の gate (rusty_key 所持) が理由文に現れる。
+        let d2 = d(vec![StateOp::SetFlag { key: "door_unlocked".into(), value: true }]);
+        match adjudicate(&s, &sc, &d2) {
+            Verdict::Reject { reasons } => {
+                let text = reasons[0].localize(crate::Lang::Ja);
+                assert!(text.contains("rusty_key"), "必要条件を明示する: {text}");
+            }
+            _ => panic!("却下されるはず"),
+        }
+        // add_item: 場所アイテムの取得条件 (drawer_opened) が理由文に現れる。
+        let d3 = d(vec![StateOp::AddItem { item: "rusty_key".into() }]);
+        match adjudicate(&s, &sc, &d3) {
+            Verdict::Reject { reasons } => {
+                let text = reasons[0].localize(crate::Lang::Ja);
+                assert!(text.contains("drawer_opened"), "必要条件を明示する: {text}");
+            }
+            _ => panic!("却下されるはず"),
+        }
+    }
+
+    /// 【本人未知の秘匿 (2026-07-08)】`hidden_attributes` は**当人にも見えない**属性キー
+    /// (呪い・自覚のない正体等)。`secret_attributes` (本人分は見える) より一段強い秘匿 —
+    /// プレイヤー UI は本人分ごと落とし、GM prompt だけが注記付きで見る (提示は harness/app
+    /// の責務)。engine は宣言を運ぶだけで gate/トリガー評価は不変。キーの宣言必須は secret と同じ。
+    #[test]
+    fn hidden_attributes_parse_and_validate_declaration() {
+        let yaml = r#"
+title: t
+start: v
+role_assignment: { key: 真の正体, pool: { 吸血鬼: 1, 人間: 1 }, among: [player, alice] }
+hidden_attributes: [真の正体]
+characters: { alice: { name: A } }
+locations: { v: { description: d, items: {}, exits: [] } }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "role_assignment.key の秘匿は健全: {:?}", sc.validate());
+        assert!(sc.hidden_attributes.contains("真の正体"));
+
+        // どこにも宣言されていないキーの秘匿は幻属性 → validate が弾く。
+        let yaml = r#"
+title: t
+start: v
+hidden_attributes: [幽霊属性]
+locations: { v: { description: d, items: {}, exits: [] } }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::HiddenAttributeUndeclared { key } if key == "幽霊属性")),
+            "未宣言キーの秘匿を弾く: {:?}",
+            sc.validate()
+        );
+    }
+
+    /// 【場所の表示名 (2026-07-08)】`Location.title` = 人間向け表示名 (id=機械用セレクタ /
+    /// title=表示名 の三層思想、`GoalDef.title`/`flag_titles` と同類)。非検証の提示素材・
+    /// serde default = 既存 YAML 無改修 (省略時は空で、提示層が id へフォールバック)。
+    #[test]
+    fn location_title_parses_and_defaults_empty() {
+        let yaml = r#"
+title: t
+start: v
+locations:
+  v: { title: 宿屋の広間, description: d, items: {}, exits: [] }
+  w: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert_eq!(sc.location("v").unwrap().title, "宿屋の広間", "表示名が読める");
+        assert_eq!(sc.location("w").unwrap().title, "", "省略時は空 (後方互換)");
+    }
+
     /// 【role_assignment の整合性】人数不整合・幻キャラ・重複配布は validate が load 時に弾く。
     #[test]
     fn validate_rejects_role_assignment_mismatches() {
@@ -2992,7 +3116,7 @@ locations:
         // B: 教えが無ければ requires 未達で挑めない (ChallengeLocked)。
         match adjudicate(&s, &sc, &attempt()) {
             Verdict::Reject { reasons } => assert!(
-                reasons.iter().any(|r| matches!(r, RejectReason::ChallengeLocked { challenge } if challenge == "secret")),
+                reasons.iter().any(|r| matches!(r, RejectReason::ChallengeLocked { challenge, .. } if challenge == "secret")),
                 "requires 未達なら ChallengeLocked: {reasons:?}"
             ),
             Verdict::Accept => panic!("requires 未達なら却下されるべき"),
