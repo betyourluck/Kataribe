@@ -83,21 +83,18 @@ pub struct ApplyOutcome {
 ///
 /// 1つでも不正な op があれば `Reject` を返す (理由は全件収集)。
 pub fn adjudicate(state: &GameState, scenario: &Scenario, delta: &StateDelta) -> Verdict {
-    let loc = match scenario.location(&state.location) {
-        Some(l) => l,
-        None => {
-            return Verdict::Reject {
-                reasons: vec![RejectReason::CurrentLocationMissing {
-                    location: state.location.clone(),
-                }],
-            };
-        }
-    };
+    if scenario.location(&state.location).is_none() {
+        return Verdict::Reject {
+            reasons: vec![RejectReason::CurrentLocationMissing {
+                location: state.location.clone(),
+            }],
+        };
+    }
 
     let mut reasons = Vec::new();
 
-    // op 単体の力学 (所持/移動/gate/stat 宣言) を検証。
-    validate_ops(&mut reasons, state, scenario, loc, delta);
+    // op の力学 (所持/移動/gate/stat 宣言) を**書かれた順**に検証 (逐次射影、spec 09)。
+    validate_ops(&mut reasons, state, scenario, delta);
 
     // 硬い禁忌 (Phase B): op 単体が合法なら、delta 適用後に taboo(Gate) が真化しないか検査。
     // adjudicate は純粋なので state の clone へ射影 (project) して評価する。
@@ -113,19 +110,56 @@ pub fn adjudicate(state: &GameState, scenario: &Scenario, delta: &StateDelta) ->
 }
 
 /// op 単体の力学を検証して reasons に積む (taboo は別。state を変えない)。
+///
+/// **逐次射影裁定 (spec 09-A)**: op を書かれた順に検証し、受理できた op の**決定論的効果**を
+/// 射影クローンへ仮適用してから次の op を検証する — 裁定は apply のドライラン。
+/// 「拾ってから使う」のような段取りが 1 delta で通る (裁定と適用の時点ズレの catch-22 を根絶、
+/// mujinto 実測 2026-07-09)。ダイス op (roll/check/attempt) は検証のみで帰結を射影しない
+/// (出目は apply 時確定・純粋な裁定は RNG を消費できない) — 判定結果に依存する後続手は
+/// 従来どおり次ターン。適用は [`apply_deterministic_op`] を実 apply と共有し、
+/// 射影と実適用の乖離を構造的に防ぐ。
 fn validate_ops(
     reasons: &mut Vec<RejectReason>,
     state: &GameState,
     scenario: &Scenario,
-    loc: &crate::spine::Location,
     delta: &StateDelta,
 ) {
+    let mut proj = state.clone();
     for op in &delta.ops {
+        let before = reasons.len();
+        validate_op(reasons, &proj, scenario, op);
+        // この op が合法なら射影へ仮適用 (不正な op は射影に乗せず、残りは現射影で診断を続ける)。
+        if reasons.len() == before {
+            apply_deterministic_op(&mut proj, scenario, op);
+        }
+    }
+}
+
+/// 1 op の力学を `state` (裁定では射影クローン) に対して検証する。
+fn validate_op(
+    reasons: &mut Vec<RejectReason>,
+    state: &GameState,
+    scenario: &Scenario,
+    op: &StateOp,
+) {
+    // 現在地は射影を追う (Move を含む delta では以降の op を移動先で検証する)。
+    let loc = match scenario.location(&state.location) {
+        Some(l) => l,
+        None => {
+            reasons.push(RejectReason::CurrentLocationMissing {
+                location: state.location.clone(),
+            });
+            return;
+        }
+    };
+    {
         match op {
             StateOp::AddItem { item } => {
+                // 既に所持しているなら**受理して no-op** (spec 09-B: 「念のための再拾得」を
+                // 害なく受ける。inventory は集合なので複製は構造的に起きず、複製穴の守りは
+                // taken_items = take:once の再取得却下が担い続ける)。
                 if state.has_item(PLAYER, item) {
-                    reasons.push(RejectReason::ItemAlreadyHeld { item: item.clone() });
-                    continue;
+                    return;
                 }
                 match loc.items.get(item) {
                     None => reasons.push(RejectReason::ItemNotHere { item: item.clone() }),
@@ -172,7 +206,7 @@ fn validate_ops(
                         key: key.clone(),
                         available: scenario.usable_flags().into_iter().collect(),
                     });
-                    continue;
+                    return;
                 }
                 if *value {
                     let gate = scenario.flag_gate(key);
@@ -295,15 +329,15 @@ fn validate_ops(
                 // (死者/局面の理由を出すと self-repair が誤った方向に直そうとする、#35)。
                 if scenario.vote_rules.is_empty() {
                     reasons.push(RejectReason::VoteNotDeclared);
-                    continue;
+                    return;
                 }
                 if !scenario.knows_entity(voter) {
                     reasons.push(RejectReason::UnknownEntity { entity: voter.clone() });
-                    continue;
+                    return;
                 }
                 if !scenario.knows_entity(target) {
                     reasons.push(RejectReason::UnknownEntity { entity: target.clone() });
-                    continue;
+                    return;
                 }
                 // 生死は **生存 stat を持つ entity にだけ** 意味を持つ (role_assignment が seed
                 // する)。未宣言 = 生死の概念が無い盤面/キャラで、0 と誤読して死者扱いしない
@@ -318,11 +352,11 @@ fn validate_ops(
                 };
                 if !alive(voter) {
                     reasons.push(RejectReason::EntityNotAlive { entity: voter.clone() });
-                    continue;
+                    return;
                 }
                 if !alive(target) {
                     reasons.push(RejectReason::EntityNotAlive { entity: target.clone() });
-                    continue;
+                    return;
                 }
                 let allowed = scenario.vote_rules.iter().any(|rule| {
                     let voter_ok = match &rule.voter_attribute {
@@ -457,8 +491,77 @@ fn fire_triggers(
     fired
 }
 
+/// **決定論 op** を state に適用する (検証なし・ダイス無し)。
+///
+/// `apply_ops` (実適用) と `validate_ops` の逐次射影 (spec 09) が**共有**する —
+/// 射影と実適用の乖離を構造的に防ぐ (二重実装は将来の齟齬源)。
+/// 戻り値: この関数が処理した (決定論 op だった) か。ダイス op と authored 専権 op は false。
+fn apply_deterministic_op(state: &mut GameState, scenario: &Scenario, op: &StateOp) -> bool {
+    match op {
+        StateOp::AddItem { item } => {
+            // 既に所持しているなら no-op (spec 09-B。taken の記録もしない)。
+            if !state.has_item(PLAYER, item) {
+                state.add_to_inventory(PLAYER, item);
+                // once アイテムは「持ち去った」事実を**その時点の現在地**に記録
+                // (再取得=複製の遮断)。Move を含む delta では逐次の現在地が基準
+                // (spec 09: 裁定も適用も同じ順次意味論)。
+                let here = state.location.clone();
+                if scenario
+                    .locations
+                    .get(&here)
+                    .and_then(|l| l.items.get(item))
+                    .map(|li| li.take())
+                    == Some(TakeMode::Once)
+                {
+                    state.record_taken(&here, item);
+                }
+            }
+            true
+        }
+        StateOp::RemoveItem { item } => {
+            state.remove_from_inventory(PLAYER, item);
+            true
+        }
+        StateOp::GiveItem { from, to, item } => {
+            // adjudicate が from 所持・to 既知を保証済。原子的に移す。
+            state.remove_from_inventory(from, item);
+            state.add_to_inventory(to, item);
+            true
+        }
+        StateOp::SetFlag { key, value } => {
+            state.flags.insert(key.clone(), *value);
+            true
+        }
+        StateOp::Move { to } => {
+            state.location = to.clone();
+            true
+        }
+        // --- 算術はエンジンが行う。LLM は意図だけ提案、値は持てない ---
+        StateOp::AdjustStat { entity, key, delta } => {
+            let next = state.stat_of(entity, key) + delta; // 加減
+            let clamped = clamp_stat(scenario, entity, key, next);
+            state.set_stat(entity, key, clamped);
+            true
+        }
+        StateOp::ScaleStat { entity, key, num, den } => {
+            // den != 0 は adjudicate が保証済。乗算先行で精度を確保。
+            let next = state.stat_of(entity, key).saturating_mul(*num) / den;
+            let clamped = clamp_stat(scenario, entity, key, next);
+            state.set_stat(entity, key, clamped);
+            true
+        }
+        StateOp::CastVote { voter, target } => {
+            // 一人一票 (voter キーの map)。再投票は上書き。
+            state.votes.insert(voter.clone(), target.clone());
+            true
+        }
+        _ => false,
+    }
+}
+
 /// delta の各 op を state に適用する (検証なし)。`apply` と taboo 射影が共有する。
 /// [`StateOp::RequestRoll`]/[`StateOp::Check`] はここで決定論的に振られ、`rolls`/`checks` に積まれる。
+/// 決定論 op は [`apply_deterministic_op`] へ委譲 (裁定の射影と同一コード)。
 fn apply_ops(
     state: &mut GameState,
     scenario: &Scenario,
@@ -466,38 +569,11 @@ fn apply_ops(
     rolls: &mut Vec<RollOutcome>,
     checks: &mut Vec<CheckOutcome>,
 ) {
-    // AddItem の検証は delta 開始時の現在地に対して行われる (adjudicate と同じ基準点)。
-    // Move を含む delta でも持ち去りの記録先がずれないよう、開始時の場所を取っておく。
-    let start_loc = state.location.clone();
     for op in &delta.ops {
+        if apply_deterministic_op(state, scenario, op) {
+            continue;
+        }
         match op {
-            StateOp::AddItem { item } => {
-                state.add_to_inventory(PLAYER, item);
-                // once アイテムは「持ち去った」事実を場所別に記録 (再取得=複製の遮断)。
-                if scenario
-                    .locations
-                    .get(&start_loc)
-                    .and_then(|l| l.items.get(item))
-                    .map(|li| li.take())
-                    == Some(TakeMode::Once)
-                {
-                    state.record_taken(&start_loc, item);
-                }
-            }
-            StateOp::RemoveItem { item } => {
-                state.remove_from_inventory(PLAYER, item);
-            }
-            StateOp::GiveItem { from, to, item } => {
-                // adjudicate が from 所持・to 既知を保証済。原子的に移す。
-                state.remove_from_inventory(from, item);
-                state.add_to_inventory(to, item);
-            }
-            StateOp::SetFlag { key, value } => {
-                state.flags.insert(key.clone(), *value);
-            }
-            StateOp::Move { to } => {
-                state.location = to.clone();
-            }
             StateOp::RequestRoll { sides, dc } => {
                 let result = state.rng.roll(*sides);
                 rolls.push(RollOutcome {
@@ -587,18 +663,6 @@ fn apply_ops(
                     });
                 }
             }
-            // --- 算術はエンジンが行う。LLM は意図だけ提案、値は持てない ---
-            StateOp::AdjustStat { entity, key, delta } => {
-                let next = state.stat_of(entity, key) + delta; // 加減
-                let clamped = clamp_stat(scenario, entity, key, next);
-                state.set_stat(entity, key, clamped);
-            }
-            StateOp::ScaleStat { entity, key, num, den } => {
-                // den != 0 は adjudicate が保証済。乗算先行で精度を確保。
-                let next = state.stat_of(entity, key).saturating_mul(*num) / den;
-                let clamped = clamp_stat(scenario, entity, key, next);
-                state.set_stat(entity, key, clamped);
-            }
             StateOp::GrantSkill { entity, skill } => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
                 state.grant_skill(entity, skill);
@@ -617,15 +681,13 @@ fn apply_ops(
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
                 state.present_overrides.insert(entity.clone(), *present);
             }
-            StateOp::CastVote { voter, target } => {
-                // 一人一票 (voter キーの map)。再投票は上書き。
-                state.votes.insert(voter.clone(), target.clone());
-            }
             StateOp::ResolveVote => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
                 // 開票 → 死亡 → カウンタ再計算 → 票リセット、を一箇所で原子適用 (spec 06 Phase C)。
                 resolve_vote(state, scenario);
             }
+            // 決定論 op は apply_deterministic_op が処理済み (continue で到達しない)。
+            _ => {}
         }
     }
 }
@@ -1953,6 +2015,133 @@ goal: { kind: always }
             "未宣言キーの秘匿を弾く: {:?}",
             sc.validate()
         );
+    }
+
+    /// spec 09 PoC 用の小盤面: 砂浜で建材を拾い、シェルターを組む (mujinto T15/T16 の再現形)。
+    const PROJECTION_BOARD: &str = r#"
+title: t
+start: beach
+allowed_flags: [made_shelter, blessed, after_blessed]
+flag_rules:
+  after_blessed: { kind: flag_is, key: blessed, value: true }
+locations:
+  beach:
+    description: d
+    items:
+      流木: { when: { kind: always }, take: infinite }
+      小石: { when: { kind: always }, take: infinite }
+    exits: []
+challenges:
+  build_shelter:
+    description: 流木と小石でシェルターを組む
+    requires:
+      kind: all
+      of:
+        - { kind: location_is, at: beach }
+        - { kind: has_item, entity: player, item: 流木 }
+        - { kind: has_item, entity: player, item: 小石 }
+    sides: 1
+    dc: 1
+    on_success: { flag: made_shelter }
+  bless:
+    description: 祝福の儀 (成功で blessed)
+    sides: 1
+    dc: 1
+    on_success: { flag: blessed }
+goal: { kind: flag_is, key: made_shelter, value: true }
+"#;
+
+    /// 【逐次射影裁定 (spec 09-A)】「拾って組む」を 1 delta に束ねられる — adjudicate は
+    /// op を書かれた順に検証し、受理した決定論 op を射影に仮適用してから次を検証する
+    /// (裁定 = apply のドライラン)。旧来はターン開始時点の一括評価で ChallengeLocked に
+    /// なっていた (mujinto T15 の catch-22)。
+    #[test]
+    fn sequential_projection_allows_pick_then_use_in_one_delta() {
+        let sc = Scenario::from_yaml(PROJECTION_BOARD).unwrap();
+        let mut s = sc.initial_state(1);
+        let delta = d(vec![
+            StateOp::AddItem { item: "流木".into() },
+            StateOp::AddItem { item: "小石".into() },
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "build_shelter".into() },
+        ]);
+        assert!(
+            matches!(adjudicate(&s, &sc, &delta), Verdict::Accept),
+            "拾ってから組む束は受理される: {:?}",
+            adjudicate(&s, &sc, &delta)
+        );
+        apply(&mut s, &sc, &delta).expect("適用できる");
+        assert!(s.flag("made_shelter"), "sides:1 dc:1 なので必ず成功しシェルターが立つ");
+    }
+
+    /// 【順序の意味 (spec 09-A)】ops は書かれた順に裁く — 「組んでから拾う」順は
+    /// attempt の時点で未所持なので従来どおり却下される (順序は作者/LLM の責任)。
+    #[test]
+    fn order_matters_use_before_pick_is_rejected() {
+        let sc = Scenario::from_yaml(PROJECTION_BOARD).unwrap();
+        let s = sc.initial_state(1);
+        let delta = d(vec![
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "build_shelter".into() },
+            StateOp::AddItem { item: "流木".into() },
+            StateOp::AddItem { item: "小石".into() },
+        ]);
+        match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::ChallengeLocked { .. })),
+                "{reasons:?}"
+            ),
+            Verdict::Accept => panic!("attempt 時点で未所持なので却下されるべき"),
+        }
+    }
+
+    /// 【重複拾得の no-op (spec 09-B)】既に所持している物への add_item は却下でなく
+    /// 受理して no-op (mujinto T16: 「念のため再拾得」を束ねた delta が ItemAlreadyHeld で
+    /// 全体却下されていた)。inventory は集合なので複製は構造的に起きず、複製穴の守りは
+    /// taken_items (take:once の再取得却下) が担い続ける。
+    #[test]
+    fn duplicate_add_item_is_noop_when_already_held() {
+        let sc = Scenario::from_yaml(PROJECTION_BOARD).unwrap();
+        let mut s = sc.initial_state(1);
+        apply(&mut s, &sc, &d(vec![
+            StateOp::AddItem { item: "流木".into() },
+            StateOp::AddItem { item: "小石".into() },
+        ]))
+        .unwrap();
+
+        // 所持済みのまま「念のため拾い直して組む」— T16 の形がそのまま通る。
+        let delta = d(vec![
+            StateOp::AddItem { item: "流木".into() },
+            StateOp::AddItem { item: "小石".into() },
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "build_shelter".into() },
+        ]);
+        assert!(matches!(adjudicate(&s, &sc, &delta), Verdict::Accept));
+        apply(&mut s, &sc, &delta).unwrap();
+        assert!(s.flag("made_shelter"));
+        assert_eq!(
+            s.inventory.get(PLAYER).map(|i| i.len()),
+            Some(2),
+            "no-op なので複製は生まれない"
+        );
+    }
+
+    /// 【ダイス帰結は射影しない (spec 09-A)】判定の成否は apply 時に出目で確定する —
+    /// 純粋な adjudicate は帰結 (on_success フラグ) を先取りできないので、判定結果に
+    /// 依存する後続 op は同一 delta に束ねられない (次ターンで動く。物語的にも正しい制約)。
+    #[test]
+    fn dice_outcomes_are_not_projected() {
+        let sc = Scenario::from_yaml(PROJECTION_BOARD).unwrap();
+        let s = sc.initial_state(1);
+        // bless は sides:1 dc:1 で必ず成功するが、裁定はそれを知ってはならない。
+        let delta = d(vec![
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "bless".into() },
+            StateOp::SetFlag { key: "after_blessed".into(), value: true },
+        ]);
+        match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::FlagGateUnmet { key, .. } if key == "after_blessed")),
+                "{reasons:?}"
+            ),
+            Verdict::Accept => panic!("判定帰結 (blessed) は射影されないので却下されるべき"),
+        }
     }
 
     /// 【却下理由の actionable 化 (#42)】gate 未達系の却下 (move/flag/item/challenge) は

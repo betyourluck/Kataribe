@@ -1237,6 +1237,39 @@ mod tests {
         );
     }
 
+    /// 【拾得の接地 + op 順序の接地 (spec 09-C)】(a) `state_brief` が**この場でいま拾える
+    /// アイテム**を毎ターン動的 surface (#37 投票/#42 出口に続く現在形接地の第三例 —
+    /// narration だけの拾得 (#23 型、mujinto T14) の抑止)。取得不能 (fixed/持ち去り済み/
+    /// gate 未達/既所持) は列挙しない。(b) GM_SYSTEM が「ops は書いた順に適用される。
+    /// 拾ってから使う段取りは 1 ターンに束ねてよい／判定の結果に依存する手は次ターン」を
+    /// 刷り込む (逐次射影裁定 spec 09-A の使い方)。
+    #[tokio::test]
+    async fn state_brief_surfaces_takeable_items_and_gm_system_grounds_op_order() {
+        let sc = scenario(); // locked_room: cell に rusty_key (gate: drawer_opened)
+        let mut s = fresh(&sc);
+
+        // gate 未達: rusty_key はまだ拾えない → 列挙しない。
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(!sb.contains("いま拾える: rusty_key"), "gate 未達の item は出さない: {sb}");
+
+        // gate 成立: 拾える item が固有名で現れる。
+        s.flags.insert("drawer_opened".into(), true);
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(sb.contains("いま拾える: rusty_key"), "拾える item が固有名で出る: {sb}");
+
+        // 既に所持していれば列挙から消える (ノイズ抑制)。
+        s.add_to_inventory("player", "rusty_key");
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(!sb.contains("いま拾える: rusty_key"), "既所持は列挙しない: {sb}");
+
+        let g = prompt::GM_SYSTEM;
+        assert!(g.contains("書いた順") || g.contains("書かれた順"), "op の逐次適用を刷り込む");
+        assert!(
+            g.contains("束ねてよい") && g.contains("次のターン"),
+            "段取りの束ねと、判定依存の手は次ターンの規律"
+        );
+    }
+
     /// 【presence の prompt 接地】GM は「いま誰がこの場に居るか」を presence でしか知れない —
     /// 場所説明文は静的 (退場後もキャラが書かれたまま) なので、`state_brief` が**実効 presence**
     /// (base ± override) を毎ターン surface し、GM_SYSTEM が「一覧が唯一の真実 (説明文より優先)・

@@ -21,7 +21,8 @@ pub enum Lang {
 pub enum RejectReason {
     /// 現在地がシナリオに存在しない (state 破損)。
     CurrentLocationMissing { location: String },
-    ItemAlreadyHeld { item: String },
+    // ItemAlreadyHeld は spec 09-B で撤去 — 既所持への add_item は却下でなく no-op 受理
+    // (「念のための再拾得」で delta 全体が落ちる摩擦の除去。複製穴の守りは taken_items)。
     ItemNotHere { item: String },
     /// 取得条件が未達。`requirement` は満たすべき条件そのもの (#42: 「未達」とだけ言うと
     /// LLM が op クラスごと諦める回避学習に入る — 条件を明示して計画修正へ導く)。
@@ -158,7 +159,6 @@ impl RejectReason {
             RejectReason::CurrentLocationMissing { location } => {
                 format!("現在地 '{location}' がシナリオに存在しない")
             }
-            RejectReason::ItemAlreadyHeld { item } => format!("'{item}' は既に所持している"),
             RejectReason::ItemNotHere { item } => format!("'{item}' はこの場所には存在しない"),
             RejectReason::ItemGateUnmet { item, requirement } => {
                 format!("'{item}' はまだ取得できない (必要: {})", gate_ja(requirement))
@@ -237,7 +237,6 @@ impl RejectReason {
             RejectReason::CurrentLocationMissing { location } => {
                 format!("current location '{location}' does not exist in the scenario")
             }
-            RejectReason::ItemAlreadyHeld { item } => format!("'{item}' is already in your inventory"),
             RejectReason::ItemNotHere { item } => format!("'{item}' is not present in this location"),
             RejectReason::ItemGateUnmet { item, requirement } => {
                 format!("'{item}' cannot be taken yet (requires: {})", gate_en(requirement))
