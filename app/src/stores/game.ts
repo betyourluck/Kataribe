@@ -77,6 +77,12 @@ function loadMsgShadow(): number {
   return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 0;
 }
 
+// 会話ログのテキスト保存先フォルダ (空 = backend の既定 app_data_dir/logs)。
+const LOG_DIR_KEY = "kataribe.logDir";
+function loadLogDir(): string {
+  return localStorage.getItem(LOG_DIR_KEY) || "";
+}
+
 // 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。
 const BUILTIN_PACKAGES = ["packages/houkago", "packages/promise_demo", "packages/escape"];
 
@@ -167,6 +173,10 @@ interface GameState {
   remoteError: string | null;
   // 取得 (DL→展開) 中のパッケージ id。null なら待機。
   installingId: string | null;
+  // 会話ログのテキスト保存先フォルダ (空 = 既定)。設定「ログ」タブで指定。
+  logDir: string;
+  // ログ保存/フォルダ操作の一時トースト (App.vue が数秒表示して消す)。
+  logToast: string;
 }
 
 export const useGameStore = defineStore("game", {
@@ -196,6 +206,8 @@ export const useGameStore = defineStore("game", {
       remoteLoading: false,
       remoteError: null,
       installingId: null,
+      logDir: loadLogDir(),
+      logToast: "",
     };
   },
 
@@ -368,6 +380,105 @@ export const useGameStore = defineStore("game", {
       }
     },
 
+    // --- 会話ログのテキスト保存 (ユーザーFB 2026-07-09) ---
+
+    // ログ保存先フォルダを設定する (空 = 既定 app_data_dir/logs へ戻す)。
+    setLogDir(path: string) {
+      this.logDir = path.trim();
+      if (this.logDir) localStorage.setItem(LOG_DIR_KEY, this.logDir);
+      else localStorage.removeItem(LOG_DIR_KEY);
+    },
+
+    // 会話ログをプレーンテキストへ整形する (ConversationLog の見た目に沿う)。
+    formatLog(): string {
+      const lines: string[] = [];
+      for (const e of this.log) {
+        switch (e.kind) {
+          case "opening":
+            lines.push(e.text);
+            break;
+          case "player":
+            lines.push(`> あなた: ${e.text}`);
+            break;
+          case "narration":
+            lines.push(e.text);
+            break;
+          case "beat":
+            lines.push(`✦ ${e.narration}`);
+            for (const r of e.recalled) lines.push(`  ┊ ${r}`);
+            break;
+          case "rolls":
+            for (const r of e.rolls)
+              lines.push(
+                `🎲 1d${r.sides} = ${r.result} (DC ${r.dc}) → ${r.success ? "成功" : "失敗"}`,
+              );
+            break;
+          case "checks":
+            for (const c of e.checks) {
+              const mod = c.modifier >= 0 ? `+${c.modifier}` : `${c.modifier}`;
+              lines.push(
+                `🎯 ${c.entity} の${c.stat}判定: 1d${c.sides}(${c.roll})${mod} = ${c.total} (DC ${c.dc}) → ${c.success ? "成功" : "失敗"}`,
+              );
+              if (c.narration) lines.push(c.narration);
+            }
+            break;
+          case "reject":
+            lines.push(`（GM は ${e.attempts} 回試みたが、筋の通る一手を出せなかった）`);
+            for (const r of e.reasons) lines.push(`  - ${r}`);
+            break;
+          case "retries":
+            lines.push("却下された試行:");
+            e.reasons.forEach((rs, i) => lines.push(`  ${i + 1} 回目: ${rs.join(" / ")}`));
+            break;
+          case "system":
+            lines.push(`── ${e.text} ──`);
+            break;
+        }
+        lines.push(""); // エントリ間に空行
+      }
+      return lines.join("\n");
+    },
+
+    // 現在のログを「日時_パッケージ名.txt」で保存する。backend がフォルダを解決・書き込む。
+    async saveLog(): Promise<void> {
+      if (!this.started || !this.log.length) {
+        this.logToast = "保存するログがありません";
+        return;
+      }
+      const now = new Date();
+      const p = (n: number) => String(n).padStart(2, "0");
+      const stamp =
+        `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}` +
+        `_${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+      // パッケージ名をファイル名に使える形へ (パス特殊文字・空白を除去、長すぎ切り詰め)。
+      const safeTitle =
+        (this.title || "kataribe")
+          .replace(/[\\/:*?"<>|]/g, "")
+          .replace(/\s+/g, "_")
+          .slice(0, 40) || "kataribe";
+      const fileName = `${stamp}_${safeTitle}.txt`;
+      const header = `# ${this.title || "語り部"}\n# 保存日時: ${now.toLocaleString()}\n\n`;
+      try {
+        const path = await invoke<string>("save_log_file", {
+          folder: this.logDir,
+          fileName,
+          content: header + this.formatLog(),
+        });
+        this.logToast = `ログを保存しました: ${path}`;
+      } catch (e) {
+        this.logToast = `保存失敗: ${e}`;
+      }
+    },
+
+    // ログフォルダを OS のファイルマネージャで開く (設定ダイアログのボタン)。
+    async openLogFolder() {
+      try {
+        await invoke("open_log_folder", { folder: this.logDir });
+      } catch (e) {
+        this.logToast = `フォルダを開けません: ${e}`;
+      }
+    },
+
     // パッケージ一覧を同梱既定に戻す (設定ダイアログから)。
     resetPackages() {
       this.packagePaths = [...BUILTIN_PACKAGES];
@@ -442,7 +553,11 @@ export const useGameStore = defineStore("game", {
         if (turn.accepted) {
           if (turn.narration) this.log.push({ kind: "narration", text: turn.narration });
           if (turn.rolls.length) this.log.push({ kind: "rolls", rolls: turn.rolls });
-          if (turn.checks.length) this.log.push({ kind: "checks", checks: turn.checks });
+          if (turn.checks.length) {
+            this.log.push({ kind: "checks", checks: turn.checks });
+            // challenge の結末効果音を one-shot 再生 (受理ターンのみ。ビート SE と同経路)。
+            for (const c of turn.checks) this.playSe(assetUrl(c.sound));
+          }
           for (const b of turn.beats) {
             this.log.push({ kind: "beat", narration: b.narration, recalled: b.recalled });
             // 発火 SE を one-shot 再生 (受理ターンのみ。CG と同様、語りの瞬間に鳴らす)。

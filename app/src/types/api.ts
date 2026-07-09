@@ -73,6 +73,8 @@ export interface CheckView {
   success: boolean;
   /** authored challenge の結末ナレーション (毎回・同ターン)。無ければ空。 */
   narration: string;
+  /** authored challenge の結末効果音の絶対パス (convertFileSrc で URL 化 → one-shot 再生)。無ければ null。 */
+  sound: string | null;
 }
 
 export interface BeatView {

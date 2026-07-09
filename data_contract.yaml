@@ -146,6 +146,7 @@ ChallengeDef:
 ChallengeOutcome:
   flag: "Option<FlagKey>。engine が直書きする帰結フラグ。allowed_flags 宣言必須"
   narration: "authored 結末ナレーション(任意)。CheckOutcome.narration に載り**毎回・同ターン**に出る(非 latch=繰り返す失敗も毎回語れる/フラグ無しでも語れる)。失敗を LLM 任せにせず必ず描きたい時に使う"
+  sound: "authored 結末効果音のアセット ID(audios/ 配下・任意, 2026-07-09)。CheckOutcome.sound に載り**毎回・同ターン**に one-shot 再生。engine 非解釈の不透明 string(narration と同列)。tier の sound があれば優先、無ければ通常成否の sound。素の Check は空"
 ChallengeMod:
   when:  "Gate(純粋述語)。真ならこの修正が乗る。flag/stat/attribute/skill/all/any どれでも"
   bonus: "i64。出目合計に加える値(負も可=ペナルティ)。apply 時に when を評価して合算"
@@ -153,6 +154,7 @@ TierDef:
   natural: "Min|Max。発火する自然出目(修正前の素の roll)の極。sides 相対(Max は d6→6/d20→20)=die サイズ非依存。リテラル(20等)で端を焼かない"
   flag:    "任意。該当時に engine が直書きする帰結フラグ。allowed_flags 宣言必須(Scenario::validate が load 時に弾く)。flag 無しの tier は認識だけ(語り用)"
   narration: "任意。該当時の結末ナレーション。CheckOutcome.narration に載り毎回・同ターンに出る(フラグ無しの極でも語れる)"
+  sound: "任意。該当時の結末効果音のアセット ID(audios/ 配下, 2026-07-09)。CheckOutcome.sound に載り毎回・同ターンに one-shot 再生(narration と同列の不透明 string)"
 ScenarioError:                    # 静的整合性の破れ (load 時検査。apply 中 panic でなく構造化エラー)
   validate: "Scenario::validate()->Vec<ScenarioError>。空なら健全。harness loader が from_yaml 直後に呼ぶ"
   ChallengeFlagUndeclared: "challenge の帰結フラグ(tier / on_success / on_failure)が allowed_flags 未宣言(幻フラグを engine 直書き経路に乗せない)。tier 欄に該当ラベル(tier名/on_success/on_failure)"

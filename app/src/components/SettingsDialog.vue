@@ -14,16 +14,32 @@ import { DEFAULT_MSG_COLOR, MESSAGE_FONTS, useGameStore } from "../stores/game";
 const emit = defineEmits<{ (e: "close"): void }>();
 const game = useGameStore();
 
-type Tab = "display" | "graphics" | "sound" | "language" | "model" | "help";
+type Tab = "display" | "graphics" | "sound" | "log" | "language" | "model" | "help";
 const tab = ref<Tab>("display");
 const tabs: { id: Tab; label: string }[] = [
   { id: "display", label: "表示" },
   { id: "graphics", label: "グラフィック" },
   { id: "sound", label: "サウンド" },
+  { id: "log", label: "ログ" },
   { id: "language", label: "言語設定" },
   { id: "model", label: "AIモデル" },
   { id: "help", label: "ヘルプ" },
 ];
+
+// --- ログ (保存先フォルダ) ---
+const logDirInput = ref(game.logDir);
+const defaultLogDir = ref("");
+async function loadDefaultLogDir() {
+  try {
+    defaultLogDir.value = await invoke<string>("get_default_log_dir");
+  } catch {
+    /* 取得できなくても placeholder が空になるだけ */
+  }
+}
+function applyLogDir() {
+  game.setLogDir(logDirInput.value);
+  logDirInput.value = game.logDir; // 正規化 (trim) を反映
+}
 
 // --- 表示 (フォント) ---
 const FONT_KEY = "kataribe.fontScale";
@@ -81,7 +97,10 @@ async function saveLlm() {
   }
 }
 
-onMounted(loadLlm);
+onMounted(() => {
+  loadLlm();
+  loadDefaultLogDir();
+});
 </script>
 
 <template>
@@ -237,6 +256,50 @@ onMounted(loadLlm);
             </p>
           </section>
 
+          <!-- ログ (会話ログのテキスト保存) -->
+          <section v-else-if="tab === 'log'" class="space-y-3">
+            <h3 class="text-parchment font-bold">ログ</h3>
+            <p class="text-parchment/60 text-sm">
+              タイトルバーの
+              <span class="text-glow">記録アイコン</span>
+              を押すと、現在の会話ログを「日時_パッケージ名.txt」で保存します。
+            </p>
+            <label class="block text-sm text-parchment/70">
+              保存先フォルダ
+              <input
+                v-model="logDirInput"
+                :placeholder="defaultLogDir || '(既定のアプリデータ内 logs フォルダ)'"
+                class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                @keyup.enter="applyLogDir"
+              />
+            </label>
+            <div class="flex items-center gap-2">
+              <button
+                class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold"
+                @click="applyLogDir"
+              >
+                適用
+              </button>
+              <button
+                class="rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
+                :disabled="!game.logDir"
+                :class="{ 'opacity-40': !game.logDir }"
+                @click="((logDirInput = ''), applyLogDir())"
+              >
+                既定に戻す
+              </button>
+              <button
+                class="ml-auto rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
+                @click="game.openLogFolder()"
+              >
+                フォルダを開く
+              </button>
+            </div>
+            <p class="text-parchment/40 text-xs">
+              空欄なら既定の場所（{{ defaultLogDir || "アプリデータ内の logs" }}）へ保存します。「フォルダを開く」でエクスプローラー等が開きます（フォルダが無ければ作成）。
+            </p>
+          </section>
+
           <!-- 言語設定 -->
           <section v-else-if="tab === 'language'" class="space-y-3">
             <h3 class="text-parchment font-bold">言語設定</h3>
@@ -300,6 +363,7 @@ onMounted(loadLlm);
             <p>・タイトルバーの <span class="text-glow">⚙</span> が設定、<span class="text-glow">☰</span> がパッケージ一覧です。</p>
             <p>・パッケージ一覧では、配布フォルダのパスを追加/削除できます（例: <code>packages/houkago</code>）。</p>
             <p>・AIモデルタブで接続先・モデル・API キーを切り替えられます（.env を書き換え）。</p>
+            <p>・タイトルバーの記録アイコンで会話ログをテキスト保存できます（保存先は「ログ」タブで指定）。</p>
             <p class="text-parchment/40">語り部 — クラウド LLM をナレーター、決定論エンジンを正本とした、忘れない・矛盾しない GM。</p>
           </section>
         </div>

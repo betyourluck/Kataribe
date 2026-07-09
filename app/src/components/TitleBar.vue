@@ -13,6 +13,7 @@ defineProps<{ title?: string }>();
 const emit = defineEmits<{
   (e: "open-settings"): void;
   (e: "open-packages"): void;
+  (e: "save-log"): void;
 }>();
 
 async function win(method: "minimize" | "toggleMaximize" | "close") {
@@ -36,7 +37,16 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
 
     <div data-tauri-drag-region class="flex-1 h-full"></div>
 
-    <!-- アプリ操作: 設定 / パッケージ一覧 -->
+    <!-- アプリ操作: ログ保存 / 設定 / パッケージ一覧 -->
+    <button class="tb-btn" title="会話ログをテキスト保存" aria-label="ログ保存" @click="emit('save-log')">
+      <!-- Document with down-arrow (ログをファイルへ書き出す) -->
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+        <path d="M14 3v6h6" />
+        <path d="M12 12v5" />
+        <path d="M9.5 14.5 12 17l2.5-2.5" />
+      </svg>
+    </button>
     <button class="tb-btn" title="設定" aria-label="設定" @click="emit('open-settings')">
       <!-- Cog -->
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">

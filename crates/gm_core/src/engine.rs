@@ -49,6 +49,11 @@ pub struct CheckOutcome {
     /// **毎回・同ターン**に提示層が出す (非 latch=繰り返す失敗も毎回語れる)。無ければ空文字。
     #[serde(default)]
     pub narration: String,
+    /// authored challenge の結末効果音のアセット ID (on_success/on_failure/tier の sound を
+    /// 解決したもの)。**engine 非解釈の不透明 string** (narration と同列の語り素材)。提示層が
+    /// `audios/` から解決し one-shot 再生する。無ければ空文字。
+    #[serde(default)]
+    pub sound: String,
 }
 
 /// 発火したトリガー (Phase C)。`narration` は語りへ注入する指示。
@@ -599,6 +604,7 @@ fn apply_ops(
                     success: total >= *dc as i64,
                     tier: None, // 素の判定は極を持たない (tier は authored challenge の専権)。
                     narration: String::new(), // 素の Check は authored 結末文を持たない (LLM が次ターンに語る)。
+                    sound: String::new(),     // 素の Check は authored 効果音を持たない。
                 });
             }
             StateOp::AttemptChallenge { entity, challenge } => {
@@ -649,6 +655,13 @@ fn apply_ops(
                         .filter(|n| !n.is_empty())
                         .or_else(|| outcome.map(|o| o.narration.clone()))
                         .unwrap_or_default();
+                    // 結末効果音: narration と同じ優先順 (tier 優先 → 通常成否)。提示層が
+                    // audios/ から解決し one-shot 再生する。
+                    let sound = hit
+                        .map(|(_, t)| t.sound.clone())
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| outcome.map(|o| o.sound.clone()))
+                        .unwrap_or_default();
                     checks.push(CheckOutcome {
                         entity: entity.clone(),
                         stat: def.stat.clone().unwrap_or_default(),
@@ -660,6 +673,7 @@ fn apply_ops(
                         success,
                         tier,
                         narration,
+                        sound,
                     });
                 }
             }
@@ -3351,6 +3365,36 @@ locations:
         // 二度目の失敗でも**毎回**出る (latch されない = トリガーとの違い)。
         let o2 = apply(&mut s, &sc, &pick()).unwrap();
         assert_eq!(o2.checks[0].narration, "工具が滑る。", "繰り返す失敗でも毎回出る");
+    }
+
+    /// 【challenge の効果音 (2026-07-09)】on_success/on_failure/tier に `sound` (音声アセット ID)
+    /// を書ける — narration と同列の不透明 string で `CheckOutcome.sound` に載る (毎回・同ターン)。
+    /// 極 (tier) の sound があれば優先、無ければ通常成否の sound。素の判定は空。
+    #[test]
+    fn challenge_outcome_sound_surfaces_on_check() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { STR: 0 }
+allowed_flags: [opened]
+challenges:
+  pick:
+    stat: STR
+    sides: 1
+    dc: 6
+    on_success: { flag: opened, sound: unlock.wav }
+    on_failure: { sound: fail.wav }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        let pick = || d(vec![StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "pick".into() }]);
+        // 1d1(=1)+STR0 = 1 < 6 → 失敗。失敗の効果音 ID が CheckOutcome に載る。
+        let o1 = apply(&mut s, &sc, &pick()).unwrap();
+        assert!(!o1.checks[0].success);
+        assert_eq!(o1.checks[0].sound, "fail.wav", "失敗の効果音が出る");
     }
 
     /// 【幻フラグ遮断】challenge の on_success/on_failure が立てるフラグも allowed_flags 宣言必須。

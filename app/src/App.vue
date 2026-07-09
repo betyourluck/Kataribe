@@ -24,6 +24,20 @@ const game = useGameStore();
 const showSettings = ref(false);
 const showPackages = ref(false);
 
+// ログ保存/フォルダ操作の一時トースト。store.logToast をこの ref が数秒だけ映して消す。
+const toast = ref("");
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+watch(
+  () => game.logToast,
+  (msg) => {
+    if (!msg) return;
+    toast.value = msg;
+    game.logToast = ""; // 消費 (同じメッセージの再表示も拾えるように即クリア)
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toast.value = ""), 4000);
+  },
+);
+
 // 選択中パッケージのオートセーブ (spec 07 Phase C)。在れば「続きから (turn N)」を提示する。
 const selectedAutosaveTurn = computed(
   () => game.packages.find((p) => p.path === game.packagePath)?.autosave_turn ?? null,
@@ -86,6 +100,7 @@ onMounted(() => {
       :title="game.title"
       @open-settings="showSettings = true"
       @open-packages="showPackages = true"
+      @save-log="game.saveLog()"
     />
 
     <!-- ヘッダー: 再生パッケージの選択 + 開始 -->
@@ -157,5 +172,27 @@ onMounted(() => {
     <!-- ダイアログ (TitleBar のボタンから開く) -->
     <PackageDialog v-if="showPackages" @close="showPackages = false" />
     <SettingsDialog v-if="showSettings" @close="showSettings = false" />
+
+    <!-- ログ保存などの一時トースト (右下に数秒) -->
+    <transition name="toast">
+      <div
+        v-if="toast"
+        class="fixed bottom-4 right-4 z-[60] max-w-[32rem] rounded-lg border border-ash bg-ink/95 px-4 py-2 text-sm text-parchment shadow-2xl"
+      >
+        {{ toast }}
+      </div>
+    </transition>
   </div>
 </template>
+
+<style scoped>
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+</style>

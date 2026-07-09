@@ -139,6 +139,9 @@ struct CheckView {
     success: bool,
     /// authored challenge の結末ナレーション (毎回・同ターン)。無ければ空。
     narration: String,
+    /// authored challenge の結末効果音の絶対パス (frontend が convertFileSrc で URL 化 → one-shot 再生)。
+    /// 無ければ None (未指定 or 解決失敗)。
+    sound: Option<String>,
 }
 
 /// 発火した反応ビート + recall された伏線 (語りに織り込む素材)。
@@ -360,6 +363,79 @@ fn normalize_path(p: &Path) -> PathBuf {
         }
     }
     out
+}
+
+// =============================================================================
+// 会話ログのテキスト保存 (ユーザーFB 2026-07-09)
+// =============================================================================
+
+/// ログの既定置き場: `app_data_dir/logs`。設定でフォルダを指定しなければここへ書く。
+fn default_log_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("logs"))
+}
+
+/// 有効なログフォルダを解決する (指定が空なら既定へ)。
+fn resolve_log_dir(app: &tauri::AppHandle, folder: &str) -> Result<PathBuf, String> {
+    if folder.trim().is_empty() {
+        default_log_dir(app).ok_or_else(|| "アプリデータ置き場を解決できません".to_string())
+    } else {
+        Ok(PathBuf::from(folder.trim()))
+    }
+}
+
+/// 既定ログフォルダのパス (設定ダイアログの placeholder 表示用)。
+#[tauri::command]
+fn get_default_log_dir(app: tauri::AppHandle) -> String {
+    default_log_dir(&app).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// 会話ログを 1 テキストファイルへ保存する。ファイル名は frontend が組む
+/// (日時 + パッケージ名。locale-aware な日時整形は JS 側が得意)。返り値は書いた絶対パス。
+/// **ファイル名はパス要素を含まない単一名に限る** (トラバーサル遮断 = zip 展開と同じ思想)。
+#[tauri::command]
+fn save_log_file(
+    app: tauri::AppHandle,
+    folder: String,
+    file_name: String,
+    content: String,
+) -> Result<String, String> {
+    if file_name.is_empty()
+        || file_name.contains('/')
+        || file_name.contains('\\')
+        || file_name.contains("..")
+    {
+        return Err("不正なファイル名です".to_string());
+    }
+    let dir = resolve_log_dir(&app, &folder)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("フォルダを作成できません: {e}"))?;
+    let path = dir.join(&file_name);
+    std::fs::write(&path, content).map_err(|e| format!("書き込みに失敗しました: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// ログフォルダを OS のファイルマネージャで開く (設定ダイアログのボタン)。
+#[tauri::command]
+fn open_log_folder(app: tauri::AppHandle, folder: String) -> Result<(), String> {
+    let dir = resolve_log_dir(&app, &folder)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("フォルダを作成できません: {e}"))?;
+    open_in_file_manager(&dir)
+}
+
+/// フォルダを OS 標準のファイルマネージャで開く (プラットフォーム別)。
+/// tauri-plugin-shell を足さず std::process で完結させる (custom command ゆえ追加権限不要)。
+fn open_in_file_manager(dir: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+    // explorer は成功時も非0を返すことがあるので、起動 (spawn) の成否だけを見る。
+    std::process::Command::new(program)
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("フォルダを開けません: {e}"))
 }
 
 /// パッケージ別オートセーブの置き場 (spec 07 Phase C): `app_data_dir/saves/<パスのFNVハッシュ>.yaml`。
@@ -1120,6 +1196,11 @@ async fn play_turn(
                     dc: c.dc,
                     success: c.success,
                     narration: normalize(&c.narration),
+                    // 結末効果音 ID を audios/ から解決 (発火ビートの SE と同経路)。
+                    sound: (!c.sound.is_empty())
+                        .then(|| resolve_asset(&sess.package_root, AssetKind::Audios, &c.sound))
+                        .flatten()
+                        .map(|p| p.to_string_lossy().into_owned()),
                 })
                 .collect();
             // 次ターンの語りに還流する判定結果を持ち越す。
@@ -1276,7 +1357,10 @@ pub fn run() {
             get_llm_config,
             set_llm_config,
             fetch_site_packages,
-            install_site_package
+            install_site_package,
+            get_default_log_dir,
+            save_log_file,
+            open_log_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

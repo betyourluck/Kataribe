@@ -330,6 +330,10 @@ pub struct TierDef {
     /// (トリガーと違い latch されないので、繰り返す判定でも毎回語れる)。フラグ無しの極でも語れる。
     #[serde(default)]
     pub narration: String,
+    /// 該当時の結末効果音のアセット ID (`audios/` 配下・任意)。`CheckOutcome.sound` に載り
+    /// **毎回・同ターン**に one-shot 再生される。engine 非解釈の不透明 string (narration と同列)。
+    #[serde(default)]
+    pub sound: String,
 }
 
 /// challenge の通常成否 (total>=dc / 未満) の帰結。フラグと結末ナレーションを任意で持つ。
@@ -347,6 +351,10 @@ pub struct ChallengeOutcome {
     /// 結末ナレーション (authored・任意)。失敗を必ず描きたい時に使う (LLM 任せにしない)。
     #[serde(default)]
     pub narration: String,
+    /// 結末効果音のアセット ID (`audios/` 配下・任意)。`CheckOutcome.sound` に載り
+    /// **毎回・同ターン**に one-shot 再生される。engine 非解釈の不透明 string (narration と同列)。
+    #[serde(default)]
+    pub sound: String,
 }
 
 /// authored challenge。**判定の素性と帰結を作者が握る閉じた定義**。
