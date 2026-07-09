@@ -342,7 +342,7 @@ Trigger:                          # ✅Phase C (Scenario.triggers): エンジン
 # 正本 gm_core の専有)。型で構造保証: MemoryFragment は state フィールドを持てず、recall は &self。
 Memoria:                          # ✅memoria_bridge (実装済): recall の抽象 (DeltaProposer と同型の依存性逆転)
   trait:    "recall(cue:&str)->Vec<MemoryFragment>。&self=世界状態を変えない型レベル保証"
-  impl:     "✅LoreStore: 文字 bigram TF-IDF の cosine semantic recall。閾値以上を score 降順・同点 id 昇順で返す。exact id/tag 一致は score 1.0 で常に最上位 (旧 exact 挙動の上位互換)。依存ゼロ・決定論・テスト可能。日本語は単語境界が無いので文字 n-gram。神経 embedding 版は同 trait 裏で差し替え可"
+  impl:     "✅LoreStore: 文字 bigram TF-IDF の cosine semantic recall。**exact wins (2026-07-09)**: cue が id/tag と完全一致 (score 1.0) したらその完全一致だけを返す (作者の狙いの断言=語彙の似た別フラグメントを 0.08 の cosine ノイズで巻き込まない)。exact が一つも無いときだけ fuzzy (cosine≥閾値) にフォールバックし曖昧 cue でも近い伏線を引く。score 降順・同点 id 昇順で決定論。依存ゼロ・テスト可能。日本語は単語境界が無いので文字 n-gram。神経 embedding 版は同 trait 裏で差し替え可。注: chronicle retrieval (spec 08) が使う scores() は exact-wins でなく生スコア列を返す (二層注入は閾値+タグ増幅で別制御)"
   null_impl:"() は常に空 (recall を使わない経路で &() を渡す)"
   resolve:  "resolve_recall(memoria, &[FiredTrigger])->Vec<FiredBeat>。発火列の cue を解決 (純粋 retrieval)"
   load:     "load_lore(dir): memoria/*.yaml を MemoryFragment 化 (ファイル名=id、load_characters と同型)"

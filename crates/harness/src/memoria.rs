@@ -182,11 +182,16 @@ impl LoreStore {
 
 impl Memoria for LoreStore {
     fn recall(&self, cue: &str) -> Vec<MemoryFragment> {
-        let mut scored: Vec<(usize, f64)> = self
-            .scores(cue)
+        let scores = self.scores(cue);
+        // **exact wins (2026-07-09)**: cue が id/tag と完全一致 (score 1.0) したら、
+        // その完全一致だけを返す — 作者が正確な cue を書いた = 狙いの断言なので、語彙の似た
+        // 別フラグメントを 0.08 の cosine ノイズで巻き込まない。**exact が一つも無いときだけ**
+        // fuzzy (cosine ≥ 閾値) にフォールバックし、曖昧 cue でも近い伏線を拾う旧挙動を保つ。
+        let cutoff = if scores.iter().any(|&s| s >= 1.0) { 1.0 } else { RECALL_THRESHOLD };
+        let mut scored: Vec<(usize, f64)> = scores
             .into_iter()
             .enumerate()
-            .filter(|(_, score)| *score >= RECALL_THRESHOLD)
+            .filter(|(_, score)| *score >= cutoff)
             .collect();
         // score 降順、同点は id 昇順で決定論的に。
         scored.sort_by(|a, b| {
@@ -345,6 +350,39 @@ mod tests {
         let got = store().recall("樫の木の下で誓った");
         assert!(!got.is_empty(), "exact 一致でなくても近い伏線を引く");
         assert_eq!(got[0].id, "childhood_promise", "最も近い伏線が最上位");
+    }
+
+    /// 【exact wins (2026-07-09)】cue が tag/id と完全一致したら、語彙の似た別フラグメントを
+    /// fuzzy で巻き込まず**完全一致だけ**を返す。完全一致は「作者が狙いを断言した」シグナル
+    /// なので、0.08 の cosine ノイズを混ぜない。exact が無いときだけ fuzzy へフォールバックする。
+    #[test]
+    fn exact_tag_match_suppresses_fuzzy_siblings() {
+        // mujinto 型: 大きく語彙の似た 2 フラグメント (原始社会/配偶者選択/本能 を共有)。
+        let store = LoreStore::new(vec![
+            MemoryFragment {
+                id: "female_instinct".into(),
+                tags: vec!["メスの配偶者選択".into()],
+                text: "原始社会におけるメスの配偶者選択の本能。強い保護能力と資源獲得能力を持つオスを選ぶ。"
+                    .into(),
+            },
+            MemoryFragment {
+                id: "male_instinct".into(),
+                tags: vec!["オスの配偶者選択".into()],
+                text: "原始社会におけるオスの配偶者選択の本能。若さと健康を示すメスを選ぶ。".into(),
+            },
+        ]);
+        let got = store.recall("メスの配偶者選択");
+        assert_eq!(
+            got.len(),
+            1,
+            "完全一致だけを返す (語彙の似た兄弟を巻き込まない): {:?}",
+            got.iter().map(|f| f.id.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(got[0].id, "female_instinct");
+
+        // exact が無い曖昧 cue では従来どおり fuzzy が近いものを拾う (フォールバック不変)。
+        let fuzzy = store.recall("配偶者を選ぶ本能について");
+        assert!(!fuzzy.is_empty(), "exact 不在なら fuzzy が働く");
     }
 
     /// 【ランク】cue に近い方の伏線が先頭に来る (cosine 降順)。
