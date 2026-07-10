@@ -10,7 +10,7 @@
 //! cargo run -p harness --bin play                          # 既定シナリオ (対話)
 //! cargo run -p harness --bin play scenarios/foo.yaml       # 単一シナリオ指定
 //! cargo run -p harness --bin play --campaign campaigns/escape.yaml  # キャンペーン (複数モジュール通し)
-//! cargo run -p harness --bin play --package packages/gnosia_village # パッケージ (player/globals/world 注入込み)
+//! cargo run -p harness --bin play --package packages/escape        # パッケージ (player/globals/world 注入込み)
 //! cargo run -p harness --bin play --resume kataribe_autosave.yaml   # セーブから再開 (spec 07)
 //! cargo run -p harness --bin play --save my_save.yaml               # オートセーブ先の指定 (既定 kataribe_autosave.yaml)
 //! cargo run -p harness --bin play --seed 42                         # seed 固定 (テスト/再現用。省略時は毎回変わる)
@@ -32,9 +32,9 @@ use harness::{
 };
 use llm_client::{LlmClient, LlmConfig};
 
-/// 既定シナリオ (cwd 非依存: crate からの相対で解決)。
+/// 既定シナリオ (cwd 非依存: crate からの相対で解決)。houkago は fixtures 移設済。
 const DEFAULT_SCENARIO: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/houkago/scenarios/classroom.yaml");
+    concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/houkago/scenarios/classroom.yaml");
 /// 1 ターンあたりの再生成上限。
 const MAX_ATTEMPTS: u32 = 4;
 

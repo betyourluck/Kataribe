@@ -126,10 +126,11 @@ mod tests {
     /// goal が参照する moka の 好感度 stat が初期化される (start≠location バグの回帰防止)。
     #[test]
     fn classroom_injects_moka_and_is_coherent() {
-        // 配布パッケージ houkago が classroom galge の正本 (フラット scenarios/ から移行済)。
-        const CLASSROOM: &str = include_str!("../../../packages/houkago/scenarios/classroom.yaml");
+        // houkago (classroom galge) は harness の統合テスト fixture。配布サンプルは
+        // packages/escape のみ (houkago は 2026-07-10 に packages/ から fixtures/ へ移設)。
+        const CLASSROOM: &str = include_str!("../fixtures/houkago/scenarios/classroom.yaml");
         let houkago_chars =
-            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/houkago/characters"));
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/houkago/characters"));
         let mut sc = Scenario::from_yaml(CLASSROOM).unwrap();
         inject_cast(&mut sc, houkago_chars).expect("cast [moka] の注入が成功する");
         assert!(sc.characters.contains_key("moka"), "moka が characters/moka.yaml から注入される");

@@ -600,7 +600,7 @@ mod tests {
 
         let save = SessionSave {
             version: SAVE_VERSION,
-            content: SavedContent::Package { path: "packages/gnosia_village".into() },
+            content: SavedContent::Package { path: "packages/escape".into() },
             package_version: "0.1.0".into(),
             module: None,
             state: state.clone(),
@@ -621,7 +621,7 @@ mod tests {
         assert_eq!(loaded.state, state, "正本が丸ごと同値で戻る (rng カーソル込み)");
         assert_eq!(loaded.history.len(), 1, "chronicle が戻る");
         assert_eq!(loaded.last_narration, "霧が窓を這う。", "継続性が戻る");
-        assert!(matches!(loaded.content, SavedContent::Package { ref path } if path.contains("gnosia")));
+        assert!(matches!(loaded.content, SavedContent::Package { ref path } if path.contains("escape")));
 
         // 版不一致は拒否 (v1 は実験的 — 黙って壊れた再開をしない)。
         let mut old = save.clone();

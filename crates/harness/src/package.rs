@@ -224,9 +224,9 @@ mod tests {
     use std::path::PathBuf;
 
 
-    /// dogfood パッケージ (packages/houkago)。
+    /// 統合テスト fixture (houkago = classroom galge)。配布サンプルは packages/escape のみ。
     fn pkg_dir() -> PathBuf {
-        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/houkago")).to_path_buf()
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/houkago")).to_path_buf()
     }
 
     /// 【結線の核心】package をロードすると player/globals が entry シナリオへ注入される。

@@ -43,7 +43,7 @@ fn resolve_seed() -> u64 {
         .unwrap_or(42)
 }
 /// 既定パッケージ (リポジトリ root からの相対フォルダ)。
-const DEFAULT_PACKAGE: &str = "packages/houkago";
+const DEFAULT_PACKAGE: &str = "packages/escape";
 
 // =============================================================================
 // frontend 向け view DTO (状態の真実ではなく、描画用スナップショット)
