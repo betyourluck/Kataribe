@@ -14,6 +14,26 @@ defineProps<{
   model?: string;
 }>();
 
+/**
+ * モデル名バッジのベンダー別配色 (一目でどの系統のモデルかを判別する)。
+ * gemini=ブルーに白 / gpt=エメラルドグリーン / claude=くすみ系オレンジベージュ /
+ * qwen=パープル / grok=濃い灰色。該当なしは既定 (ash) のまま = 空 style を返す。
+ */
+function badgeStyle(model: string): Record<string, string> {
+  const m = model.toLowerCase();
+  const paint = (bg: string, fg = "#ffffff") => ({
+    backgroundColor: bg,
+    color: fg,
+    borderColor: "transparent",
+  });
+  if (m.startsWith("gemini")) return paint("#2563eb"); // ブルーに白
+  if (m.includes("gpt")) return paint("#059669"); // エメラルドグリーン
+  if (m.startsWith("claude")) return paint("#c1795a"); // くすみ系オレンジベージュ
+  if (m.startsWith("qwen")) return paint("#7c3aed"); // パープル
+  if (m.startsWith("grok")) return paint("#3f3f46", "#e4e4e7"); // 濃い灰色
+  return {};
+}
+
 const emit = defineEmits<{
   (e: "open-settings"): void;
   (e: "open-packages"): void;
@@ -74,7 +94,8 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
     <span
       v-if="model"
       data-tauri-drag-region
-      class="mx-1 max-w-[12rem] truncate rounded-full border border-ash bg-ash/40 px-2 text-[10px] leading-4 text-parchment/70"
+      class="mx-1 max-w-[12rem] truncate rounded-full border border-ash bg-ash/40 px-2 text-[10px] font-bold leading-4 text-parchment/70"
+      :style="badgeStyle(model)"
       :title="`使用中の AI モデル: ${model} (設定 → AIモデル で変更)`"
     >
       {{ model }}
