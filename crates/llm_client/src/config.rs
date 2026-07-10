@@ -6,6 +6,32 @@ use std::time::Duration;
 
 use crate::error::LlmError;
 
+/// LLM の話し方 (ワイヤプロトコル)。
+///
+/// OpenAI 互換層は **prompt caching 非対応** (公式 docs 明記) なので、Anthropic へは
+/// ネイティブ Messages API を使う — 毎ターンのフルプロンプト再送で安定プレフィックス
+/// (schema + GM_SYSTEM + scenario_brief) がキャッシュ読取 (0.1×) になる (#44)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    /// `POST {base_url}/chat/completions` + Bearer (OpenAI / さくら / ローカル互換サーバ)。
+    OpenAiCompat,
+    /// `POST {base_url}/messages` + x-api-key + anthropic-version (キャッシュの効く経路)。
+    /// tool-use を常に使う (`use_tools=false` は無視 — Anthropic は tool_choice を確実に尊重する)。
+    Anthropic,
+}
+
+impl Provider {
+    /// base_url からの自動判定。`LLM_PROVIDER` 未設定時の既定 —
+    /// 配布受領者が Anthropic キーを入れただけでキャッシュが効くように。
+    pub fn detect(base_url: &str) -> Self {
+        if base_url.contains("api.anthropic.com") {
+            Provider::Anthropic
+        } else {
+            Provider::OpenAiCompat
+        }
+    }
+}
+
 /// LLM 接続設定。`base_url` + `api_key` 抽象でベンダーロックインを避ける。
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
@@ -22,7 +48,10 @@ pub struct LlmConfig {
     /// tool-use (function calling) を使うか。`true`=`tool_choice` 強制で構造化出力 (OpenAI/Anthropic)。
     /// `false`=tools を送らず prompt で JSON 出力を指示し content から拾う (tool_choice 非対応の
     /// さくら AI Engine / ローカル OpenAI 互換サーバ向け)。`LLM_USE_TOOLS=false` で切替。既定 true。
+    /// **`Provider::Anthropic` では無視** (ネイティブ経路は常に tool-use)。
     pub use_tools: bool,
+    /// ワイヤプロトコル。`LLM_PROVIDER` (anthropic|openai) 明示、未設定なら base_url から自動判定。
+    pub provider: Provider,
 }
 
 impl LlmConfig {
@@ -54,9 +83,24 @@ impl LlmConfig {
             })?),
         };
 
+        let base_url =
+            env_opt("LLM_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into());
+        // 明示 (LLM_PROVIDER) > 自動判定 (base_url)。誤値は起動時に弾く (ネットワーク前)。
+        let provider = match env_opt("LLM_PROVIDER") {
+            None => Provider::detect(&base_url),
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "anthropic" | "native" => Provider::Anthropic,
+                "openai" | "openai_compat" | "compat" => Provider::OpenAiCompat,
+                other => {
+                    return Err(LlmError::Config(format!(
+                        "環境変数 LLM_PROVIDER の値 '{other}' を解釈できません (anthropic / openai)"
+                    )))
+                }
+            },
+        };
+
         Ok(Self {
-            base_url: env_opt("LLM_BASE_URL")
-                .unwrap_or_else(|| "https://api.openai.com/v1".into()),
+            base_url,
             api_key,
             model: env_opt("LLM_MODEL").unwrap_or_else(|| "gpt-4o-mini".into()),
             temperature,
@@ -67,13 +111,16 @@ impl LlmConfig {
             use_tools: env_opt("LLM_USE_TOOLS")
                 .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
                 .unwrap_or(true),
+            provider,
         })
     }
 
-    /// テスト・明示構築用。`base_url` と `api_key` を与えて残りは既定値。
+    /// テスト・明示構築用。`base_url` と `api_key` を与えて残りは既定値 (provider は自動判定)。
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        let base_url = base_url.into();
+        let provider = Provider::detect(&base_url);
         Self {
-            base_url: base_url.into(),
+            base_url,
             api_key: api_key.into(),
             model: model.into(),
             temperature: None,
@@ -81,12 +128,18 @@ impl LlmConfig {
             request_timeout: Duration::from_secs(120),
             max_retries: 3,
             use_tools: true,
+            provider,
         }
     }
 
     /// `{base_url}/chat/completions` を組み立てる (末尾スラッシュを正規化)。
     pub fn chat_endpoint(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+    }
+
+    /// `{base_url}/messages` (Anthropic ネイティブ) を組み立てる (末尾スラッシュを正規化)。
+    pub fn messages_endpoint(&self) -> String {
+        format!("{}/messages", self.base_url.trim_end_matches('/'))
     }
 }
 

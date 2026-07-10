@@ -655,3 +655,40 @@ state_brief_surfaces_takeable_items_and_gm_system_grounds_op_order (harness)。
 【一般化】**認可と実行の意味論は一致させる** — 認可が実行より粗い時点で裁くと、
 「実行可能なのに認可されない」偽陰性が生まれ、提案者 (LLM) の回避学習を誘発する。
 認可は実行のドライランであるべき。
+
+### 44. 全入力が input_no_cache — OpenAI 互換層は prompt caching 非対応 → ネイティブ経路
+【実測発見 (2026-07-11, Anthropic Console のコスト実測)】Claude 月 $143、Console の
+usage_type が **全リクエスト input_no_cache** = prompt caching が一度も効いていなかった。
+毎ターン messages を新規構築して送る設計 (state が唯一の真実) はフルプロンプト再送であり、
+安定部分 (emit_delta schema + GM_SYSTEM + scenario_brief) が毎回、非キャッシュ価格で課金
+されていた。
+【真因】経路の問題でありプロンプト構造の問題ではない。llm_client は OpenAI 互換
+`/chat/completions` を叩くが、**Anthropic の OpenAI 互換層は prompt caching 非対応**
+(公式 docs 明記。cache_control は黙殺、`usage.prompt_tokens_details` も常に空) —
+互換層経由ではキャッシュが**構造的に不可能**。互換層は「テスト・比較用で本番非推奨」
+とも明記されている (#3 で schema 受理を確認して以来使い続けていた)。
+【解】`LlmConfig.provider` (LLM_PROVIDER、未設定なら base_url に api.anthropic.com を
+含む時 anthropic へ自動判定 = 配布受領者はゼロ設定) を新設し、Anthropic には
+**ネイティブ Messages API** (`POST {base}/messages` + x-api-key + anthropic-version) を
+話す。先頭 system 群を system ブロック配列へ写し **末尾ブロックに cache_control:
+ephemeral を 1 個** — render 順は tools→system→messages なので、この 1 個で
+schema+GM_SYSTEM+scenario_brief の安定プレフィックス全体がキャッシュ対象になる。
+可変な user メッセージ (state_brief+chronicle+行動) には置かない (毎ターン別内容 →
+読まれない書込 1.25× の無駄)。応答 tool_use は OpenAI 形 ResponseMessage へ写して
+parse::extract に合流 (抽出・救済経路は単一のまま)。呼び出し側 (harness/app/CLI) は無改修。
+【留意】①キャッシュ最小プレフィックスは claude-opus-4-8 で 4096 tokens — 満たさない
+極小シナリオは黙って非キャッシュ (エラーにならない)。②TTL 5 分 (読取で更新) — プレイ中の
+ターン間隔なら自然に持続。書込 1.25× は 2 リクエスト目で元が取れる。③system プロンプトに
+可変値 (時刻・ID 等) を入れると全キャッシュが無効化する — 現構造は可変値を全て user 側に
+置いており安全。将来 GM_SYSTEM/scenario_brief に手を入れる時もこの分離を守る。
+④検証は `usage.cache_read_input_tokens > 0` (LLM_CACHE_DEBUG=1 で stderr に
+`[LLM_CACHE] cache_read=...` を surface)。⑤ネイティブ経路は常に tool-use
+(use_tools=false は無視 — Anthropic は tool_choice を確実に尊重する)。
+【PoC】provider_autodetects_anthropic_from_base_url /
+anthropic_request_places_cache_control_on_system_tail /
+anthropic_response_resolves_tool_use_and_usage / anthropic_decode_keeps_raw_on_shape_mismatch /
+anthropic_demotes_non_leading_system_to_user (llm_client 20→25)。
+【一般化】**互換層は機能の交差集合しか持たない** — 抽象化 (base_url+api_key) で得た可搬性は、
+プロバイダ固有のコスト最適化 (caching) を静かに捨てる。コストに効く機能はネイティブ経路の
+分岐で取り戻し、検証は請求メタデータ (usage) を一次ソースにする (Console の実測が発見経路
+だったように、機能が「効いているつもり」は usage でしか反証できない)。

@@ -12,6 +12,7 @@
 //! - `LLMSettings`     → [`LlmConfig`]
 //! - `_strip_code_fence` / フェンス除去 → [`parse::strip_code_fence`]
 
+mod anthropic;
 mod client;
 mod config;
 mod error;
@@ -19,7 +20,7 @@ mod parse;
 mod wire;
 
 pub use client::LlmClient;
-pub use config::LlmConfig;
+pub use config::{LlmConfig, Provider};
 pub use error::LlmError;
 pub use wire::{ChatMessage, Role};
 
@@ -519,5 +520,110 @@ mod tests {
         assert!(LlmError::Api { status: 429, body: String::new() }.is_transient());
         assert!(!LlmError::Api { status: 400, body: String::new() }.is_transient());
         assert!(!LlmError::NoStructuredOutput.is_transient());
+    }
+
+    // --- Anthropic ネイティブ経路 (prompt caching, #44) --------------------------
+
+    /// 【provider 自動判定】api.anthropic.com はネイティブ Messages API (キャッシュの効く経路)、
+    /// それ以外は従来の OpenAI 互換。LLM_PROVIDER 明示が無ければ base_url から決まる。
+    #[test]
+    fn provider_autodetects_anthropic_from_base_url() {
+        let native = LlmConfig::new("https://api.anthropic.com/v1", "sk", "claude-opus-4-8");
+        assert_eq!(native.provider, Provider::Anthropic);
+        assert_eq!(native.messages_endpoint(), "https://api.anthropic.com/v1/messages");
+
+        let compat = LlmConfig::new("https://api.example.com/v1/", "sk", "gpt-4o-mini");
+        assert_eq!(compat.provider, Provider::OpenAiCompat);
+    }
+
+    /// 【cache_control の配置】ネイティブリクエストは安定プレフィックス (tools→system) の
+    /// **末尾 = 最後の system ブロック**にだけ ephemeral breakpoint を置く。可変な user
+    /// メッセージには置かない (毎ターン別内容 → 読まれないキャッシュ書込 1.25× の無駄)。
+    #[test]
+    fn anthropic_request_places_cache_control_on_system_tail() {
+        let req = anthropic::build_request(
+            "claude-opus-4-8",
+            4096,
+            None,
+            user_msgs(),
+            Some((EMIT_DELTA_TOOL.into(), "d".into(), state_delta_schema())),
+        );
+        let body = serde_json::to_value(&req).unwrap();
+
+        // system は配列で、末尾ブロックに cache_control: ephemeral。
+        let system = body["system"].as_array().expect("system はブロック配列");
+        assert_eq!(system.last().unwrap()["cache_control"]["type"], "ephemeral");
+        // messages 側には cache_control を置かない (どのブロックにも無い)。
+        let msgs = serde_json::to_string(&body["messages"]).unwrap();
+        assert!(!msgs.contains("cache_control"), "可変部に breakpoint を置かない: {msgs}");
+        // system は messages に混ざらない (ネイティブは先頭 system 専用フィールド)。
+        assert!(!msgs.contains("system"), "system ロールは messages に出さない");
+        // tools はネイティブ形 (input_schema)、tool_choice は {type:tool, name} で強制。
+        assert_eq!(body["tools"][0]["name"], EMIT_DELTA_TOOL);
+        assert!(body["tools"][0]["input_schema"].is_object(), "schema は input_schema キー");
+        assert_eq!(body["tool_choice"]["type"], "tool");
+        assert_eq!(body["tool_choice"]["name"], EMIT_DELTA_TOOL);
+        // temperature 未設定なら送らない (claude-opus-4-8 は temperature 非対応)。
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["max_tokens"], 4096);
+    }
+
+    /// 【ネイティブ応答の解決】tool_use ブロックの input (JSON オブジェクト) を OpenAI 形へ
+    /// 写して既存 parse::extract に合流 → StateDelta。usage のキャッシュ計数もパースされる
+    /// (検証は usage.cache_read_input_tokens > 0 = 本修正の Green 判定)。
+    #[test]
+    fn anthropic_response_resolves_tool_use_and_usage() {
+        let body = r#"{
+            "content": [
+                {"type": "text", "text": "考え中"},
+                {"type": "tool_use", "id": "tu_1", "name": "emit_delta",
+                 "input": {"narration": "扉が軋む", "ops": [{"op":"set_flag","key":"door_open","value":true}]}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 321, "output_tokens": 55,
+                      "cache_creation_input_tokens": 0, "cache_read_input_tokens": 8021}
+        }"#;
+        let resp = client::decode_messages_body(body.to_string()).unwrap();
+        let usage = resp.usage.clone().expect("usage をパースする");
+        assert_eq!(usage.cache_read_input_tokens, 8021, "キャッシュ読取が計上される");
+        assert_eq!(usage.input_tokens, 321);
+
+        let message = resp.into_response_message();
+        let delta: StateDelta = parse::extract(&message).unwrap();
+        assert_eq!(delta.narration, "扉が軋む");
+        assert_eq!(delta.ops.len(), 1);
+    }
+
+    /// 【壊れた応答は raw を保持 (#34 同型)】2xx なのに形が合わない Messages 応答も
+    /// 本文を保持した Parse エラーになる (真因診断 + 再生成の燃料)。
+    #[test]
+    fn anthropic_decode_keeps_raw_on_shape_mismatch() {
+        let err = client::decode_messages_body(r#"{"content": "not-an-array"}"#.into()).unwrap_err();
+        match err {
+            LlmError::Parse { raw, .. } => assert!(raw.contains("not-an-array")),
+            other => panic!("Parse エラーであるべき: {other:?}"),
+        }
+    }
+
+    /// 【stray system の降格】ネイティブは先頭 system のみ対応 → 先頭以外の system
+    /// (no-tools の json_instruction 等が万一混じった場合) は user に落として壊さない。
+    #[test]
+    fn anthropic_demotes_non_leading_system_to_user() {
+        let msgs = vec![
+            ChatMessage::system("GM人格"),
+            ChatMessage::system("盤面"),
+            ChatMessage::user("行動"),
+            ChatMessage::system("後付け指示"),
+        ];
+        let req = anthropic::build_request("m", 256, None, msgs, None);
+        let body = serde_json::to_value(&req).unwrap();
+        assert_eq!(body["system"].as_array().unwrap().len(), 2, "先頭連続 system は system ブロックへ");
+        let roles: Vec<&str> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, vec!["user", "user"], "先頭以外の system は user に降格");
     }
 }

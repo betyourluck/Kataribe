@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 
-use crate::config::LlmConfig;
+use crate::anthropic;
+use crate::config::{LlmConfig, Provider};
 use crate::error::LlmError;
 use crate::parse;
 use crate::wire::{
@@ -34,6 +35,21 @@ impl LlmClient {
 
     /// プレーンなテキスト生成 (`generate`)。ツール無し。
     pub async fn generate(&self, messages: Vec<ChatMessage>) -> Result<String, LlmError> {
+        if self.config.provider == Provider::Anthropic {
+            let req = anthropic::build_request(
+                &self.config.model,
+                self.config.max_tokens,
+                self.config.temperature,
+                messages,
+                None,
+            );
+            let resp = self.messages_with_retry(&req).await?;
+            return resp
+                .into_response_message()
+                .content
+                .filter(|c| !c.trim().is_empty())
+                .ok_or(LlmError::EmptyResponse);
+        }
         let req = ChatRequest {
             model: self.config.model.clone(),
             messages,
@@ -60,7 +76,21 @@ impl LlmClient {
         tool_description: &str,
         parameters: serde_json::Value,
     ) -> Result<T, LlmError> {
-        // tool-use 対応サーバ (OpenAI/Anthropic) は tool_choice 強制で構造を保証。
+        // Anthropic ネイティブ経路 (#44): 安定プレフィックス末尾の cache_control で
+        // schema+system がキャッシュされる。tool_choice を確実に尊重するので常に tool-use。
+        if self.config.provider == Provider::Anthropic {
+            let req = anthropic::build_request(
+                &self.config.model,
+                self.config.max_tokens,
+                self.config.temperature,
+                messages,
+                Some((tool_name.to_string(), tool_description.to_string(), parameters)),
+            );
+            let resp = self.messages_with_retry(&req).await?;
+            let message = resp.into_response_message();
+            return parse::extract::<T>(&message);
+        }
+        // tool-use 対応サーバ (OpenAI 互換) は tool_choice 強制で構造を保証。
         // 非対応サーバ (さくら AI Engine / ローカル互換) は tools を送らず、prompt で JSON 出力を
         // 指示して content から拾う (extract のフォールバック)。
         let mut messages = messages;
@@ -147,6 +177,77 @@ impl LlmClient {
             }
         }
     }
+
+    // --- Anthropic ネイティブ Messages API (#44) --------------------------------
+
+    /// `POST {base_url}/messages` を 1 回叩く (リトライ無し)。
+    /// 認証は Bearer でなく `x-api-key` + `anthropic-version` (ネイティブ API の作法)。
+    async fn messages_once(
+        &self,
+        req: &anthropic::MessagesRequest,
+    ) -> Result<anthropic::MessagesResponse, LlmError> {
+        let debug = std::env::var("LLM_DEBUG").is_ok();
+        if debug {
+            eprintln!(
+                "[LLM_DEBUG] request -> {}",
+                serde_json::to_string(req).unwrap_or_default()
+            );
+        }
+        let resp = self
+            .http
+            .post(self.config.messages_endpoint())
+            .header("x-api-key", &self.config.api_key)
+            .header("anthropic-version", anthropic::ANTHROPIC_VERSION)
+            .json(req)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api { status: status.as_u16(), body });
+        }
+        let body = resp.text().await?;
+        if debug {
+            eprintln!("[LLM_DEBUG] response <- {body}");
+        }
+        let decoded = decode_messages_body(body)?;
+        // キャッシュ計測の surface: LLM_CACHE_DEBUG=1 (または LLM_DEBUG) で stderr に 1 行。
+        // 修正の Green 判定 = 2 リクエスト目以降 cache_read > 0 (0 のままなら無効化要因がある)。
+        if debug || std::env::var("LLM_CACHE_DEBUG").is_ok() {
+            if let Some(u) = &decoded.usage {
+                eprintln!(
+                    "[LLM_CACHE] cache_read={} cache_write={} input={} output={}",
+                    u.cache_read_input_tokens,
+                    u.cache_creation_input_tokens,
+                    u.input_tokens,
+                    u.output_tokens
+                );
+            }
+        }
+        Ok(decoded)
+    }
+
+    /// 指数 backoff 付きで Messages API を叩く ([`Self::chat_with_retry`] のネイティブ版)。
+    async fn messages_with_retry(
+        &self,
+        req: &anthropic::MessagesRequest,
+    ) -> Result<anthropic::MessagesResponse, LlmError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.messages_once(req).await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt >= self.config.max_retries || !e.is_transient() {
+                        return Err(e);
+                    }
+                    let secs = (1u64 << (attempt - 1)).min(10);
+                    tokio::time::sleep(Duration::from_secs(secs)).await;
+                }
+            }
+        }
+    }
 }
 
 /// 2xx 応答の本文を [`ChatResponse`] へ。形が合わなければ [`LlmError::Parse`] で
@@ -154,6 +255,12 @@ impl LlmClient {
 /// 長さ切れ等のサーバ都合の変形応答) が見えないため (#34)。
 pub(crate) fn decode_chat_body(body: String) -> Result<ChatResponse, LlmError> {
     serde_json::from_str::<ChatResponse>(&body)
+        .map_err(|source| LlmError::Parse { source, raw: body })
+}
+
+/// Messages API 版の [`decode_chat_body`]。同じく **raw を保持** (#34 同型)。
+pub(crate) fn decode_messages_body(body: String) -> Result<anthropic::MessagesResponse, LlmError> {
+    serde_json::from_str::<anthropic::MessagesResponse>(&body)
         .map_err(|source| LlmError::Parse { source, raw: body })
 }
 
