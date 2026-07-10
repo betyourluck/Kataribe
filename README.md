@@ -4,7 +4,17 @@
 
 AI Dungeon 系の LLM-GM が必ず崩れる死因は、文章力ではなく**忘却と矛盾**（持ち物・誰が死んだ・どこにいる・前回何を決めたか）。Kataribe はその故障モードを、LLM に状態を持たせないアーキテクチャで構造的に断つ。売りは「無限の自由」ではなく **一貫性**。
 
-> 仮称。リポジトリ名は変更可。
+## ダウンロード
+
+[**最新リリース**](https://github.com/betyourluck/Kataribe/releases/latest) から各 OS のインストーラを入手できる。
+
+| OS | ファイル | 状態 |
+|---|---|---|
+| **Windows** | `Kataribe_x.y.z_x64-setup.exe`（インストーラ）/ `.msi` | ✅ 動作確認済み |
+| macOS (Apple Silicon) | `.dmg` | CI ビルドのみ・未検証 |
+| Linux | `.deb` / `.AppImage` / `.rpm` | CI ビルドのみ・未検証 |
+
+起動後、**設定 → AIモデル** で OpenAI 互換エンドポイントの `base_url` / `model` / `api_key` を設定する（クラウド LLM またはローカルの OpenAI 互換サーバ）。シナリオパッケージはフォルダ追加または配布サイトから取得して遊ぶ。
 
 ## 設計の核 — 三権分立
 
