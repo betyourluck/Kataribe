@@ -76,6 +76,13 @@ function loadMsgShadow(): number {
   const v = Number(localStorage.getItem(MSG_SHADOW_KEY));
   return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 0;
 }
+// ビート (✦) / 想起 (┊) ブロックに敷く黒背景の濃さ 0..100 (0=なし)。色付き文字が
+// 背景画像に溶けて読みにくい問題への手当て。本文 (語り) には敷かない。
+const BEAT_BG_KEY = "kataribe.beatBgOpacity";
+function loadBeatBgOpacity(): number {
+  const v = Number(localStorage.getItem(BEAT_BG_KEY));
+  return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 40;
+}
 
 // 会話ログのテキスト保存先フォルダ (空 = backend の既定 app_data_dir/logs)。
 const LOG_DIR_KEY = "kataribe.logDir";
@@ -83,8 +90,9 @@ function loadLogDir(): string {
   return localStorage.getItem(LOG_DIR_KEY) || "";
 }
 
-// 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。
-const BUILTIN_PACKAGES = ["packages/houkago", "packages/promise_demo", "packages/escape"];
+// 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。escape のみ
+// (houkago は harness fixture へ移設、他サンプルは 2026-07-10 に配布から削除)。
+const BUILTIN_PACKAGES = ["packages/escape"];
 
 // --- 配布サイト「Kataribe 書庫」(spec 05 Phase C) ---
 // サイト URL は設定項目 (既定 = 公式)。自前サーバも指せる = Outcasts 固有ロックインを避ける。
@@ -153,6 +161,8 @@ interface GameState {
   msgColor: string;
   // 本文の影の濃さ 0..100 (0=なし)。背景画像の上の可読性向上。表示設定。
   msgShadow: number;
+  // ビート (✦) / 想起 (┊) ブロックの黒背景の濃さ 0..100 (0=なし)。表示設定。
+  beatBgOpacity: number;
   // 音量 0..100 (BGM/SE 共通)。サウンド設定。
   audioVolume: number;
   // ミュート (true なら音を出さない)。サウンド設定。
@@ -196,6 +206,7 @@ export const useGameStore = defineStore("game", {
       msgFont: loadMsgFont(),
       msgColor: loadMsgColor(),
       msgShadow: loadMsgShadow(),
+      beatBgOpacity: loadBeatBgOpacity(),
       audioVolume: loadAudioVolume(),
       audioMuted: loadAudioMuted(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
@@ -245,6 +256,12 @@ export const useGameStore = defineStore("game", {
       }
       return style;
     },
+    // ビート/想起ブロックに敷く黒の透過背景 (0 なら敷かない)。ember/glow の色付き文字が
+    // 背景画像に溶ける読みにくさへの手当て。本文 (語り) はそのまま (narrationStyle の影が担当)。
+    beatBgStyle: (s): Record<string, string> =>
+      s.beatBgOpacity > 0
+        ? { backgroundColor: `rgba(0,0,0,${(s.beatBgOpacity / 100).toFixed(2)})` }
+        : {},
   },
 
   actions: {
@@ -269,6 +286,11 @@ export const useGameStore = defineStore("game", {
     setMsgShadow(v: number) {
       this.msgShadow = Math.max(0, Math.min(100, Math.round(v)));
       localStorage.setItem(MSG_SHADOW_KEY, String(this.msgShadow));
+    },
+    // ビート/想起の黒背景の濃さを設定 (0 = なし)。表示設定タブから呼ぶ。
+    setBeatBgOpacity(v: number) {
+      this.beatBgOpacity = Math.max(0, Math.min(100, Math.round(v)));
+      localStorage.setItem(BEAT_BG_KEY, String(this.beatBgOpacity));
     },
 
     // 音量を設定 (即時反映 + localStorage 永続化)。サウンド設定タブから呼ぶ。

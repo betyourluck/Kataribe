@@ -197,6 +197,31 @@ onMounted(() => {
             <p class="text-parchment/40 text-xs">
               会話ログの語りの文章に適用されます（即時適用・localStorage に保存）。影は背景画像の上での読みやすさに効きます。
             </p>
+
+            <hr class="border-ash/60" />
+            <h3 class="text-parchment font-bold">筋書き・伏線（✦ / ┊）</h3>
+            <label class="block text-sm text-parchment/70">
+              背景の濃さ（{{ game.beatBgOpacity }}）
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="5"
+                :value="game.beatBgOpacity"
+                class="mt-2 block w-64 accent-ember"
+                @input="game.setBeatBgOpacity(+($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <!-- プレビュー: 現在の背景の上にビート/想起ブロックを敷いて実際の見え方を確認 -->
+            <div class="mt-1 w-full max-w-md rounded border border-ash px-4 py-3" :style="game.backgroundStyle">
+              <div class="border-l-2 border-ember/60 pl-3 space-y-1 rounded-r py-1.5 pr-3" :style="game.beatBgStyle">
+                <p class="text-ember">✦ 祭壇の奥で、何かが目を覚ました。</p>
+                <p class="text-glow/70 text-sm pl-3 border-l border-ash">丘の樫の木の下で、二人は約束を交わした。</p>
+              </div>
+            </div>
+            <p class="text-parchment/40 text-xs">
+              発火イベント（✦）と想起された記憶（┊）の下に敷く黒の透過背景です。0 でなし、右に動かすほど濃く＝読みやすくなります。本文の語りには敷きません。
+            </p>
           </section>
 
           <!-- グラフィック -->

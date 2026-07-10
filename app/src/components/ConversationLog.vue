@@ -33,8 +33,12 @@ const game = useGameStore();
         {{ entry.text }}
       </p>
 
-      <!-- 反応ビート + 想起された伏線 -->
-      <div v-else-if="entry.kind === 'beat'" class="border-l-2 border-ember/60 pl-3 space-y-1">
+      <!-- 反応ビート + 想起された伏線 (黒の透過背景 = 表示設定で濃さ調整、可読性の手当て) -->
+      <div
+        v-else-if="entry.kind === 'beat'"
+        class="border-l-2 border-ember/60 pl-3 space-y-1 rounded-r py-1.5 pr-3"
+        :style="game.beatBgStyle"
+      >
         <p v-if="entry.narration.trim()" class="text-ember" :style="{ textShadow: game.narrationStyle.textShadow ?? '' }">✦ {{ entry.narration }}</p>
         <p
           v-for="(line, j) in entry.recalled"
