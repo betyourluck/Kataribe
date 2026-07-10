@@ -1364,11 +1364,13 @@ pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
         .setup(|app| {
-            // 配布版: 前回 set_llm_config が保存した app_data_dir/.env を読み込む
-            // (無ければ何もしない)。dev の repo .env は main.rs の dotenvy が既に読んでおり、
-            // dotenvy は非 override なので二重ロードでも競合しない。
+            // 前回 set_llm_config が保存した app_data_dir/.env を読み込む (無ければ何もしない)。
+            // **override で読む**: dev では main.rs の dotenvy が repo .env を先に読んでおり、
+            // 非 override だと GUI で保存した設定が repo .env に毎回隠れる —「再起動すると
+            // 別プロバイダに戻る」の真因。GUI の保存値 = ユーザーの最後の明示意思が唯一の真実。
+            // (repo .env は CLI play 用。app_data/.env が未保存のキーは従来どおり repo 値が生きる。)
             if let Some(p) = config_env_path(app.handle()) {
-                dotenvy::from_path(&p).ok();
+                dotenvy::from_path_override(&p).ok();
             }
             Ok(())
         })
