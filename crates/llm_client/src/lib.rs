@@ -281,6 +281,7 @@ mod tests {
 
     fn response_with_tool_args(args: &str) -> ChatResponse {
         ChatResponse {
+            usage: None,
             choices: vec![Choice {
                 message: ResponseMessage {
                     content: None,
@@ -314,6 +315,7 @@ mod tests {
     #[test]
     fn falls_back_to_fenced_json_in_content() {
         let resp = ChatResponse {
+            usage: None,
             choices: vec![Choice {
                 message: ResponseMessage {
                     content: Some(
@@ -334,6 +336,7 @@ mod tests {
     fn parses_state_delta_from_plain_and_prose_content() {
         // 素の JSON (コードフェンス無し)。さくら gpt-oss-120b の実観測形。
         let raw = ChatResponse {
+            usage: None,
             choices: vec![Choice {
                 message: ResponseMessage {
                     content: Some(r#"{"narration":"教室に入る","ops":[]}"#.into()),
@@ -347,6 +350,7 @@ mod tests {
 
         // prose に前後を包まれても first '{'..last '}' で救済。
         let prose = ChatResponse {
+            usage: None,
             choices: vec![Choice {
                 message: ResponseMessage {
                     content: Some("はい:\n{\"narration\":\"了解\",\"ops\":[]} 以上".into()),
@@ -370,6 +374,7 @@ mod tests {
                    { \"narration\": \"モカは教材棚を顎で指した。\", \"ops\": [ { \"op\": \"adjust_stat\", \"entity\": \"moka\", \"key\": \"好感度\", \"delta\": 1 } ] }\n\
                    ```";
         let resp = ChatResponse {
+            usage: None,
             choices: vec![Choice {
                 message: ResponseMessage { content: Some(raw.into()), tool_calls: vec![] },
             }],
@@ -386,6 +391,7 @@ mod tests {
     fn last_balanced_json_object_wins() {
         let raw = "consider {\"op\":\"x\"} then answer:\n{\"narration\":\"本体\",\"ops\":[]}";
         let resp = ChatResponse {
+            usage: None,
             choices: vec![Choice {
                 message: ResponseMessage { content: Some(raw.into()), tool_calls: vec![] },
             }],
@@ -485,6 +491,7 @@ mod tests {
     #[test]
     fn empty_message_is_no_structured_output() {
         let resp = ChatResponse {
+            usage: None,
             choices: vec![Choice {
                 message: ResponseMessage { content: None, tool_calls: vec![] },
             }],
@@ -603,6 +610,43 @@ mod tests {
             LlmError::Parse { raw, .. } => assert!(raw.contains("not-an-array")),
             other => panic!("Parse エラーであるべき: {other:?}"),
         }
+    }
+
+    // --- OpenAI 互換経路のキャッシュ計測 + xAI sticky routing (#45) ------------------
+
+    /// 【互換 usage のパース】OpenAI/xAI/Gemini 互換の `usage.prompt_tokens_details.cached_tokens`
+    /// を読める (xAI の Green 判定 = cached > 0)。usage が無い/形が違うサーバでも壊れない。
+    #[test]
+    fn compat_usage_cached_tokens_parse() {
+        let body = r#"{
+            "choices": [{"message": {"content": "了解"}}],
+            "usage": {"prompt_tokens": 9000, "completion_tokens": 120,
+                      "prompt_tokens_details": {"cached_tokens": 8100}}
+        }"#;
+        let resp = client::decode_chat_body(body.to_string()).unwrap();
+        let usage = resp.usage.expect("usage をパースする");
+        assert_eq!(usage.prompt_tokens_details.unwrap().cached_tokens, 8100);
+        assert_eq!(usage.prompt_tokens, 9000);
+
+        // usage 無し (ローカル互換サーバ等) でも従来どおり decode できる。
+        let plain = client::decode_chat_body(
+            r#"{"choices":[{"message":{"content":"ok"}}]}"#.to_string(),
+        )
+        .unwrap();
+        assert!(plain.usage.is_none());
+        assert_eq!(plain.first_message().unwrap().content.as_deref(), Some("ok"));
+    }
+
+    /// 【会話 ID】クライアント毎に一意な conv_id を持つ (xAI のキャッシュはサーバ単位 →
+    /// x-grok-conv-id で同一サーバに sticky routing しないと同一プレフィックスでも miss)。
+    #[test]
+    fn conv_id_is_unique_per_client_and_stable_within() {
+        let cfg = LlmConfig::new("https://api.x.ai/v1", "sk", "grok-4");
+        let a = LlmClient::new(cfg.clone()).unwrap();
+        let b = LlmClient::new(cfg).unwrap();
+        assert!(!a.conv_id().is_empty());
+        assert_ne!(a.conv_id(), b.conv_id(), "クライアント (=セッション) 毎に別 ID");
+        assert_eq!(a.conv_id(), a.conv_id(), "同一クライアント内では不変");
     }
 
     /// 【stray system の降格】ネイティブは先頭 system のみ対応 → 先頭以外の system

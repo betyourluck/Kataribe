@@ -19,6 +19,11 @@ use crate::wire::{
 pub struct LlmClient {
     http: reqwest::Client,
     config: LlmConfig,
+    /// セッション識別子。OpenAI 互換経路で `x-grok-conv-id` として送る (#45) —
+    /// xAI のキャッシュは**サーバ単位**で、このヘッダが無いとロードバランサで散って
+    /// 同一プレフィックスでも miss する (sticky routing)。xAI 以外は未知ヘッダとして無視。
+    /// クライアントは app=ゲームセッション毎 / CLI=実行毎に作られるので粒度が会話に一致する。
+    conv_id: String,
 }
 
 impl LlmClient {
@@ -26,11 +31,16 @@ impl LlmClient {
         let http = reqwest::Client::builder()
             .timeout(config.request_timeout)
             .build()?;
-        Ok(Self { http, config })
+        Ok(Self { http, config, conv_id: new_conv_id() })
     }
 
     pub fn config(&self) -> &LlmConfig {
         &self.config
+    }
+
+    /// セッション識別子 (x-grok-conv-id に載せる値)。
+    pub fn conv_id(&self) -> &str {
+        &self.conv_id
     }
 
     /// プレーンなテキスト生成 (`generate`)。ツール無し。
@@ -137,6 +147,8 @@ impl LlmClient {
             .http
             .post(self.config.chat_endpoint())
             .bearer_auth(&self.config.api_key)
+            // xAI の sticky routing (#45)。他サーバは未知ヘッダとして無視する。
+            .header("x-grok-conv-id", &self.conv_id)
             .json(req)
             .send()
             .await?;
@@ -156,7 +168,23 @@ impl LlmClient {
         if debug {
             eprintln!("[LLM_DEBUG] response <- {body}");
         }
-        decode_chat_body(body)
+        let decoded = decode_chat_body(body)?;
+        // キャッシュ計測の surface (ネイティブ経路の [LLM_CACHE] と同形)。OpenAI/xAI/Gemini 互換の
+        // cached_tokens > 0 = プレフィックスがキャッシュから読まれた。
+        if debug || std::env::var("LLM_CACHE_DEBUG").is_ok() {
+            if let Some(u) = &decoded.usage {
+                let cached = u
+                    .prompt_tokens_details
+                    .as_ref()
+                    .map(|d| d.cached_tokens)
+                    .unwrap_or(0);
+                eprintln!(
+                    "[LLM_CACHE] cached={} prompt={} completion={}",
+                    cached, u.prompt_tokens, u.completion_tokens
+                );
+            }
+        }
+        Ok(decoded)
     }
 
     /// 指数 backoff 付きで chat を叩く。一過性エラーのみリトライ (tenacity 同型)。
@@ -262,6 +290,19 @@ pub(crate) fn decode_chat_body(body: String) -> Result<ChatResponse, LlmError> {
 pub(crate) fn decode_messages_body(body: String) -> Result<anthropic::MessagesResponse, LlmError> {
     serde_json::from_str::<anthropic::MessagesResponse>(&body)
         .map_err(|source| LlmError::Parse { source, raw: body })
+}
+
+/// セッション識別子を作る。プロセス ID + 単調カウンタ + 起動時刻ナノ秒 —
+/// 会話を跨いで衝突しなければよい (暗号強度は不要)。uuid 依存を増やさない。
+fn new_conv_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("kataribe-{}-{}-{}", std::process::id(), nanos, n)
 }
 
 /// no-tools モードで「schema に従う JSON だけを出力せよ」と指示する system メッセージ本文。

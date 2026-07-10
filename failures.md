@@ -692,3 +692,26 @@ anthropic_demotes_non_leading_system_to_user (llm_client 20→25)。
 プロバイダ固有のコスト最適化 (caching) を静かに捨てる。コストに効く機能はネイティブ経路の
 分岐で取り戻し、検証は請求メタデータ (usage) を一次ソースにする (Console の実測が発見経路
 だったように、機能が「効いているつもり」は usage でしか反証できない)。
+
+### 45. Grok も実質キャッシュ無効 — xAI の自動キャッシュは「サーバ単位」で sticky routing が要る
+【実測発見 (2026-07-11, #44 の続き。ユーザー観察「xAI も料金は似たようなものだった」)】
+xAI の prompt caching は**自動** (cache_control 不要、chat/completions のままで効く) なので
+#44 のような経路の破れは無い。しかし公式 docs 明記: **キャッシュエントリはサーバ単位**で
+保持され、リクエストはロードバランサで分散される — `x-grok-conv-id` ヘッダ (会話ごとに
+一貫した ID) を送らないと、同一プレフィックスでも別サーバに散って miss する。
+Kataribe はこのヘッダを送っていなかった = 実質キャッシュ無効。
+【解】`LlmClient.conv_id` (クライアント生成時に pid+nanos+カウンタで一意生成、uuid 依存
+なし) を OpenAI 互換経路の全リクエストに `x-grok-conv-id` として送る。クライアントは
+app=ゲームセッション毎 / CLI=実行毎に作られるので粒度が会話に一致する。xAI 以外の
+サーバは未知ヘッダとして無視 (無害)。あわせて `ChatResponse.usage`
+(`prompt_tokens_details.cached_tokens`) をパースし、LLM_CACHE_DEBUG=1 で
+`[LLM_CACHE] cached=... prompt=...` を stderr に surface (ネイティブ経路 #44 と同形) —
+OpenAI (自動・50% 引き) / Gemini 互換 (2.5 系は暗黙キャッシュ自動) もこの計測で見える。
+【見送り】Gemini の `cached_content` (extra_body の明示キャッシュ) はキャッシュオブジェクト
+の作成管理+保管料が要る重い機構で、暗黙キャッシュが自動で効く現行には不要。
+【PoC】compat_usage_cached_tokens_parse / conv_id_is_unique_per_client_and_stable_within
+(llm_client 25→27)。実 Grok プレイでの cached > 0 は実測待ち。
+【一般化】「自動キャッシュ」も無条件ではない — 分散インフラでは **キャッシュの所在
+(サーバローカル vs 共有) とルーティングの一致**が前提条件になる。プロバイダごとに
+「キャッシュを効かせる作法」(Anthropic=cache_control / xAI=sticky ヘッダ / OpenAI=真に
+自動) が違い、互換 API の同一ワイヤ形はこの差を隠す。検証はやはり usage が一次ソース。

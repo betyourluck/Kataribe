@@ -100,6 +100,28 @@ impl ToolChoice {
 pub struct ChatResponse {
     #[serde(default)]
     pub choices: Vec<Choice>,
+    /// 使用量。キャッシュ計測 (`prompt_tokens_details.cached_tokens`) の一次ソース (#45)。
+    /// OpenAI / xAI / Gemini 互換が返す。無い・形が違うサーバでも壊れない (default/Option)。
+    #[serde(default)]
+    pub usage: Option<ChatUsage>,
+}
+
+/// OpenAI 互換の usage。`prompt_tokens_details.cached_tokens` > 0 = プレフィックスが
+/// キャッシュから読まれた (xAI 84% 引き / OpenAI 50% 引きの対象)。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ChatUsage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
