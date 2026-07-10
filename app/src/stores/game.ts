@@ -404,7 +404,7 @@ export const useGameStore = defineStore("game", {
             lines.push(e.text);
             break;
           case "beat":
-            lines.push(`✦ ${e.narration}`);
+            if (e.narration.trim()) lines.push(`✦ ${e.narration}`);
             for (const r of e.recalled) lines.push(`  ┊ ${r}`);
             break;
           case "rolls":
@@ -559,7 +559,11 @@ export const useGameStore = defineStore("game", {
             for (const c of turn.checks) this.playSe(assetUrl(c.sound));
           }
           for (const b of turn.beats) {
-            this.log.push({ kind: "beat", narration: b.narration, recalled: b.recalled });
+            // narration も recalled も無い「効果のみ」の発火はログに出さない (裸の ✦ を防ぐ)。
+            // CG は turn.beats から、SE は下で別途処理するのでログに積まなくても失われない。
+            if (b.narration.trim() || b.recalled.length) {
+              this.log.push({ kind: "beat", narration: b.narration, recalled: b.recalled });
+            }
             // 発火 SE を one-shot 再生 (受理ターンのみ。CG と同様、語りの瞬間に鳴らす)。
             this.playSe(assetUrl(b.sound));
           }

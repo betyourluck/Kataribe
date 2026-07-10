@@ -35,7 +35,7 @@ const game = useGameStore();
 
       <!-- 反応ビート + 想起された伏線 -->
       <div v-else-if="entry.kind === 'beat'" class="border-l-2 border-ember/60 pl-3 space-y-1">
-        <p class="text-ember" :style="{ textShadow: game.narrationStyle.textShadow ?? '' }">✦ {{ entry.narration }}</p>
+        <p v-if="entry.narration.trim()" class="text-ember" :style="{ textShadow: game.narrationStyle.textShadow ?? '' }">✦ {{ entry.narration }}</p>
         <p
           v-for="(line, j) in entry.recalled"
           :key="j"

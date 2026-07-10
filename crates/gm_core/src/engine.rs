@@ -182,6 +182,7 @@ fn validate_op(
                                 reasons.push(RejectReason::ItemGateUnmet {
                                     item: item.clone(),
                                     requirement: li.when().clone(),
+                                    unmet: li.when().unmet(state),
                                 });
                             }
                         }
@@ -216,9 +217,11 @@ fn validate_op(
                 if *value {
                     let gate = scenario.flag_gate(key);
                     if !gate.eval(state) {
+                        let unmet = gate.unmet(state);
                         reasons.push(RejectReason::FlagGateUnmet {
                             key: key.clone(),
                             requirement: gate,
+                            unmet,
                         });
                     }
                 }
@@ -231,6 +234,7 @@ fn validate_op(
                         reasons.push(RejectReason::MoveGateUnmet {
                             to: to.clone(),
                             requirement: exit.gate.clone(),
+                            unmet: exit.gate.unmet(state),
                         });
                     }
                 }
@@ -263,6 +267,7 @@ fn validate_op(
                                 reasons.push(RejectReason::ChallengeLocked {
                                     challenge: challenge.clone(),
                                     requirement: req.clone(),
+                                    unmet: req.unmet(state),
                                 });
                             }
                         }
@@ -2210,6 +2215,65 @@ goal: { kind: location_is, at: corridor }
                 assert!(text.contains("drawer_opened"), "必要条件を明示する: {text}");
             }
             _ => panic!("却下されるはず"),
+        }
+    }
+
+    /// 【どの条件が false かの名指し (2026-07-09, mujinto 実プレイ発見)】`All` gate が
+    /// 却下されたとき、`unmet` は**現に false の葉条件だけ**を運ぶ — 4 条件のうち 1 つが
+    /// 未達でも「どれがダメか」が正本から読めるので、作者は「フラグを満たしているのに
+    /// 却下される」がバグか本当に未達かを切り分けられる。localize も未達葉を名指しする。
+    #[test]
+    fn gate_unmet_names_the_failing_leaf_in_an_all_gate() {
+        // requires: beach にいる / 手製の弓 所持 / beast_defeated==true / dangerous==false。
+        // 初期状態は beach・弓所持・dangerous=false は満たし、beast_defeated だけ false。
+        let yaml = r#"
+title: t
+start: beach
+allowed_flags: [beast_defeated, dangerous_beast_defeated]
+initial_inventory: [手製の弓]
+locations:
+  beach: { description: d, items: {}, exits: [] }
+challenges:
+  hunt:
+    description: 危険な獣を狩る
+    sides: 20
+    dc: 15
+    requires:
+      kind: all
+      of:
+        - { kind: location_is, at: beach }
+        - { kind: has_item, item: 手製の弓 }
+        - { kind: flag_is, key: beast_defeated, value: true }
+        - { kind: flag_is, key: dangerous_beast_defeated, value: false }
+goal: { kind: flag_is, key: dangerous_beast_defeated, value: true }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let s = sc.initial_state(1);
+        let delta = d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(),
+            challenge: "hunt".into(),
+        }]);
+        match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => {
+                let unmet = reasons
+                    .iter()
+                    .find_map(|r| match r {
+                        RejectReason::ChallengeLocked { unmet, .. } => Some(unmet),
+                        _ => None,
+                    })
+                    .expect("ChallengeLocked が出る");
+                // 満たしている 3 条件はノイズなので出さず、未達の 1 葉だけを名指す。
+                assert_eq!(
+                    unmet,
+                    &vec![crate::Gate::FlagIs { key: "beast_defeated".into(), value: true }],
+                    "未達は beast_defeated だけ (他 3 条件は満たしている): {unmet:?}"
+                );
+                // localize も未達葉を名指しし、満たしている条件を犯人扱いしない。
+                let text = reasons[0].localize(crate::Lang::Ja);
+                assert!(text.contains("未達"), "文面が未達を名指す: {text}");
+                assert!(text.contains("beast_defeated"), "犯人フラグ名が出る: {text}");
+            }
+            _ => panic!("beast_defeated 未達で却下されるはず"),
         }
     }
 

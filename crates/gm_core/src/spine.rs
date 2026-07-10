@@ -103,6 +103,24 @@ impl Gate {
             Gate::Any { of } => of.iter().any(|g| g.eval(s)),
         }
     }
+
+    /// この gate が `s` で **false のとき、満たされていない葉条件**を列挙する
+    /// (却下理由の診断用: `All` の中でどの条件が false かを名指しする — 「バグか本当に
+    /// 未達か」を作者/LLM が切り分けられる)。真なら空。
+    ///
+    /// - `All` は false の子だけを再帰収集 (満たしている条件はノイズなので出さない)。
+    /// - `Any` は「どれか一つ満たせばよい」まとまりなので、全滅時は **Any ノード自体**を
+    ///   1 件返す (子を individually 並べると『全部未達』に読めて誤解を生む)。
+    /// - 葉が false ならその葉自身。
+    pub fn unmet(&self, s: &GameState) -> Vec<Gate> {
+        if self.eval(s) {
+            return Vec::new();
+        }
+        match self {
+            Gate::All { of } => of.iter().flat_map(|g| g.unmet(s)).collect(),
+            other => vec![other.clone()],
+        }
+    }
 }
 
 fn default_gate() -> Gate {

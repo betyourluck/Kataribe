@@ -67,3 +67,7 @@ Kataribe/
 ## ルーツ
 
 LocalAI（廃棄プロジェクト）から摘出予定の資産: `llm_client`（OpenAI互換抽象）/ SSE ストリーミング骨格 / HybridMemory / Tauri+Vue UI 殻。中核（正本エンジン・シナリオ脊椎）は新規。
+
+## ライセンス
+
+[MIT License](LICENSE)。エンジンも同梱シナリオも自由に使い・改変し・再配布できる。**使われてなんぼ** — フォークしてあなたの世界を作ってほしい。

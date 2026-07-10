@@ -1,0 +1,100 @@
+name: Build
+
+# main のコミットに打った v*.* タグ (例: v1.0 / v1.2.3) の push でトリガー。
+# タグはリリース時にだけ打つので、実質「リリースビルド」として働く。
+on:
+  push:
+    tags:
+      - "v*.*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-latest, windows-latest, macos-latest]
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # タグ v1.2.3 → APP_VERSION=1.2.3 (先頭の v を除去)。後続 step で ${{ env.APP_VERSION }} 参照可。
+      - name: Extract version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ -z "$VERSION" ]; then
+            echo "タグからバージョンを取れない: $GITHUB_REF_NAME"
+            exit 1
+          fi
+          echo "APP_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "version: ${VERSION}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # root workspace (crates/) と app/src-tauri の両方の target をキャッシュ。
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            app/src-tauri -> target
+
+      # Linux は Tauri (WebKitGTK) のシステム依存が要る。Windows/macOS は不要。
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      # 正本エンジン (crates/gm_core + harness + llm_client) の全テスト。
+      # 壊れていればここで fail-fast し、重い Tauri ビルドに進まない。
+      - name: Test core engine
+        run: cargo test --workspace --verbose
+
+      - name: Install frontend dependencies
+        working-directory: ./app
+        run: npm ci
+
+      # 配布ビルドの version をタグに揃える (installer に正しい版番号が乗る)。
+      # CI 内だけの書き換えでコミットはしない。node は上で setup 済み = クロスプラットフォーム。
+      - name: Sync app version to tag
+        working-directory: ./app
+        shell: bash
+        run: |
+          node -e "const f='src-tauri/tauri.conf.json';const fs=require('fs');const j=JSON.parse(fs.readFileSync(f));j.version=process.env.APP_VERSION;fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
+
+      # Tauri アプリをビルド (projectPath=./app で app/src-tauri を対象にする)。
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: ./app
+
+      # 各 OS の installer/bundle を成果物としてアップロード。
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kataribe-${{ env.APP_VERSION }}-${{ matrix.platform }}
+          path: app/src-tauri/target/release/bundle/
+          retention-days: 7

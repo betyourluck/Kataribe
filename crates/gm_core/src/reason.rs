@@ -26,7 +26,14 @@ pub enum RejectReason {
     ItemNotHere { item: String },
     /// 取得条件が未達。`requirement` は満たすべき条件そのもの (#42: 「未達」とだけ言うと
     /// LLM が op クラスごと諦める回避学習に入る — 条件を明示して計画修正へ導く)。
-    ItemGateUnmet { item: String, requirement: Gate },
+    /// `unmet` は `requirement` のうち**現に false の葉条件**だけ (どれがダメかの名指し。
+    /// バグか本当に未達かの切り分け材料)。旧セーブ互換のため serde default。
+    ItemGateUnmet {
+        item: String,
+        requirement: Gate,
+        #[serde(default)]
+        unmet: Vec<Gate>,
+    },
     /// 備え付けアイテム (`take: fixed`)。取得は不可だが、その場で使えることを LLM に説明する。
     ItemFixed { item: String },
     /// `take: once` のアイテムを既にこの場所から持ち去っている (再取得=複製の遮断)。
@@ -40,11 +47,23 @@ pub enum RejectReason {
         available: Vec<String>,
     },
     /// フラグを立てる前提条件 (`flag_rules`) が未達。`requirement` は条件そのもの (#42)。
-    FlagGateUnmet { key: String, requirement: Gate },
+    /// `unmet` は現に false の葉条件だけ (どれがダメかの名指し)。
+    FlagGateUnmet {
+        key: String,
+        requirement: Gate,
+        #[serde(default)]
+        unmet: Vec<Gate>,
+    },
     NoExit { to: String },
     /// 出口の gate が未達。`requirement` は条件そのもの (#42 — 「未達」だけでは LLM が
     /// move を諦め、語りだけで移動した気になる回避学習の温床だった)。
-    MoveGateUnmet { to: String, requirement: Gate },
+    /// `unmet` は現に false の葉条件だけ (どれがダメかの名指し)。
+    MoveGateUnmet {
+        to: String,
+        requirement: Gate,
+        #[serde(default)]
+        unmet: Vec<Gate>,
+    },
     DiceSidesInvalid,
     UnknownStat { entity: String, key: String },
     DivideByZero { key: String },
@@ -76,8 +95,14 @@ pub enum RejectReason {
     /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
     UnknownChallenge { challenge: String },
     /// challenge の前提条件 (`requires` Gate) が未達で、まだ挑めない (挑戦の解禁待ち)。
-    /// `requirement` は条件そのもの (#42)。
-    ChallengeLocked { challenge: String, requirement: Gate },
+    /// `requirement` は条件そのもの (#42)。`unmet` は現に false の葉条件だけ (どれがダメかの
+    /// 名指し — 「フラグを満たしているのに却下される」がバグか本当に未達かを切り分ける)。
+    ChallengeLocked {
+        challenge: String,
+        requirement: Gate,
+        #[serde(default)]
+        unmet: Vec<Gate>,
+    },
 }
 
 // Gate を人間可読の条件文にする (却下理由用、Ja/En)。harness の `gate_brief` (prompt 用)
@@ -145,6 +170,29 @@ fn gate_en(gate: &Gate) -> String {
     }
 }
 
+/// 必要条件を描き、`All` の一部だけ未達なら**どの葉が false か**を名指しする。
+/// 単一条件 (unmet == requirement) では冗長なので `requirement` だけ返す。
+fn requirement_ja(requirement: &Gate, unmet: &[Gate]) -> String {
+    // 単一葉の要件 (unmet == [requirement]) や未算出時は名指しても冗長なので要件だけ。
+    let trivial = unmet.is_empty() || (unmet.len() == 1 && unmet[0] == *requirement);
+    if trivial {
+        gate_ja(requirement)
+    } else {
+        let parts: Vec<String> = unmet.iter().map(gate_ja).collect();
+        format!("{}【未達: {}】", gate_ja(requirement), parts.join(" / "))
+    }
+}
+
+fn requirement_en(requirement: &Gate, unmet: &[Gate]) -> String {
+    let trivial = unmet.is_empty() || (unmet.len() == 1 && unmet[0] == *requirement);
+    if trivial {
+        gate_en(requirement)
+    } else {
+        let parts: Vec<String> = unmet.iter().map(gate_en).collect();
+        format!("{} [unmet: {}]", gate_en(requirement), parts.join(" / "))
+    }
+}
+
 impl RejectReason {
     /// 指定言語の表示文字列を生成する。新言語の追加はここに一手で閉じる。
     pub fn localize(&self, lang: Lang) -> String {
@@ -160,8 +208,8 @@ impl RejectReason {
                 format!("現在地 '{location}' がシナリオに存在しない")
             }
             RejectReason::ItemNotHere { item } => format!("'{item}' はこの場所には存在しない"),
-            RejectReason::ItemGateUnmet { item, requirement } => {
-                format!("'{item}' はまだ取得できない (必要: {})", gate_ja(requirement))
+            RejectReason::ItemGateUnmet { item, requirement, unmet } => {
+                format!("'{item}' はまだ取得できない (必要: {})", requirement_ja(requirement, unmet))
             }
             RejectReason::ItemFixed { item } => {
                 format!("'{item}' は備え付けで持ち運べない (取得せず、その場で使える)")
@@ -177,14 +225,14 @@ impl RejectReason {
                     format!("フラグ '{key}' は存在しない (使えるフラグ: {})", available.join(", "))
                 }
             }
-            RejectReason::FlagGateUnmet { key, requirement } => {
-                format!("フラグ '{key}' はまだ立てられない (必要: {})", gate_ja(requirement))
+            RejectReason::FlagGateUnmet { key, requirement, unmet } => {
+                format!("フラグ '{key}' はまだ立てられない (必要: {})", requirement_ja(requirement, unmet))
             }
             RejectReason::NoExit { to } => format!("'{to}' への出口は存在しない"),
-            RejectReason::MoveGateUnmet { to, requirement } => {
+            RejectReason::MoveGateUnmet { to, requirement, unmet } => {
                 format!(
                     "'{to}' へはまだ移動できない (必要: {}。満たせば move は通る — 語りだけで移動した事にしないこと)",
-                    gate_ja(requirement)
+                    requirement_ja(requirement, unmet)
                 )
             }
             RejectReason::DiceSidesInvalid => "ダイスの面数は1以上でなければならない".to_string(),
@@ -226,8 +274,8 @@ impl RejectReason {
             RejectReason::UnknownChallenge { challenge } => {
                 format!("'{challenge}' という挑戦はこのシナリオに存在しない")
             }
-            RejectReason::ChallengeLocked { challenge, requirement } => {
-                format!("'{challenge}' にはまだ挑めない (必要: {})", gate_ja(requirement))
+            RejectReason::ChallengeLocked { challenge, requirement, unmet } => {
+                format!("'{challenge}' にはまだ挑めない (必要: {})", requirement_ja(requirement, unmet))
             }
         }
     }
@@ -238,8 +286,8 @@ impl RejectReason {
                 format!("current location '{location}' does not exist in the scenario")
             }
             RejectReason::ItemNotHere { item } => format!("'{item}' is not present in this location"),
-            RejectReason::ItemGateUnmet { item, requirement } => {
-                format!("'{item}' cannot be taken yet (requires: {})", gate_en(requirement))
+            RejectReason::ItemGateUnmet { item, requirement, unmet } => {
+                format!("'{item}' cannot be taken yet (requires: {})", requirement_en(requirement, unmet))
             }
             RejectReason::ItemFixed { item } => {
                 format!("'{item}' is a fixture and cannot be carried (use it where it is, without taking it)")
@@ -257,14 +305,14 @@ impl RejectReason {
                     format!("flag '{key}' does not exist (available flags: {})", available.join(", "))
                 }
             }
-            RejectReason::FlagGateUnmet { key, requirement } => {
-                format!("flag '{key}' cannot be set yet (requires: {})", gate_en(requirement))
+            RejectReason::FlagGateUnmet { key, requirement, unmet } => {
+                format!("flag '{key}' cannot be set yet (requires: {})", requirement_en(requirement, unmet))
             }
             RejectReason::NoExit { to } => format!("there is no exit to '{to}'"),
-            RejectReason::MoveGateUnmet { to, requirement } => {
+            RejectReason::MoveGateUnmet { to, requirement, unmet } => {
                 format!(
                     "cannot move to '{to}' yet (requires: {}. once met, move will succeed — do not narrate the move as done)",
-                    gate_en(requirement)
+                    requirement_en(requirement, unmet)
                 )
             }
             RejectReason::DiceSidesInvalid => "a die must have at least 1 side".to_string(),
@@ -290,8 +338,8 @@ impl RejectReason {
             RejectReason::UnknownEntity { entity } => {
                 format!("cannot give to '{entity}' because it does not exist in this scenario")
             }
-            RejectReason::ChallengeLocked { challenge, requirement } => {
-                format!("'{challenge}' cannot be attempted yet (requires: {})", gate_en(requirement))
+            RejectReason::ChallengeLocked { challenge, requirement, unmet } => {
+                format!("'{challenge}' cannot be attempted yet (requires: {})", requirement_en(requirement, unmet))
             }
             RejectReason::UnknownChallenge { challenge } => {
                 format!("there is no challenge '{challenge}' in this scenario")
