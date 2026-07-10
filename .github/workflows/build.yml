@@ -12,6 +12,10 @@ env:
 
 jobs:
   build:
+    # tauri-action が GitHub Release を作成 (= installer を assets に添付) するのに要る。
+    permissions:
+      contents: write
+
     strategy:
       fail-fast: false
       matrix:
@@ -89,13 +93,20 @@ jobs:
         run: |
           node -e "const f='src-tauri/tauri.conf.json';const fs=require('fs');const j=JSON.parse(fs.readFileSync(f));j.version=process.env.APP_VERSION;fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
 
-      # Tauri アプリをビルド (projectPath=./app で app/src-tauri を対象にする)。
-      - name: Build Tauri app
+      # Tauri アプリをビルドし、タグの GitHub Release に installer を添付する
+      # (projectPath=./app で app/src-tauri を対象。tagName を渡すと Release を作成/更新し、
+      #  3 OS の bundle が同じ Release の Assets に集まる = 誰でも DL 可能な永続リンクになる)。
+      - name: Build Tauri app (+ GitHub Release)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ./app
+          tagName: ${{ github.ref_name }}
+          releaseName: "Kataribe ${{ github.ref_name }}"
+          releaseBody: "各 OS の installer を下の Assets からダウンロードしてください。"
+          releaseDraft: false
+          prerelease: false
 
       # 各 OS の installer/bundle を成果物としてアップロード。
       - name: Upload artifacts

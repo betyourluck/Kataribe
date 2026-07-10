@@ -348,6 +348,14 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
+/// LLM 設定 (.env) の永続化先: `app_data_dir/.env`。saves/logs/packages と同じ per-user
+/// 書込可能な場所で、**配布 exe でも書ける**。旧 `repo_root()/.env` はビルド時に焼いた開発パス
+/// (CARGO_MANIFEST_DIR/../..) で、インストール版では存在せず保存に失敗していた (spec 07 の
+/// app_data_dir 移行漏れ)。`set_llm_config` が書き、起動時 setup がここから読む。
+fn config_env_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join(".env"))
+}
+
 /// パスを字句的に正規化する (`.`/`..` を畳み、native 区切りに統一)。
 /// **Tauri asset protocol は `..` を含むパスを 403 で拒否する** (トラバーサル防止) ため、
 /// scope 許可・アセット解決の前に絶対パスを綺麗にしておく (repo_root が `../..` を残すのが原因)。
@@ -671,9 +679,11 @@ fn get_llm_config() -> LlmConfigView {
 }
 
 /// LLM 設定を更新する: プロセス env を即時差し替え (次の new_game の from_env が反映) +
-/// .env file へ永続化 (repo root、dev ツール前提)。AIモデルタブの保存。
+/// `app_data_dir/.env` へ永続化 (再起動後も効く。配布 exe でも書ける — 旧 repo_root/.env は
+/// インストール版で存在せず保存に失敗していた)。AIモデルタブの保存。
 #[tauri::command]
 fn set_llm_config(
+    app: tauri::AppHandle,
     base_url: String,
     model: String,
     api_key: String,
@@ -685,14 +695,18 @@ fn set_llm_config(
     std::env::set_var("LLM_MODEL", &model);
     std::env::set_var("LLM_API_KEY", &api_key);
     std::env::set_var("LLM_USE_TOOLS", use_tools_s);
-    // 2) .env file に永続化 (再起動後も効く)。
+    // 2) app_data_dir/.env に永続化 (再起動後も効く)。親フォルダは初回に作る。
     let updates = [
         ("LLM_BASE_URL".to_string(), base_url),
         ("LLM_MODEL".to_string(), model),
         ("LLM_API_KEY".to_string(), api_key),
         ("LLM_USE_TOOLS".to_string(), use_tools_s.to_string()),
     ];
-    upsert_env(&repo_root().join(".env"), &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
+    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
+    }
+    upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
 }
 
 /// `.env` の指定キーを upsert する。既存行は値だけ差し替え、無ければ末尾に追記。
@@ -1349,6 +1363,15 @@ async fn play_turn(
 pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
+        .setup(|app| {
+            // 配布版: 前回 set_llm_config が保存した app_data_dir/.env を読み込む
+            // (無ければ何もしない)。dev の repo .env は main.rs の dotenvy が既に読んでおり、
+            // dotenvy は非 override なので二重ロードでも競合しない。
+            if let Some(p) = config_env_path(app.handle()) {
+                dotenvy::from_path(&p).ok();
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             new_game,
             resume_game,
