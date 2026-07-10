@@ -31,8 +31,14 @@ jobs:
             echo "タグからバージョンを取れない: $GITHUB_REF_NAME"
             exit 1
           fi
+          # Tauri は 3 要素 semver (X.Y.Z) を要求する。タグが v0.1 のように短ければ 0 で補う。
+          case "$VERSION" in
+            *.*.*) ;;                          # 既に X.Y.Z
+            *.*)   VERSION="${VERSION}.0" ;;    # X.Y   → X.Y.0
+            *)     VERSION="${VERSION}.0.0" ;;  # X     → X.0.0
+          esac
           echo "APP_VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "version: ${VERSION}"
+          echo "semver: ${VERSION}"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
