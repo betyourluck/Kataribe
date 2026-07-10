@@ -8,7 +8,11 @@
  * - 最小化/最大化トグル/閉じるは @tauri-apps/api/window を動的 import で叩く
  *   (ブラウザ環境=Tauri 外でも crash しない)。
  */
-defineProps<{ title?: string }>();
+defineProps<{
+  title?: string;
+  /** 使用中の AI モデル名 (パッケージ一覧アイコンの右にバッジ表示。空なら出さない)。 */
+  model?: string;
+}>();
 
 const emit = defineEmits<{
   (e: "open-settings"): void;
@@ -65,6 +69,16 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
         <circle cx="4" cy="18" r="0.9" fill="currentColor" stroke="none" />
       </svg>
     </button>
+
+    <!-- 使用中の AI モデル名バッジ (どのモデルで遊んでいるかの常時表示。設定 → AIモデル で変更) -->
+    <span
+      v-if="model"
+      data-tauri-drag-region
+      class="mx-1 max-w-[12rem] truncate rounded-full border border-ash bg-ash/40 px-2 text-[10px] leading-4 text-parchment/70"
+      :title="`使用中の AI モデル: ${model} (設定 → AIモデル で変更)`"
+    >
+      {{ model }}
+    </span>
 
     <div class="w-px h-4 mx-1 bg-ash"></div>
 

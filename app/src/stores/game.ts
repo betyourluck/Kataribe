@@ -187,6 +187,8 @@ interface GameState {
   logDir: string;
   // ログ保存/フォルダ操作の一時トースト (App.vue が数秒表示して消す)。
   logToast: string;
+  // 使用中の AI モデル名 (TitleBar バッジ + OS ウィンドウタイトル)。get_llm_config から取得。
+  llmModel: string;
 }
 
 export const useGameStore = defineStore("game", {
@@ -219,6 +221,7 @@ export const useGameStore = defineStore("game", {
       installingId: null,
       logDir: loadLogDir(),
       logToast: "",
+      llmModel: "",
     };
   },
 
@@ -265,6 +268,25 @@ export const useGameStore = defineStore("game", {
   },
 
   actions: {
+    // 使用中の AI モデル名を backend から取り直す (起動時 + AIモデル設定の保存後)。
+    // TitleBar のバッジと OS ウィンドウタイトル (タスクバー/Alt+Tab) の両方に反映する。
+    async refreshLlmModel() {
+      try {
+        const cfg = await invoke<{ model: string }>("get_llm_config");
+        this.llmModel = cfg.model ?? "";
+      } catch {
+        return; // Tauri 外 (ブラウザ) や backend 未接続では静かに諦める
+      }
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().setTitle(
+          this.llmModel ? `Kataribe — 語り部 (${this.llmModel})` : "Kataribe — 語り部",
+        );
+      } catch {
+        /* ウィンドウ API が無い環境ではバッジ表示のみ */
+      }
+    },
+
     // 背景の明るさを設定 (即時反映 + localStorage 永続化)。グラフィック設定タブから呼ぶ。
     setBgBrightness(v: number) {
       this.bgBrightness = Math.max(0, Math.min(100, Math.round(v)));

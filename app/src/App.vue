@@ -86,6 +86,7 @@ watch(
 // + ユーザー操作のたびに BGM 再生を試みる (初回 play が autoplay で弾かれても次の操作で復帰する)。
 onMounted(() => {
   game.refreshPackages();
+  game.refreshLlmModel(); // TitleBar のモデル名バッジ + OS ウィンドウタイトル
   const px = Number(localStorage.getItem("kataribe.fontScale")) || 18; // 既定 = 標準 18px
   document.documentElement.style.fontSize = `${px}px`;
   window.addEventListener("pointerdown", ensureBgmPlaying);
@@ -98,6 +99,7 @@ onMounted(() => {
     <!-- カスタムタイトルバー (ネイティブ装飾の代替) -->
     <TitleBar
       :title="game.title"
+      :model="game.llmModel"
       @open-settings="showSettings = true"
       @open-packages="showPackages = true"
       @save-log="game.saveLog()"

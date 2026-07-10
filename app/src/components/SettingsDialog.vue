@@ -92,6 +92,7 @@ async function saveLlm() {
       useTools: llm.value.use_tools,
     });
     llmStatus.value = "保存しました（.env に永続化／次の『新しいゲーム』から有効）";
+    game.refreshLlmModel(); // TitleBar のバッジ + ウィンドウタイトルへ即時反映
   } catch (e) {
     llmStatus.value = `保存失敗: ${e}`;
   }
