@@ -86,7 +86,7 @@ watch(
 // + ユーザー操作のたびに BGM 再生を試みる (初回 play が autoplay で弾かれても次の操作で復帰する)。
 onMounted(() => {
   game.refreshPackages();
-  const px = Number(localStorage.getItem("kataribe.fontScale")) || 16;
+  const px = Number(localStorage.getItem("kataribe.fontScale")) || 18; // 既定 = 標準 18px
   document.documentElement.style.fontSize = `${px}px`;
   window.addEventListener("pointerdown", ensureBgmPlaying);
   window.addEventListener("keydown", ensureBgmPlaying);

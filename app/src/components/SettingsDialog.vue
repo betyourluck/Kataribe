@@ -43,7 +43,7 @@ function applyLogDir() {
 
 // --- 表示 (フォント) ---
 const FONT_KEY = "kataribe.fontScale";
-const fontScale = ref<number>(Number(localStorage.getItem(FONT_KEY)) || 16);
+const fontScale = ref<number>(Number(localStorage.getItem(FONT_KEY)) || 18);
 function applyFont() {
   document.documentElement.style.fontSize = `${fontScale.value}px`;
   localStorage.setItem(FONT_KEY, String(fontScale.value));
@@ -137,10 +137,10 @@ onMounted(() => {
                 class="mt-1 block w-40 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
                 @change="applyFont"
               >
-                <option :value="14">小 (14px)</option>
-                <option :value="16">標準 (16px)</option>
-                <option :value="18">大 (18px)</option>
-                <option :value="20">特大 (20px)</option>
+                <option :value="16">小 (16px)</option>
+                <option :value="18">標準 (18px)</option>
+                <option :value="20">大 (20px)</option>
+                <option :value="24">特大 (24px)</option>
               </select>
             </label>
             <p class="text-parchment/40 text-xs">UI 全体の基準フォントサイズを変えます（即時適用・localStorage に保存）。</p>

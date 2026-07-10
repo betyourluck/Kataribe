@@ -24,18 +24,18 @@ function assetUrl(path: string | null): string | null {
 
 // localStorage キー: ユーザーが選べるパッケージフォルダのパス一覧 (配布物の置き場)。
 const PACKAGES_KEY = "kataribe.packagePaths";
-// 背景の明るさ (0=暗幕最大で真っ暗 〜 100=暗幕なしで画像そのまま)。既定はやや明るめ。
+// 背景の明るさ (0=暗幕最大で真っ暗 〜 100=暗幕なしで画像そのまま)。既定は中間の 50。
 const BG_BRIGHTNESS_KEY = "kataribe.bgBrightness";
 function loadBgBrightness(): number {
   const v = Number(localStorage.getItem(BG_BRIGHTNESS_KEY));
-  return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 35;
+  return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 50;
 }
-// 音量 0..100 (BGM ループと SE one-shot に共通でかかる)。既定は控えめ。
+// 音量 0..100 (BGM ループと SE one-shot に共通でかかる)。既定は中間の 50。
 const AUDIO_VOLUME_KEY = "kataribe.audioVolume";
 const AUDIO_MUTED_KEY = "kataribe.audioMuted";
 function loadAudioVolume(): number {
   const v = Number(localStorage.getItem(AUDIO_VOLUME_KEY));
-  return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 60;
+  return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 50;
 }
 function loadAudioMuted(): boolean {
   return localStorage.getItem(AUDIO_MUTED_KEY) === "true";
