@@ -6,6 +6,8 @@
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
+use serde::Serialize;
+use std::sync::Mutex;
 
 use crate::anthropic;
 use crate::config::{LlmConfig, Provider};
@@ -14,6 +16,33 @@ use crate::parse;
 use crate::wire::{
     ChatMessage, ChatRequest, ChatResponse, FunctionDef, Tool, ToolChoice, ToolKind,
 };
+
+/// プロンプトキャッシュの健全性の計測値。`cache_read`>0 = 安定プレフィックスがキャッシュから
+/// 読まれた (入力コスト減)。GUI が**連続 miss** を検知して「キャッシュ経路が壊れているかも」を
+/// 警告する材料になる — #44 (Anthropic 互換層は caching 非対応) / #45 (xAI は sticky ヘッダ必須)
+/// の「キャッシュの静かな漏出は usage が一次ソース」を GUI へ引き上げる。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CacheStat {
+    /// 直近リクエストの cache read トークン (0 = miss)。
+    pub last_cache_read: u64,
+    /// 連続で cache read が 0 だった回数 (1 回でもヒットで 0 にリセット)。
+    pub consecutive_misses: u32,
+    /// 累計リクエスト数。初回は書き込みゆえ miss が正常なので、判定は 2 回目以降を見る。
+    pub total_requests: u32,
+}
+
+impl CacheStat {
+    /// 1 リクエスト分の cache read を記録する (純粋・テスト可)。
+    pub(crate) fn record(&mut self, cache_read: u64) {
+        self.total_requests = self.total_requests.saturating_add(1);
+        self.last_cache_read = cache_read;
+        if cache_read > 0 {
+            self.consecutive_misses = 0;
+        } else {
+            self.consecutive_misses = self.consecutive_misses.saturating_add(1);
+        }
+    }
+}
 
 /// クラウド LLM ナレーター脚。
 pub struct LlmClient {
@@ -24,6 +53,9 @@ pub struct LlmClient {
     /// 同一プレフィックスでも miss する (sticky routing)。xAI 以外は未知ヘッダとして無視。
     /// クライアントは app=ゲームセッション毎 / CLI=実行毎に作られるので粒度が会話に一致する。
     conv_id: String,
+    /// キャッシュ健全性の計測 (interior mutability — propose は `&self`)。両経路のリクエストで
+    /// cache read を記録し、GUI が連続 miss を警告に出す。
+    cache_stat: Mutex<CacheStat>,
 }
 
 impl LlmClient {
@@ -31,7 +63,7 @@ impl LlmClient {
         let http = reqwest::Client::builder()
             .timeout(config.request_timeout)
             .build()?;
-        Ok(Self { http, config, conv_id: new_conv_id() })
+        Ok(Self { http, config, conv_id: new_conv_id(), cache_stat: Mutex::new(CacheStat::default()) })
     }
 
     pub fn config(&self) -> &LlmConfig {
@@ -41,6 +73,18 @@ impl LlmClient {
     /// セッション識別子 (x-grok-conv-id に載せる値)。
     pub fn conv_id(&self) -> &str {
         &self.conv_id
+    }
+
+    /// キャッシュ健全性のスナップショット (GUI の警告判定用)。lock 毒化時は既定値。
+    pub fn cache_stat(&self) -> CacheStat {
+        self.cache_stat.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// 1 リクエスト分の cache read を計測に記録する (両経路の chat_once / messages_once から呼ぶ)。
+    fn record_cache(&self, cache_read: u64) {
+        if let Ok(mut g) = self.cache_stat.lock() {
+            g.record(cache_read);
+        }
     }
 
     /// プレーンなテキスト生成 (`generate`)。ツール無し。
@@ -169,15 +213,17 @@ impl LlmClient {
             eprintln!("[LLM_DEBUG] response <- {body}");
         }
         let decoded = decode_chat_body(body)?;
-        // キャッシュ計測の surface (ネイティブ経路の [LLM_CACHE] と同形)。OpenAI/xAI/Gemini 互換の
-        // cached_tokens > 0 = プレフィックスがキャッシュから読まれた。
+        // キャッシュ計測。OpenAI/xAI/Gemini 互換の cached_tokens > 0 = プレフィックスがキャッシュから読まれた。
+        let cached = decoded
+            .usage
+            .as_ref()
+            .and_then(|u| u.prompt_tokens_details.as_ref())
+            .map(|d| d.cached_tokens)
+            .unwrap_or(0);
+        self.record_cache(cached); // GUI 警告用 (常時記録)
+        // surface (ネイティブ経路の [LLM_CACHE] と同形)。
         if debug || std::env::var("LLM_CACHE_DEBUG").is_ok() {
             if let Some(u) = &decoded.usage {
-                let cached = u
-                    .prompt_tokens_details
-                    .as_ref()
-                    .map(|d| d.cached_tokens)
-                    .unwrap_or(0);
                 eprintln!(
                     "[LLM_CACHE] cached={} prompt={} completion={}",
                     cached, u.prompt_tokens, u.completion_tokens
@@ -240,8 +286,10 @@ impl LlmClient {
             eprintln!("[LLM_DEBUG] response <- {body}");
         }
         let decoded = decode_messages_body(body)?;
-        // キャッシュ計測の surface: LLM_CACHE_DEBUG=1 (または LLM_DEBUG) で stderr に 1 行。
-        // 修正の Green 判定 = 2 リクエスト目以降 cache_read > 0 (0 のままなら無効化要因がある)。
+        // キャッシュ計測。cache_read_input_tokens > 0 = 安定プレフィックスがキャッシュから読まれた。
+        let cache_read = decoded.usage.as_ref().map(|u| u.cache_read_input_tokens).unwrap_or(0);
+        self.record_cache(cache_read); // GUI 警告用 (常時記録)
+        // surface: LLM_CACHE_DEBUG=1 (または LLM_DEBUG) で stderr に 1 行。
         if debug || std::env::var("LLM_CACHE_DEBUG").is_ok() {
             if let Some(u) = &decoded.usage {
                 eprintln!(

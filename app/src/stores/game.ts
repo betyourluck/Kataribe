@@ -191,6 +191,8 @@ interface GameState {
   llmModel: string;
   // 開発者モード (KATARIBE_DEV_MODE)。ON で GM に「テストプレイ・<meta:> 質問可」を刷り込む。
   devMode: boolean;
+  // キャッシュ連続 miss の警告を出したか (エッジトリガー latch。ヒット復帰で再武装)。
+  cacheWarned: boolean;
 }
 
 export const useGameStore = defineStore("game", {
@@ -225,6 +227,7 @@ export const useGameStore = defineStore("game", {
       logToast: "",
       llmModel: "",
       devMode: false,
+      cacheWarned: false,
     };
   },
 
@@ -557,6 +560,7 @@ export const useGameStore = defineStore("game", {
       this.bgm = assetUrl(view.bgm);
       this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
       this.log = [{ kind: "opening", text: view.description }];
+      this.cacheWarned = false; // 新しいセッション = 新しいクライアント (計測もゼロから)
       if (view.resumed) {
         this.log.push({ kind: "system", text: `── 続きから (turn ${view.resumed.turn}) ──` });
         if (view.resumed.last_narration) {
@@ -657,6 +661,19 @@ export const useGameStore = defineStore("game", {
           }
         } else {
           this.log.push({ kind: "reject", reasons: turn.reasons, attempts: turn.attempts });
+        }
+        // キャッシュ健全性の警告 (#44/#45 — キャッシュの静かな漏出は usage が一次ソース)。
+        // 連続 miss が閾値を越えた瞬間に 1 回だけ出す。ヒット復帰で再武装するエッジトリガー。
+        // 初回リクエストは書き込みゆえ miss が正常 → total_requests>=2 で除外。
+        const cs = turn.cache;
+        if (cs.last_cache_read > 0) {
+          this.cacheWarned = false;
+        } else if (!this.cacheWarned && cs.total_requests >= 2 && cs.consecutive_misses >= 3) {
+          this.cacheWarned = true;
+          this.log.push({
+            kind: "system",
+            text: `⚠ プロンプトキャッシュが ${cs.consecutive_misses} リクエスト連続でヒットしていません。入力コストが割高になっている可能性があります (キャッシュ非対応のプロバイダ/ローカルモデルでは正常です)。`,
+          });
         }
         this.state = turn.state;
         this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));

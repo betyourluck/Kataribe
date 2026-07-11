@@ -21,7 +21,7 @@ use harness::{
     CampaignMemory, LoreStore, MemoryFragment, ModuleId, PackageManifest, SavedContent,
     SessionSave, TurnLog, TurnOutcome, SAVE_VERSION,
 };
-use llm_client::{LlmClient, LlmConfig};
+use llm_client::{CacheStat, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -217,6 +217,9 @@ struct TurnView {
     /// campaign で次モジュールへ遷移したとき、遷移先モジュールの開幕情報。単発/未遷移なら None。
     /// このとき state/background/present_characters は**遷移先**を指す (goal_* は遷移元の結末)。
     transition: Option<TransitionView>,
+    /// プロンプトキャッシュの健全性 (このセッションの累計)。frontend が連続 miss を検知して
+    /// 「キャッシュ経路が壊れているかも」を警告する (#44/#45 — 漏出は usage が一次ソース)。
+    cache: CacheStat,
 }
 
 /// campaign のモジュール遷移 (前モジュールの goal 到達 → 次モジュールへ state を糸通しして差し替え)。
@@ -1277,6 +1280,7 @@ async fn play_turn(
                 bgm: bgm_for(&sess.scenario, &sess.state, &sess.package_root),
                 present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
                 transition: None,
+                cache: sess.client.cache_stat(),
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -1299,6 +1303,7 @@ async fn play_turn(
             bgm: bgm_for(&sess.scenario, &sess.state, &sess.package_root),
             present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
             transition: None,
+            cache: sess.client.cache_stat(),
         },
     };
 

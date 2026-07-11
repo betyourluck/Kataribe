@@ -127,6 +127,17 @@ export interface TransitionView {
   description: string;
 }
 
+/** プロンプトキャッシュの健全性 (セッション累計)。連続 miss の検知で「キャッシュ経路が
+ *  壊れているかも」を警告する材料 (#44/#45 — 漏出は usage が一次ソース)。 */
+export interface CacheStatView {
+  /** 直近リクエストの cache read トークン (0 = miss)。 */
+  last_cache_read: number;
+  /** 連続で cache read が 0 だった回数 (1 回でもヒットで 0 にリセット)。 */
+  consecutive_misses: number;
+  /** 累計リクエスト数。初回は書き込みゆえ miss が正常なので判定は 2 回目以降を見る。 */
+  total_requests: number;
+}
+
 export interface TurnView {
   accepted: boolean;
   narration: string;
@@ -154,6 +165,8 @@ export interface TurnView {
   /** campaign で次モジュールへ遷移したときの遷移先開幕情報。単発/未遷移なら null。
    *  このとき state/background/present_characters は**遷移先**を指す (goal_* は遷移元の結末)。 */
   transition: TransitionView | null;
+  /** プロンプトキャッシュの健全性 (このセッションの累計)。 */
+  cache: CacheStatView;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

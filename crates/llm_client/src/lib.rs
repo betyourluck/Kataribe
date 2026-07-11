@@ -19,7 +19,7 @@ mod error;
 mod parse;
 mod wire;
 
-pub use client::LlmClient;
+pub use client::{CacheStat, LlmClient};
 pub use config::{LlmConfig, Provider};
 pub use error::LlmError;
 pub use wire::{ChatMessage, Role};
@@ -647,6 +647,45 @@ mod tests {
         assert!(!a.conv_id().is_empty());
         assert_ne!(a.conv_id(), b.conv_id(), "クライアント (=セッション) 毎に別 ID");
         assert_eq!(a.conv_id(), a.conv_id(), "同一クライアント内では不変");
+    }
+
+    // --- キャッシュ健全性の計測 (GUI 警告の材料) ------------------------------------
+
+    /// 【CacheStat の計数則】miss で連続 miss が伸び、1 回のヒットで 0 にリセットされる
+    /// (GUI の「キャッシュ経路が壊れているかも」警告 = total>=2 かつ consecutive_misses>=3 の材料)。
+    /// 初回リクエストは書き込みゆえ miss が正常 — total_requests で判定側が除外できる。
+    #[test]
+    fn cache_stat_counts_misses_and_resets_on_hit() {
+        let mut s = CacheStat::default();
+        assert_eq!((s.total_requests, s.consecutive_misses, s.last_cache_read), (0, 0, 0));
+
+        s.record(0); // 初回 = 書き込み (miss が正常)
+        s.record(0);
+        s.record(0);
+        assert_eq!(s.total_requests, 3);
+        assert_eq!(s.consecutive_misses, 3, "連続 miss が積み上がる");
+        assert_eq!(s.last_cache_read, 0);
+
+        s.record(8100); // ヒットで復帰
+        assert_eq!(s.consecutive_misses, 0, "1 回のヒットで連続 miss はリセット");
+        assert_eq!(s.last_cache_read, 8100);
+        assert_eq!(s.total_requests, 4);
+
+        s.record(0); // 再び miss — 1 から数え直し
+        assert_eq!(s.consecutive_misses, 1);
+    }
+
+    /// 【クライアントのスナップショット】新規クライアントの cache_stat は零値
+    /// (リクエストを一度もしていない = 警告判定は発火しない)。clone スナップショットで
+    /// lock を持ち帰らない (GUI が毎ターン読める)。
+    #[test]
+    fn client_cache_stat_starts_at_zero() {
+        let cfg = LlmConfig::new("https://api.anthropic.com/v1", "sk", "claude-opus-4-8");
+        let client = LlmClient::new(cfg).unwrap();
+        let s = client.cache_stat();
+        assert_eq!(s.total_requests, 0);
+        assert_eq!(s.consecutive_misses, 0);
+        assert_eq!(s.last_cache_read, 0);
     }
 
     /// 【stray system の降格】ネイティブは先頭 system のみ対応 → 先頭以外の system
