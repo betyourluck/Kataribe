@@ -52,10 +52,12 @@ flag_titles:
   met_genzo: 店主との対面
   met_reiko: 謎の女性
   heard_lemon_pie: 存在しないメニュー
+  cafe_key_obtained: 何処の鍵だろ？
+  kitchen_open: 厨房の戸棚を開けた
   found_recipe_note: レシピの違和感
   found_old_photo: 20年前の家族写真
   found_diary: 金曜日の記録
-  noticed_ring: 同じ指輪
+  noticed_ring: 何処かで見た指輪
   truth_noticed: 本当の関係
   reminiscence_solved: 優しい思い出
   family_reunion: 金曜日の真実
@@ -66,6 +68,8 @@ initial_skills: [観察眼, 傾聴]
 initial_inventory: [メモ帳]
 initial_attributes: { 役割: 探偵役 }
 hidden_stats: []
+secret_attributes: [関係]
+
 
 cast: [akari, genzo, reiko, fudemura]
 characters: {}
@@ -93,7 +97,9 @@ locations:
 
   cafe_kitchen:
     title: 厨房
-    description: 使い込まれた厨房。レモンの皮の香りがほんのり残る。壁に貼られたレシピカードは日焼けしている。
+    description: |
+      使い込まれた厨房。レモンの皮の香りがほんのり残る。壁に貼られたレシピカードは日焼けしている。
+      ここは店内とつながっている。
     present: []
     items:
       合鍵: { kind: always }
@@ -189,8 +195,8 @@ triggers:
       effects:
               - { op: set_flag, key: heard_lemon_pie, value: true }
       narration: 「存在しないメニュー？ レモンパイ？」あかりが首をかしげる。「うち、そんなの出してないはずなのに」
-      repeatable: false
       recall: lemon_pie
+      repeatable: false
 
     - id: notice_reiko
       when:
@@ -218,7 +224,7 @@ triggers:
                   - { kind: stat_at_least, entity: player, key: 観察力, value: 6 }
       effects:
               - { op: set_flag, key: noticed_ring, value: true }
-      narration: 玲子の左手、薬指の細い銀の指輪。あかりが昨日、無意識にいじっていたものと全く同じデザインだ。手作りっぽい歪みまで同じ。
+      narration: 玲子の左手、薬指の細い銀の指輪。どこかで見たことあるんだよな……手作りっぽい歪みまで見覚えあるん気がする。
       repeatable: false
 
     - id: found_recipe_via_item
@@ -226,8 +232,8 @@ triggers:
       effects:
               - { op: set_flag, key: found_recipe_note, value: true }
       narration: レシピノートの隅に、小さな文字。「玲子、酸っぱいのは苦手だったな。砂糖は多めに。いつか、あかりにも」
-      repeatable: false
       recall: family_photo
+      repeatable: false
 
     - id: found_diary_via_item
       when: { kind: has_item, item: 日記 }
@@ -268,8 +274,10 @@ triggers:
                   - { kind: flag_is, key: met_reiko, value: true }
       effects:
               - { op: set_presence, entity: akari, present: true }
+              - { op: add_item, entity: akari, item: 銀の指輪 }
               - { op: set_flag, key: family_reunion, value: true }
       narration: あなたは3人を同じテーブルに集めた。古い写真をそっと置く。「この指輪、3人同じですね」と。
+      recall: 源蔵の告白
       repeatable: false
 
 challenges:
