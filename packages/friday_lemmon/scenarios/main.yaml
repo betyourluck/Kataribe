@@ -1,0 +1,347 @@
+title: 金曜日のレモンパイ
+start: shopping_street
+
+allowed_flags: [met_akari, met_genzo, met_reiko, met_fudemura, heard_lemon_pie, cafe_key_obtained, kitchen_open, found_recipe_note, found_old_photo, found_diary, noticed_ring, reiko_identity_hint, reminiscence_solved, truth_noticed, family_reunion, gentle_lie]
+global_flags: [truth_noticed, family_reunion, met_akari]
+persistent_flags: []
+hidden_flags: []
+
+flag_rules:
+  reminiscence_solved:
+    kind: flag_is
+    key: heard_lemon_pie
+    value: true
+  truth_noticed:
+    kind: all
+    of:
+            - { kind: flag_is, key: found_old_photo, value: true }
+            - { kind: flag_is, key: found_diary, value: true }
+            - { kind: flag_is, key: noticed_ring, value: true }
+  family_reunion:
+    kind: flag_is
+    key: truth_noticed
+    value: true
+  gentle_lie:
+    kind: flag_is
+    key: truth_noticed
+    value: true
+  kitchen_open:
+    kind: flag_is
+    key: cafe_key_obtained
+    value: true
+
+flag_hints:
+  met_akari: 商店街で依頼人と話す
+  met_genzo: 喫茶店内で店主と話す
+  met_reiko: 金曜日の謎の女性と出会う
+  heard_lemon_pie: レモンパイの噂を聞く
+  cafe_key_obtained: 合鍵を手に入れる
+  kitchen_open: 厨房の鍵を開ける
+  found_recipe_note: レシピノートの端書きに気づく
+  found_old_photo: 2階の古い写真を見つける
+  found_diary: 源蔵の日記を読む
+  noticed_ring: 玲子とあかりの指輪の一致に気づく
+  reiko_identity_hint: 玲子が本音を漏らす
+  reminiscence_solved: 表向きの謎が解ける条件
+  truth_noticed: 家族の真実に気づける条件
+  family_reunion: 真実を3人に伝える
+  gentle_lie: 真実を知りつつ黙る
+
+flag_titles:
+  met_akari: 依頼人との再会
+  met_genzo: 店主との対面
+  met_reiko: 謎の女性
+  heard_lemon_pie: 存在しないメニュー
+  found_recipe_note: レシピの違和感
+  found_old_photo: 20年前の家族写真
+  found_diary: 金曜日の記録
+  noticed_ring: 同じ指輪
+  truth_noticed: 本当の関係
+  reminiscence_solved: 優しい思い出
+  family_reunion: 金曜日の真実
+  gentle_lie: 言わない優しさ
+
+initial_stats: { 観察力: 6, 共感力: 6 }
+initial_skills: [観察眼, 傾聴]
+initial_inventory: [メモ帳]
+initial_attributes: { 役割: 探偵役 }
+hidden_stats: []
+
+cast: [akari, genzo, reiko, fudemura]
+characters: {}
+
+locations:
+  shopping_street:
+    title: 商店街の入り口
+    description: 潮風の香る商店街。喫茶「夕凪」の木製看板が少し傾いている。放課後の高校生が行き交う。
+    present: [akari]
+    exits:
+            - to: cafe_counter
+            - to: terrace
+
+  cafe_counter:
+    title: 喫茶「夕凪」店内
+    description: レコードの針が擦れる音だけがする静かな店内。カウンターの奥に、誰も座らないのにいつも綺麗に拭かれた一席がある。
+    present: [genzo, reiko]
+    items:
+      メニュー表: { kind: always }
+    exits:
+            - to: shopping_street
+            - to: terrace
+            - to: genzo_room
+            - to: cafe_kitchen
+
+  cafe_kitchen:
+    title: 厨房
+    description: 使い込まれた厨房。レモンの皮の香りがほんのり残る。壁に貼られたレシピカードは日焼けしている。
+    present: []
+    items:
+      合鍵: { kind: always }
+      レシピノート: { kind: flag_is, key: kitchen_open, value: true }
+    exits:
+            - to: cafe_counter
+
+  terrace:
+    title: 海の見えるテラス席
+    description: 海が一望できる2席だけのテラス。常連の大学生がいつも本を読んでいる。風でページがめくれる。
+    present: [fudemura]
+    exits:
+            - to: shopping_street
+            - to: cafe_counter
+
+  genzo_room:
+    title: 源蔵の自室
+    description: 2階の6畳間。整理されているが、箪笥の引き出しだけが鍵がかかっている。古いアルバムが積まれている。
+    present: []
+    items:
+      古い写真: { kind: flag_is, key: cafe_key_obtained, value: true }
+      日記: { kind: flag_is, key: found_old_photo, value: true }
+    exits:
+            - to: cafe_counter
+
+goals:
+    - id: reminiscence_ending
+      when: { kind: flag_is, key: reminiscence_solved, value: true }
+      title: 優しい思い出
+      hint: レモンパイの由来を解き明かそう
+      narration: |
+        「あ、そのパイはね。家内の得意だったんだよ」
+        源蔵はそう言って、遠くを見た。金曜日は、妻の命日だった。
+        謎の女性は、妻の友人だった。毎年、この味を確かめに来るのだと。
+        あかりはホッとしたように笑った。これで一件落着だ。
+        ――多くの探偵は、ここで筆を置くだろう。
+      visible: true
+
+    - id: kindness_ending
+      when: { kind: flag_is, key: gentle_lie, value: true }
+      title: 言わない優しさ
+      hint: 真実を知っても、口にしない選択もある
+      narration: |
+        あなたは全てに気づいた。玲子の指輪、あかりと瓜二つの横顔、日記の「娘」という文字。
+        玲子は、あかりの母親だ。20年前に家を出た、源蔵の娘だ。
+        だが、3人は今、穏やかだ。不器用な優しさで繋がっている。
+        あなたはメモ帳を閉じた。言うべき真実と、言わない方がいい真実がある。
+        金曜日のレモンパイは、今日も甘酸っぱい。
+      visible: true
+
+    - id: family_reunion_ending
+      when: { kind: flag_is, key: family_reunion, value: true }
+      title: 金曜日の真実
+      hint: 隠しエンディング
+      narration: |
+        「お父さん、ただいま」
+        玲子が初めて、そう呼んだ。源蔵の手が止まる。
+        「……遅かったじゃないか。パイが冷めるよ」
+        20年分の沈黙が、レモンの香りで溶けた。あかりは2人の指輪が同じことに、ようやく気づいて声を上げる。
+        「え？ お母さん、なの？」
+        日常ミステリの意外な結末は、犯人でもトリックでもない。
+        最初からそこにいた家族が、ようやく同じテーブルにつくことだった。
+      visible: false
+
+triggers:
+    - id: meet_akari
+      when: { kind: location_is, at: shopping_street }
+      effects:
+              - { op: set_flag, key: met_akari, value: true }
+      narration: あかりが駆け寄ってくる。「お願い、祖父の様子を見てきて。金曜日の人、絶対おかしいの」
+      repeatable: false
+
+    - id: meet_genzo
+      when: { kind: location_is, at: cafe_counter }
+      effects:
+              - { op: set_flag, key: met_genzo, value: true }
+      narration: 源蔵は寡黙にコーヒーを淹れる。口数は少ないが、カップを置く手つきは驚くほど丁寧だ。
+      repeatable: false
+
+    - id: meet_fudemura
+      when: { kind: location_is, at: terrace }
+      effects:
+              - { op: set_flag, key: met_fudemura, value: true }
+      narration: 筆村が顔を上げる。「あの人、金曜だけ来るんですよ。店主、レシピノート見ながら作ってるの見ました」
+      repeatable: false
+
+    - id: hear_lemon_pie
+      when:
+        kind: all
+        of:
+                  - { kind: flag_is, key: met_akari, value: true }
+                  - { kind: flag_is, key: met_genzo, value: true }
+                  - { kind: location_is, at: shopping_street }
+      effects:
+              - { op: set_flag, key: heard_lemon_pie, value: true }
+      narration: 「存在しないメニュー？ レモンパイ？」あかりが首をかしげる。「うち、そんなの出してないはずなのに」
+      repeatable: false
+      recall: lemon_pie
+
+    - id: notice_reiko
+      when:
+        kind: all
+        of:
+                  - { kind: location_is, at: cafe_counter }
+                  - { kind: flag_is, key: heard_lemon_pie, value: true }
+      effects:
+              - { op: set_flag, key: met_reiko, value: true }
+      narration: 午後3時、ドアベルが鳴る。洗練された女性が入ってきて、無言で一番奥の席に座った。源蔵は何も言わず厨房へ消える。
+      repeatable: false
+
+    - id: get_key_flag
+      when: { kind: has_item, item: 合鍵 }
+      effects:
+              - { op: set_flag, key: cafe_key_obtained, value: true }
+      narration: 厨房の引き出し用の小さな合鍵だ。テープで裏に「2階」と書かれている。
+      repeatable: false
+
+    - id: notice_ring
+      when:
+        kind: all
+        of:
+                  - { kind: flag_is, key: met_reiko, value: true }
+                  - { kind: stat_at_least, entity: player, key: 観察力, value: 6 }
+      effects:
+              - { op: set_flag, key: noticed_ring, value: true }
+      narration: 玲子の左手、薬指の細い銀の指輪。あかりが昨日、無意識にいじっていたものと全く同じデザインだ。手作りっぽい歪みまで同じ。
+      repeatable: false
+
+    - id: found_recipe_via_item
+      when: { kind: has_item, item: レシピノート }
+      effects:
+              - { op: set_flag, key: found_recipe_note, value: true }
+      narration: レシピノートの隅に、小さな文字。「玲子、酸っぱいのは苦手だったな。砂糖は多めに。いつか、あかりにも」
+      repeatable: false
+      recall: family_photo
+
+    - id: found_diary_via_item
+      when: { kind: has_item, item: 日記 }
+      effects:
+              - { op: set_flag, key: found_diary, value: true }
+      narration: 日記は金曜日の記述だけインクが濃い。「玲子来る。覚えているだろうか。レモンパイは許す味。あかりにはまだ言えない」
+      repeatable: false
+
+    - id: reminiscence_solved_trigger
+      when:
+        kind: all
+        of:
+                  - { kind: flag_is, key: heard_lemon_pie, value: true }
+                  - { kind: flag_is, key: found_recipe_note, value: true }
+      effects:
+              - { op: set_flag, key: reminiscence_solved, value: true }
+      narration: 表向きの謎は解けた。レモンパイは亡き妻のレシピ。金曜日は命日。常連の女性はその味を偲びに来ていた。美しい話だ。
+      repeatable: false
+
+    - id: gentle_lie_branch
+      when:
+        kind: all
+        of:
+                  - { kind: flag_is, key: truth_noticed, value: true }
+                  - { kind: stat_at_least, entity: player, key: 共感力, value: 7 }
+      effects:
+              - { op: set_flag, key: gentle_lie, value: true }
+      narration: あなたは気づいた。だが、今言うべきか迷いが生まれる。源蔵は忘れることを選び、玲子は待つことを選んだのかもしれない。
+      repeatable: false
+
+    - id: family_reunion_trigger
+      when:
+        kind: all
+        of:
+                  - { kind: flag_is, key: truth_noticed, value: true }
+                  - { kind: location_is, at: cafe_counter }
+                  - { kind: flag_is, key: met_akari, value: true }
+                  - { kind: flag_is, key: met_reiko, value: true }
+      effects:
+              - { op: set_presence, entity: akari, present: true }
+              - { op: set_flag, key: family_reunion, value: true }
+      narration: あなたは3人を同じテーブルに集めた。古い写真をそっと置く。「この指輪、3人同じですね」と。
+      repeatable: false
+
+challenges:
+  unlock_kitchen:
+    description: 厨房の奥の戸棚は鍵がかかっている。合鍵が使えそうだ。
+    requires: { kind: has_item, item: 合鍵 }
+    stat: 観察力
+    sides: 20
+    dc: 10
+    on_success:
+      flag: kitchen_open
+      narration: カチャリと音がして、厨房の鍵が開いた。レモンの香りが強くなる。
+    on_failure:
+      narration: 手が滑った。もう一度試そう。
+
+  read_recipe_note:
+    description: レシピノートの端書きは薄く消えかけている。よく観察すれば読めるかもしれない。
+    requires: { kind: has_item, item: レシピノート }
+    stat: 観察力
+    sides: 20
+    dc: 12
+    modifiers:
+            - { when: { kind: has_skill, skill: 観察眼 }, bonus: 3 }
+    on_success:
+      flag: found_recipe_note
+      narration: 端書きの名前は「玲子」と「あかり」。なぜ孫の名前が、古いレシピに？
+    on_failure:
+      narration: 文字がかすれて読めない。光の角度を変えれば……。
+
+  open_desk_drawer:
+    description: 源蔵の自室、箪笥の引き出しは固い。合鍵で開きそうだ。
+    requires: { kind: flag_is, key: cafe_key_obtained, value: true }
+    stat: 観察力
+    sides: 20
+    dc: 11
+    on_success:
+      flag: found_old_photo
+      narration: 引き出しから古い写真が出てきた。20年前の源蔵と、若い女性。後ろに立つ少女は、玲子にそっくりだ。
+    on_failure:
+      narration: 引き出しが引っかかる。力を入れすぎると壊れそうだ。
+
+  persuade_reiko:
+    description: 玲子は警戒している。優しく、しかし核心に触れる言葉が必要だ。
+    requires: { kind: flag_is, key: met_reiko, value: true }
+    stat: 共感力
+    sides: 20
+    dc: 14
+    modifiers:
+            - { when: { kind: flag_is, key: found_old_photo, value: true }, bonus: 2 }
+            - { when: { kind: has_skill, skill: 傾聴 }, bonus: 3 }
+    on_success:
+      flag: reiko_identity_hint
+      narration: 玲子がぽつりと言う。「私、昔ここでパイを失敗して……父に叱られたんです。酸っぱすぎるって」
+    on_failure:
+      narration: 玲子は微笑むだけだ。「ただ、懐かしい味なの」それ以上は語らない。
+
+  deduce_truth:
+    description: すべての手がかりを繋げる。指輪、写真、日記、レシピ。普通の結論の先にあるものは？
+    requires:
+      kind: all
+      of:
+                - { kind: flag_is, key: found_old_photo, value: true }
+                - { kind: flag_is, key: found_diary, value: true }
+                - { kind: flag_is, key: noticed_ring, value: true }
+    stat: 観察力
+    sides: 20
+    dc: 15
+    modifiers:
+            - { when: { kind: flag_is, key: reiko_identity_hint, value: true }, bonus: 4 }
+    on_success:
+      flag: truth_noticed
+      narration: ひらめいた。玲子は客ではない。20年前に勘当された娘で、あかりの実の母だ。レモンパイは「許す」の合図だった。源蔵は認知症なんかじゃない。許し方を、毎週練習していたんだ。
+    on_failure:
+      narration: 何かが足りない。もう一度、3人の話を思い出そう。
