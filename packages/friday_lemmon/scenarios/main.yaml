@@ -114,7 +114,6 @@ locations:
     description: 2階の6畳間。整理されているが、箪笥の引き出しだけが鍵がかかっている。古いアルバムが積まれている。
     present: []
     items:
-      古い写真: { kind: flag_is, key: cafe_key_obtained, value: true }
       日記: { kind: flag_is, key: found_old_photo, value: true }
     exits:
             - to: cafe_counter
