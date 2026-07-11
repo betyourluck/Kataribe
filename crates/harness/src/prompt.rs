@@ -30,7 +30,10 @@ pub const GM_SYSTEM: &str = "\
 その場に居るように語ったり、台詞・行動をさせたりしてはならない — 場所の説明文にキャラが \
 書かれていても、一覧に居なければその人物は**もうそこに居ない** (説明文は静的、一覧が現在)。\
 逆に一覧に居るキャラを不在として扱うな。キャラの登場・退場をあなたが起こすことはできない \
-(それは筋書きの出来事が起こす)。その場に居ない人物との会話・接触を narration に書くな。\n\
+(それは筋書きの出来事が起こす)。その場に居ない人物との会話・接触を narration に書くな。\
+**主人公が移動しても、NPC は勝手についてこない** — 移動を語るとき、NPC が同行する素振り \
+(一緒に歩き出す・後を追う・連れ立って向かう等) を書くな。同行は筋書きの出来事だけが起こし、\
+移動先に誰が居るかは移動後の『この場にいる』一覧だけが決める。\n\
 - **登場人物は『使える能力』に列挙された能力しか使えない。** そこに無い能力 (催眠・予知・隠された力 \
 など) を、その場で思い出したように発揮させてはならない。能力は物語の都合で勝手に開花しない \
 (開花するのは筋書きが定めた出来事のときだけで、それはエンジンが起こす)。未宣言の力で局面を \
@@ -738,6 +741,52 @@ pub fn recent_narration_note(prev: &str) -> String {
         部屋の様子・既に済んだ登場・挨拶・相手の初対面の驚きなど）を再び描写しないこと**。\
         同じ説明を二度せず、この続きとして「変化・反応・新しい展開」だけを描いてください。\n---\n{}\n---\n",
         prev.trim()
+    )
+}
+
+/// 移動直後の否定接地: 直前ターンで場所が変わったとき、前の場所に居て今ここに居ない NPC を
+/// **固有名で「ついてきていない」**と告げる (該当なしなら空文字)。
+///
+/// GM 自身の移動ターンの語り (「一緒に歩き出す」等の同行の素振り = 非検証 narration) が
+/// recent_narration/chronicle 経由で presence を汚染し、次の場所で居ないキャラが居ることに
+/// なる (failures #49、#47 の自己汚染版)。一覧 (一般規律) は具体的な語りに負けるので、
+/// **否定の事実 + 固有名** (#37 の接地強度) で移動直後の 1 ターンだけ上書きする。
+///
+/// 移動の検知は history 末尾 2 件の location 差 — `TurnLog.location` は**適用後**の現在地
+/// なので、移動ターン自身のログは既に新しい場所を指す (state と比べても差は出ない)。
+/// 旧セーブ (location タグ無し="") や履歴 1 件以下では黙って空 (誤発火しない)。
+pub fn moved_note(scenario: &Scenario, state: &GameState, history: &[crate::TurnLog]) -> String {
+    let n = history.len();
+    if n < 2 {
+        return String::new();
+    }
+    let (before, after) = (&history[n - 2], &history[n - 1]);
+    if before.location.is_empty() || after.location.is_empty() || before.location == after.location
+    {
+        return String::new();
+    }
+    // 実効 presence (現在の真実) に居ない、移動前の場所の NPC = 置いていかれた側。
+    let now = scenario.present_at(state);
+    let left: Vec<String> = before
+        .present
+        .iter()
+        .filter(|id| !now.contains(*id))
+        .map(|id| match scenario.characters.get(id).map(|c| c.name.trim()) {
+            Some(name) if !name.is_empty() => format!("{name} ({id})"),
+            _ => id.clone(),
+        })
+        .collect();
+    if left.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n# 直前の移動\n直前のターンで {} から {} へ移動した。**{} はついてきていない** — \
+        いまこの場に居るのは『この場にいる』一覧の通りで、それだけが真実。直前の語りや経緯に\
+        同行・見送りの素振りが書かれていても、その人物はこの場に居ない。\
+        居ない人物の台詞・行動・気配を書くな。",
+        before.location,
+        after.location,
+        left.join("、")
     )
 }
 

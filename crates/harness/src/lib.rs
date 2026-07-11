@@ -1335,6 +1335,72 @@ mod tests {
         );
     }
 
+    /// 【移動の置き去り接地 (#49)】GM 自身の移動語り (「一緒に歩き出す」等の同行の素振り) が
+    /// recent_narration/chronicle 経由で presence を汚染し、次の場所で居ないキャラが居ることになる
+    /// (#47 の自己汚染版、Sonnet 実プレイで発見)。一般規律 (一覧が真実) は具体的な語りに負けるので、
+    /// 移動直後のターンに「{固有名} はついてきていない」の否定事実を prompt に注入する
+    /// (#37 の接地強度: 静的規則 < 一般義務 < 現在形の事実+固有名)。GM_SYSTEM も素振り自体を縛る。
+    #[test]
+    fn moved_note_grounds_left_behind_npcs_with_names() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: cafe\n",
+            "characters:\n  akari: { name: あかり }\n  genzo: { name: 源蔵 }\n",
+            "locations:\n",
+            "  cafe: { description: 喫茶店, present: [akari, genzo], exits: [{ to: beach }] }\n",
+            "  beach: { description: 浜辺, present: [genzo], exits: [{ to: cafe }] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let mut s = sc.initial_state(1);
+        s.location = "beach".into(); // 直前ターンで cafe→beach へ移動済み
+
+        // T1=喫茶店での通常ターン、T2=移動ターン (location は適用後 = beach を指す)。
+        let history = vec![
+            TurnLog {
+                turn: 1,
+                player: "あかりと話す".into(),
+                summary: "あかりと源蔵に会った".into(),
+                location: "cafe".into(),
+                present: vec!["akari".into(), "genzo".into()],
+                ..Default::default()
+            },
+            TurnLog {
+                turn: 2,
+                player: "浜辺へ行く".into(),
+                summary: "浜辺へ移動した".into(),
+                location: "beach".into(),
+                present: vec!["genzo".into()],
+                ..Default::default()
+            },
+        ];
+        let note = prompt::moved_note(&sc, &s, &history);
+        assert!(
+            note.contains("あかり") && note.contains("ついてきていない"),
+            "置き去りの NPC を固有名で否定接地する: {note}"
+        );
+        assert!(!note.contains("源蔵"), "両方の場所に居る (同行した) NPC は名指ししない: {note}");
+
+        // 移動していなければ空 (毎ターンのノイズにしない)。
+        let stayed = vec![history[0].clone(), TurnLog { location: "cafe".into(), ..history[0].clone() }];
+        let mut at_cafe = sc.initial_state(1);
+        at_cafe.location = "cafe".into();
+        assert!(prompt::moved_note(&sc, &at_cafe, &stayed).is_empty(), "非移動ターンは沈黙");
+
+        // 履歴 1 件以下 (turn 1) / 旧セーブ (location タグ無し) は誤発火しない。
+        assert!(prompt::moved_note(&sc, &s, &history[1..]).is_empty(), "履歴 1 件では判定不能");
+        let untagged = vec![
+            TurnLog { turn: 1, ..Default::default() },
+            TurnLog { turn: 2, ..Default::default() },
+        ];
+        assert!(prompt::moved_note(&sc, &s, &untagged).is_empty(), "旧セーブのタグ無しは沈黙");
+
+        // GM_SYSTEM が汚染源 (移動語りの同行の素振り) 自体を縛る。
+        assert!(
+            prompt::GM_SYSTEM.contains("ついてこない"),
+            "移動しても NPC は勝手についてこない、を刷り込む"
+        );
+    }
+
     /// 【アイテム取得様式の prompt 接地】fixed (備え付け) は「取得不可・その場で使える」を、
     /// infinite (自販機等) は「何度でも取れる」を scenario_brief が先回りで GM に教える
     /// (却下される前に防ぐ prompt 層。engine 側の却下は gm_core の PoC が固定)。

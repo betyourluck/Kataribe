@@ -278,8 +278,12 @@ pub async fn run_turn<P: DeltaProposer>(
         // dev モード (KATARIBE_DEV_MODE) なら DEV_META を先頭に足す (env 直読み、signature 不変)。
         ChatMessage::system(prompt::gm_system_prompt(scenario, prompt::dev_mode_enabled())),
         ChatMessage::user(format!(
-            "{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
+            "{}{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
             prompt::state_brief(state, scenario),
+            // #49: 直前ターンで移動していたら、置いていかれた NPC を固有名で否定接地する
+            // (GM 自身の移動語りの「同行の素振り」が recent_narration/chronicle 経由で
+            // presence を汚染するのへの対抗。一般規律は具体の語りに負ける)。
+            prompt::moved_note(scenario, state, history),
             // spec 08-A: 現在の文脈 (行動文 + 現在地 + presence) をクエリに、直近は無条件・
             // それより古い経緯は関連するものだけ想起する二層注入。
             prompt::history_note(
