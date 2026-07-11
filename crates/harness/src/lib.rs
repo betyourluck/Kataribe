@@ -926,6 +926,27 @@ mod tests {
         assert!(sb.contains("cell"), "現在地が含まれる");
     }
 
+    /// 【開発者モード】KATARIBE_DEV_MODE 相当の dev フラグが立つと system の先頭に DEV_META が
+    /// 注入され、メタ質問の応答規律 (物語を進めず ops を空に) を刷り込む。通常時は一切漏れない。
+    #[test]
+    fn dev_mode_injects_meta_block_only_when_enabled() {
+        let sc = scenario();
+        let dev = prompt::gm_system_prompt(&sc, true);
+        let plain = prompt::gm_system_prompt(&sc, false);
+
+        assert!(dev.contains("開発者モード") && dev.contains("<meta:"), "dev で DEV_META が入る");
+        assert!(dev.starts_with("【開発者モード"), "DEV_META は先頭 (あらかじめ最初に描く)");
+        assert!(dev.contains("ops") && dev.contains("空"), "メタ質問は状態を変えない (ops 空)");
+        assert!(dev.contains("ゲームマスター"), "GM_SYSTEM 本体も残る");
+
+        assert!(!plain.contains("開発者モード"), "通常プレイに DEV_META は漏れない");
+        assert!(plain.contains("ゲームマスター"), "通常時も GM_SYSTEM は在る");
+
+        // truthy 判定 (env に触れない純粋部分)。
+        assert!(prompt::is_truthy("true") && prompt::is_truthy(" ON ") && prompt::is_truthy("1"));
+        assert!(!prompt::is_truthy("false") && !prompt::is_truthy("") && !prompt::is_truthy("0"));
+    }
+
     /// 【内部 stat の秘匿 (spec 04 追補)】hidden_stats に挙げた帳簿 stat (タイマー等) は
     /// state_brief の能力値行に出ない (主人公の可視ステータスを汚さない)。
     #[test]

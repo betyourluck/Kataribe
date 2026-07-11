@@ -275,11 +275,8 @@ pub async fn run_turn<P: DeltaProposer>(
     // history=過去ターンの経緯、recalled_lore=思い出された伏線、recent_checks=直前判定の結果、
     // recent_narration=直前の語り (継続文脈、繰り返し禁止) を語りに還流する。
     let mut messages = vec![
-        ChatMessage::system(format!(
-            "{}\n\n{}",
-            prompt::GM_SYSTEM,
-            prompt::scenario_brief(scenario)
-        )),
+        // dev モード (KATARIBE_DEV_MODE) なら DEV_META を先頭に足す (env 直読み、signature 不変)。
+        ChatMessage::system(prompt::gm_system_prompt(scenario, prompt::dev_mode_enabled())),
         ChatMessage::user(format!(
             "{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
             prompt::state_brief(state, scenario),

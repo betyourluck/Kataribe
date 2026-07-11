@@ -107,6 +107,53 @@ cast_vote op で並べること** (voter にその NPC の id、target に投票
 (例: 「アリスに花を渡し、幼い頃の約束を打ち明けた」)。\n\
 narration と ops を必ず構造化出力として提出すること (ツール emit_delta、またはサーバ指示の JSON 形式)。";
 
+/// 【開発者モード】シナリオ作者のテストプレイであることを LLM に伝え、`<meta: ...>` 形式の
+/// メタ質問への応答規律を刷り込む先頭ブロック。`KATARIBE_DEV_MODE` が truthy な時だけ system
+/// プロンプトの**先頭**に注入される (通常プレイには一切出ない)。
+///
+/// 狙い: プレイ中に「なぜ GM がそう振る舞ったか」を作者が直接問い、接地の破れ (居ないキャラの
+/// 台詞・誤った却下解釈・幻フラグ等) をその場で診断する。正本 (engine) は不変 — これは prompt 層の
+/// 可視化装置であり、メタ質問のターンは状態を変えない (ops 空) ことを LLM に要求する。
+pub const DEV_META: &str = "\
+【開発者モード / テストプレイ中】\n\
+現在のプレイは、このシナリオを作っている開発者によるテストプレイです。\
+プレイヤー（開発者）は通常の行動文に加えて、`<meta: ...>` という形式で\
+**メタ質問**（物語の外側からの問い）を挟むことがあります。\
+例: `<meta: なぜ今あかりが登場した？>` `<meta: この却下の理由は？>` `<meta: いま盤面で何が見えている？>`。\n\
+- **`<meta: ...>` を含む入力を受けたら**、物語を進めず、GM としての判断根拠を開発者に率直に説明すること。\
+なぜそう語ったか / 盤面（現在の状態・この場にいる一覧・使えるフラグ等）のどの情報に基づいたか / \
+なぜ ops をそう組んだか / 直前の却下理由をどう解釈したか を、取り繕わずに答えよ。\
+確信が持てない点は「確信が持てない」と正直に添えてよい。**間違えたと気づいたなら、なぜ間違えたかを説明せよ**。\n\
+- **メタ質問のターンは状態を変えない。** 説明は narration に書き、**ops は必ず空**にすること \
+(メタ質問はゲームを進行させない)。summary も空でよい。\n\
+- `<meta: ...>` を含まない通常の行動文には、これまで通り GM として物語で応答すること \
+(開発者モードでも物語の一貫性の規律は変わらない)。";
+
+/// GM の system プロンプトを組む (GM_SYSTEM + scenario_brief、dev モードなら先頭に [`DEV_META`])。
+///
+/// `dev` は [`dev_mode_enabled`] が env から決める。純粋関数なので env に触れずテストできる。
+pub fn gm_system_prompt(scenario: &Scenario, dev: bool) -> String {
+    let base = format!("{}\n\n{}", GM_SYSTEM, scenario_brief(scenario));
+    if dev {
+        // 「あらかじめ最初に描いておく」— DEV_META を先頭に置く。dev/非 dev で安定プレフィックスが
+        // 分かれるだけなので prompt caching は保たれる (セッション内で dev フラグは不変)。
+        format!("{DEV_META}\n\n{base}")
+    } else {
+        base
+    }
+}
+
+/// `KATARIBE_DEV_MODE` が truthy なら開発者モード。env 直読み (`LLM_DEBUG` と同流儀 —
+/// app/CLI/run_turn の signature を変えずに効かせる)。未設定・空・偽値は false。
+pub fn dev_mode_enabled() -> bool {
+    std::env::var("KATARIBE_DEV_MODE").as_deref().map(is_truthy).unwrap_or(false)
+}
+
+/// env フラグの truthy 判定 (純粋)。`1` / `true` / `yes` / `on` (大小無視・前後空白無視) を真とする。
+pub(crate) fn is_truthy(v: &str) -> bool {
+    matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
 /// 条件 (Gate) を平易な日本語にする。LLM に前提条件を理解させるため。
 fn gate_brief(gate: &Gate) -> String {
     match gate {
