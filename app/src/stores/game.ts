@@ -189,6 +189,8 @@ interface GameState {
   logToast: string;
   // 使用中の AI モデル名 (TitleBar バッジ + OS ウィンドウタイトル)。get_llm_config から取得。
   llmModel: string;
+  // 開発者モード (KATARIBE_DEV_MODE)。ON で GM に「テストプレイ・<meta:> 質問可」を刷り込む。
+  devMode: boolean;
 }
 
 export const useGameStore = defineStore("game", {
@@ -222,6 +224,7 @@ export const useGameStore = defineStore("game", {
       logDir: loadLogDir(),
       logToast: "",
       llmModel: "",
+      devMode: false,
     };
   },
 
@@ -268,6 +271,19 @@ export const useGameStore = defineStore("game", {
   },
 
   actions: {
+    // 開発者モードの現在値を backend (プロセス env) から取り直す (起動時)。
+    async refreshDevMode() {
+      try {
+        this.devMode = await invoke<boolean>("get_dev_mode");
+      } catch {
+        /* Tauri 外では既定 false のまま */
+      }
+    },
+    // 開発者モードを切り替える (env 即時反映 + app_data/.env 永続化)。次の play_turn から効く。
+    async setDevMode(enabled: boolean) {
+      await invoke("set_dev_mode", { enabled });
+      this.devMode = enabled;
+    },
     // 使用中の AI モデル名を backend から取り直す (起動時 + AIモデル設定の保存後)。
     // TitleBar のバッジと OS ウィンドウタイトル (タスクバー/Alt+Tab) の両方に反映する。
     async refreshLlmModel() {

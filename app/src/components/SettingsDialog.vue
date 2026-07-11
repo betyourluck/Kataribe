@@ -14,7 +14,7 @@ import { DEFAULT_MSG_COLOR, MESSAGE_FONTS, useGameStore } from "../stores/game";
 const emit = defineEmits<{ (e: "close"): void }>();
 const game = useGameStore();
 
-type Tab = "display" | "graphics" | "sound" | "log" | "language" | "model" | "help";
+type Tab = "display" | "graphics" | "sound" | "log" | "language" | "model" | "dev" | "help";
 const tab = ref<Tab>("display");
 const tabs: { id: Tab; label: string }[] = [
   { id: "display", label: "表示" },
@@ -23,8 +23,23 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "log", label: "ログ" },
   { id: "language", label: "言語設定" },
   { id: "model", label: "AIモデル" },
+  { id: "dev", label: "開発者" },
   { id: "help", label: "ヘルプ" },
 ];
+
+// --- 開発者モード (KATARIBE_DEV_MODE) ---
+const devStatus = ref("");
+async function toggleDevMode(enabled: boolean) {
+  devStatus.value = "保存中…";
+  try {
+    await game.setDevMode(enabled);
+    devStatus.value = enabled
+      ? "開発者モード ON（次のあなたの行動から有効）"
+      : "開発者モード OFF";
+  } catch (e) {
+    devStatus.value = `保存失敗: ${e}`;
+  }
+}
 
 // --- ログ (保存先フォルダ) ---
 const logDirInput = ref(game.logDir);
@@ -101,6 +116,7 @@ async function saveLlm() {
 onMounted(() => {
   loadLlm();
   loadDefaultLogDir();
+  game.refreshDevMode();
 });
 </script>
 
@@ -380,6 +396,36 @@ onMounted(() => {
             <p class="text-parchment/40 text-xs">
               .env を書き換えます（プロセスへ即時反映＋ファイル永続化）。次の「新しいゲーム」から新モデルで接続します。
             </p>
+          </section>
+
+          <!-- 開発者 -->
+          <section v-else-if="tab === 'dev'" class="space-y-3">
+            <h3 class="text-parchment font-bold">開発者モード</h3>
+            <label class="flex items-center gap-2 text-sm text-parchment/70">
+              <input
+                type="checkbox"
+                class="accent-ember"
+                :checked="game.devMode"
+                @change="toggleDevMode(($event.target as HTMLInputElement).checked)"
+              />
+              開発者モードを有効にする（シナリオ制作中のテストプレイ）
+            </label>
+            <span class="block text-xs text-ember/80 h-4">{{ devStatus }}</span>
+            <p class="text-parchment/50 text-xs leading-relaxed">
+              ON にすると、行動入力に
+              <code class="text-glow">&lt;meta: なぜ○○した？&gt;</code>
+              の形でメタ質問を挟めます。GM は物語を止めて、判断の根拠（盤面のどこを見たか・なぜそう振る舞ったか・なぜ間違えたか）を
+              開発者向けに率直に説明します（そのターンは状態を変えません）。
+            </p>
+            <div class="rounded border border-ash/60 bg-ash/20 p-3 text-xs text-parchment/60 leading-relaxed">
+              <p class="text-parchment/80 font-bold mb-1">使い方の例</p>
+              <p><code class="text-glow">&lt;meta: いま盤面で誰がこの場にいる？&gt;</code></p>
+              <p><code class="text-glow">&lt;meta: さっきの移動が却下されたのはなぜ？&gt;</code></p>
+              <p><code class="text-glow">&lt;meta: なぜ今このフラグを立てなかった？&gt;</code></p>
+              <p class="mt-1 text-parchment/40">
+                ※ メタ質問に答えられるかは LLM のモデルによります（物語から抜けられないモデルもあります）。
+              </p>
+            </div>
           </section>
 
           <!-- ヘルプ -->

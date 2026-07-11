@@ -709,6 +709,32 @@ fn set_llm_config(
     upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
 }
 
+/// env フラグの truthy 判定 (harness::prompt::is_truthy と同基準)。`1`/`true`/`yes`/`on`。
+fn env_is_truthy(v: &str) -> bool {
+    matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
+/// 開発者モード (KATARIBE_DEV_MODE) が有効か。設定「開発者」タブの初期値。
+/// 有効時は run_turn が GM に「テストプレイ中・`<meta: ...>` でメタ質問を受ける」旨を刷り込む。
+#[tauri::command]
+fn get_dev_mode() -> bool {
+    std::env::var("KATARIBE_DEV_MODE").ok().map(|v| env_is_truthy(&v)).unwrap_or(false)
+}
+
+/// 開発者モードを切り替える: プロセス env を即時差し替え (次の play_turn の run_turn が拾う) +
+/// `app_data_dir/.env` へ永続化 (set_llm_config と同経路・#46 と同流儀=GUI 保存値が唯一の真実)。
+#[tauri::command]
+fn set_dev_mode(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let v = if enabled { "true" } else { "false" };
+    std::env::set_var("KATARIBE_DEV_MODE", v);
+    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
+    }
+    upsert_env(&path, &[("KATARIBE_DEV_MODE".to_string(), v.to_string())])
+        .map_err(|e| format!(".env の保存に失敗: {e}"))
+}
+
 /// `.env` の指定キーを upsert する。既存行は値だけ差し替え、無ければ末尾に追記。
 /// コメント行・他キー・順序は保つ (鍵以外の設定を壊さない)。
 fn upsert_env(path: &Path, updates: &[(String, String)]) -> std::io::Result<()> {
@@ -1381,6 +1407,8 @@ pub fn run() {
             list_packages,
             get_llm_config,
             set_llm_config,
+            get_dev_mode,
+            set_dev_mode,
             fetch_site_packages,
             install_site_package,
             get_default_log_dir,
