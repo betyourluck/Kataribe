@@ -1,6 +1,7 @@
 # 10. あらすじ — 長期の物語記憶とユーザー可視化
 
-Status: **Draft rev2（2026-07-14 起草 → 同日ユーザー査読 7+4 点反映。Phase A 着手可）**
+Status: **Phase A〜D Done（2026-07-14 rev2 査読 → 同日実装・PoC green。Phase E = 実 LLM 長編での
+事実忠実度・コスト実測が残。GUI 実機の目視も残）**
 Scope: chronicle の古い経緯を LLM で「章あらすじ」へ圧縮し、(a) GM の prompt に
 「これまでのあらすじ」として恒久注入、(b) 右ペイン第 3 タブでユーザーにも見せる。
 gm_core は**無改修**（harness + llm_client + app/CLI + frontend）。

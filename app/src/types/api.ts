@@ -110,6 +110,26 @@ export interface GameView {
   resumed: ResumeView | null;
   /** scenario の lint (非 fatal な作者向け警告。死んだ flag_hint 等)。開幕ログに ⚠ で出す。 */
   warnings: string[];
+  /** あらすじ全量 (spec 10)。新規開始は空、再開はセーブから復元。以後 TurnView の差分で伸びる。 */
+  synopsis: SynopsisView[];
+  /** 「最近の出来事」= 未圧縮 chronicle の 1 行要約列 (再開時の初期表示)。 */
+  recent_log: LogLineView[];
+}
+
+/** あらすじ 1 章 (spec 10)。一度確定したら不変 (append-only)。リスト key は upto_turn。 */
+export interface SynopsisView {
+  /** この章が覆う最終ターン (識別子・リスト key)。 */
+  upto_turn: number;
+  /** 章題 (表示専用 — モジュール title or「ターン m〜n」)。 */
+  title: string;
+  /** 圧縮された物語 (400 字以内)。 */
+  text: string;
+}
+
+/** 「最近の出来事」の 1 行 (未圧縮 chronicle の要約)。 */
+export interface LogLineView {
+  turn: number;
+  summary: string;
 }
 
 /** セーブから再開したとき開幕ログへ出す情報。 */
@@ -169,6 +189,10 @@ export interface TurnView {
   transition: TransitionView | null;
   /** プロンプトキャッシュの健全性 (このセッションの累計)。 */
   cache: CacheStatView;
+  /** このターンで確定したあらすじ章の追記差分 (append-only ゆえ push するだけ)。 */
+  new_synopsis: SynopsisView[];
+  /** このターンで chronicle に積まれた行の差分 (「最近の出来事」用。却下ターンは空)。 */
+  new_log: LogLineView[];
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

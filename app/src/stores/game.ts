@@ -8,6 +8,8 @@ import type {
   CharacterView,
   RemoteList,
   InstalledPackage,
+  SynopsisView,
+  LogLineView,
 } from "../types/api";
 
 // アセット絶対パス → asset:// URL のメモ化 (convertFileSrc を毎回呼ばない。spec 01 小論点2)。
@@ -266,6 +268,12 @@ interface GameState {
   devMode: boolean;
   // キャッシュ連続 miss の警告を出したか (エッジトリガー latch。ヒット復帰で再武装)。
   cacheWarned: boolean;
+  // あらすじ (spec 10)。圧縮済み章の全量 (append-only — TurnView の差分を push して伸ばす)。
+  synopsis: SynopsisView[];
+  // 「最近の出来事」= 未圧縮 chronicle の 1 行要約列 (あらすじタブの下段)。
+  recentLog: LogLineView[];
+  // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
+  compacting: boolean;
 }
 
 export const useGameStore = defineStore("game", {
@@ -302,6 +310,9 @@ export const useGameStore = defineStore("game", {
       llmModel: "",
       devMode: false,
       cacheWarned: false,
+      synopsis: [],
+      recentLog: [],
+      compacting: false,
     };
   },
 
@@ -675,6 +686,10 @@ export const useGameStore = defineStore("game", {
       this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
       this.log = [{ kind: "opening", text: view.description }];
       this.cacheWarned = false; // 新しいセッション = 新しいクライアント (計測もゼロから)
+      // あらすじ (spec 10): 新規開始は空、再開はセーブから全量復元。
+      this.synopsis = view.synopsis ?? [];
+      this.recentLog = view.recent_log ?? [];
+      this.compacting = false;
       // scenario の lint (作者向け・非 fatal)。死んだ flag_hint 等を開幕で報せる。
       for (const w of view.warnings ?? []) {
         this.log.push({ kind: "system", text: `⚠ ${w}` });
@@ -793,6 +808,15 @@ export const useGameStore = defineStore("game", {
             text: `⚠ プロンプトキャッシュが ${cs.consecutive_misses} リクエスト連続でヒットしていません。入力コストが割高になっている可能性があります (キャッシュ非対応のプロバイダ/ローカルモデルでは正常です)。`,
           });
         }
+        // あらすじ (spec 10): 追記差分を push (append-only)。章が確定したら「最近の出来事」から
+        // その章に呑まれた行 (turn <= upto_turn) を取り除き、控えめな system 行で報せる
+        // (可視タブは要約ドリフトの観測装置 — 更新に気づけることが監査性)。
+        for (const line of turn.new_log ?? []) this.recentLog.push(line);
+        for (const s of turn.new_synopsis ?? []) {
+          this.synopsis.push(s);
+          this.recentLog = this.recentLog.filter((l) => l.turn > s.upto_turn);
+          this.log.push({ kind: "system", text: `📖 あらすじに「${s.title}」を追記した` });
+        }
         this.state = turn.state;
         this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
         // 背景は受理ターンのみ更新する。却下 = 物語が進んでいないので現在の背景 (=直前の CG) を保つ。
@@ -813,6 +837,7 @@ export const useGameStore = defineStore("game", {
         this.error = String(e);
       } finally {
         this.loading = false;
+        this.compacting = false; // 圧縮インジケータはターン完了で必ず解除
       }
     },
   },

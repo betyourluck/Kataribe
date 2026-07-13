@@ -179,6 +179,34 @@ function deleteProfile() {
   selectedProfileId.value = "";
   llmStatus.value = `「${p.name}」を削除しました`;
 }
+// --- あらすじ要約用モデル (spec 10) ---
+// 実体は env (SUMMARY_LLM_*、app_data/.env)。localStorage の選択 id は UI 表示用。
+// 空 = GM と同じ client を共用 (既定)。選択 = 即保存 (フォーム編集が無いので選択が決定)。
+const SUMMARY_PROFILE_KEY = "kataribe.summaryProfileId";
+const summaryProfileId = ref(localStorage.getItem(SUMMARY_PROFILE_KEY) || "");
+const summaryStatus = ref("");
+async function applySummaryProfile() {
+  try {
+    if (!summaryProfileId.value) {
+      await invoke("set_summary_llm_config", { baseUrl: "", model: "", apiKey: "" });
+      localStorage.removeItem(SUMMARY_PROFILE_KEY);
+      summaryStatus.value = "GM と同じモデルで要約します";
+      return;
+    }
+    const p = profiles.value.find((x) => x.id === summaryProfileId.value);
+    if (!p) return;
+    await invoke("set_summary_llm_config", {
+      baseUrl: p.baseUrl.trim(),
+      model: p.model.trim(),
+      apiKey: p.apiKey.trim(),
+    });
+    localStorage.setItem(SUMMARY_PROFILE_KEY, summaryProfileId.value);
+    summaryStatus.value = `「${p.name}」で要約します（次の「新しいゲーム」から有効）`;
+  } catch (e) {
+    summaryStatus.value = `保存失敗: ${e}`;
+  }
+}
+
 async function saveLlm() {
   llmStatus.value = "保存中…";
   try {
@@ -520,6 +548,26 @@ onMounted(async () => {
             <p class="text-parchment/40 text-xs">
               .env を書き換えます（プロセスへ即時反映＋ファイル永続化）。次の「新しいゲーム」から新モデルで接続します。
             </p>
+
+            <!-- あらすじ要約用モデル (spec 10)。長編の章あらすじ生成に使う。安いモデルで十分。 -->
+            <div class="pt-3 border-t border-ash/60 space-y-2">
+              <h4 class="text-parchment font-bold text-sm">あらすじ要約用モデル</h4>
+              <select
+                v-model="summaryProfileId"
+                @change="applySummaryProfile"
+                class="block w-full rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+              >
+                <option value="">GM と同じ（既定）</option>
+                <option v-for="p in profiles" :key="p.id" :value="p.id">
+                  {{ p.name }}（{{ p.model || "モデル未設定" }}）
+                </option>
+              </select>
+              <p class="text-parchment/40 text-xs">
+                長編プレイで自動生成される「あらすじ」（右ペイン第 3 タブ）の要約に使うモデル。
+                安いモデルを選ぶとコストを抑えられます。選択は即保存（次の「新しいゲーム」から有効）。
+              </p>
+              <span v-if="summaryStatus" class="text-xs text-parchment/60">{{ summaryStatus }}</span>
+            </div>
           </section>
 
           <!-- 開発者 -->

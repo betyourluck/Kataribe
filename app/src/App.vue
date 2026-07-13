@@ -11,6 +11,7 @@
  * パッケージパスの追加/削除は PackageDialog、その他設定は SettingsDialog に分離。
  */
 import { computed, ref, watch, onMounted } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import { useGameStore } from "./stores/game";
 import TitleBar from "./components/TitleBar.vue";
 import PackageDialog from "./components/PackageDialog.vue";
@@ -91,6 +92,11 @@ onMounted(() => {
   document.documentElement.style.fontSize = `${px}px`;
   window.addEventListener("pointerdown", ensureBgmPlaying);
   window.addEventListener("keydown", ensureBgmPlaying);
+  // あらすじ圧縮の開始合図 (spec 10)。play_turn は同期で回すので、この間ローディング文言を
+  // 「あらすじをまとめています……」へ切り替える (解除は playTurn の finally)。
+  listen("synopsis-compacting", () => {
+    game.compacting = true;
+  });
 });
 </script>
 

@@ -5,9 +5,12 @@ import Icon from "./Icon.vue";
 
 const game = useGameStore();
 
-// 右ペインは縦タブ 2 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ)。
+// 右ペインは縦タブ 3 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
+// ・ synopsis=あらすじ: 圧縮済み章 + 最近の出来事、spec 10)。
 // 1 枚に全部積むと全体スクロールになるのでタブで切り替える。
-const activeTab = ref<"progress" | "world">("progress");
+const TABS = ["progress", "world", "synopsis"] as const;
+type Tab = (typeof TABS)[number];
+const activeTab = ref<Tab>("progress");
 
 // 顔アイコンをクリックして詳細を見るキャラ (presence → クリックでプロフィール)。
 const selectedId = ref<string | null>(null);
@@ -46,13 +49,15 @@ function onKeydown(e: KeyboardEvent) {
   if (e.isComposing) return;
   if (!e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "Tab") {
-    // Ctrl+Tab: 進行⇄状態のトグル (2 枚なので往復が最速。Shift 併用も同じトグル)。
+    // Ctrl+Tab: 3 枚の巡回 (Shift 併用で逆順)。
     e.preventDefault();
-    activeTab.value = activeTab.value === "progress" ? "world" : "progress";
-  } else if (e.key === "1" || e.key === "2") {
-    // Ctrl+1/2: 直接選択 (タブが増えた時の拡張枠と同じ慣習)。
+    const i = TABS.indexOf(activeTab.value);
+    const step = e.shiftKey ? TABS.length - 1 : 1;
+    activeTab.value = TABS[(i + step) % TABS.length];
+  } else if (e.key === "1" || e.key === "2" || e.key === "3") {
+    // Ctrl+1/2/3: 直接選択 (2026-07-08 に予約した拡張枠を 3 で使用)。
     e.preventDefault();
-    activeTab.value = e.key === "1" ? "progress" : "world";
+    activeTab.value = TABS[Number(e.key) - 1];
   }
 }
 onMounted(() => window.addEventListener("keydown", onKeydown));
@@ -89,6 +94,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       >
         <Icon name="location" :size="12" />
         <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">状態</span>
+      </button>
+      <button
+        class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
+        :class="
+          activeTab === 'synopsis'
+            ? 'border-ember text-glow'
+            : 'border-transparent text-parchment opacity-40 hover:opacity-90'
+        "
+        title="あらすじ (これまでの章・最近の出来事) — Ctrl+3 / Ctrl+Tab で切替"
+        @click="activeTab = 'synopsis'"
+      >
+        <Icon name="book" :size="12" />
+        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">あらすじ</span>
       </button>
     </nav>
 
@@ -166,7 +184,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         </template>
 
         <!-- 2枚め「状態」: 現在地 / 所持品 / フラグ -->
-        <template v-else>
+        <template v-else-if="activeTab === 'world'">
           <div class="mb-3">
             <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="location" />現在地</div>
             <!-- 表示は authored title を優先、無ければ id (機械用セレクタ) へフォールバック。hover で id。 -->
@@ -198,6 +216,45 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             </div>
             <div v-else class="text-parchment/30">なし</div>
           </div>
+        </template>
+
+        <!-- 3枚め「あらすじ」(spec 10): 圧縮済み章 (append-only) + 最近の出来事 (未圧縮 chronicle)。
+             GM が prompt で見ている長期記憶と同じもの = 要約ドリフトの観測装置でもある。 -->
+        <template v-else>
+          <!-- 圧縮済みの章 (古い順)。key は upto_turn (title は表示専用で衝突し得る)。 -->
+          <section v-if="game.synopsis.length" class="space-y-3 mb-4">
+            <article
+              v-for="s in game.synopsis"
+              :key="s.upto_turn"
+              class="rounded border border-ash/60 bg-ash/15 px-3 py-2"
+            >
+              <h4 class="flex items-baseline gap-2 mb-1">
+                <span class="text-glow text-xs font-bold truncate">{{ s.title }}</span>
+                <span class="ml-auto shrink-0 text-[10px] text-parchment/35">〜T{{ s.upto_turn }}</span>
+              </h4>
+              <p class="text-[12px] leading-relaxed text-parchment/75 whitespace-pre-line">{{ s.text }}</p>
+            </article>
+          </section>
+
+          <!-- 最近の出来事 = 未圧縮 chronicle のターン別 1 行 (章が確定すると呑まれて消える)。 -->
+          <section>
+            <div class="text-parchment/40 mb-2 flex items-center gap-1.5">
+              <Icon name="turn" />最近の出来事
+            </div>
+            <ul v-if="game.recentLog.length" class="space-y-1">
+              <li
+                v-for="l in game.recentLog"
+                :key="l.turn"
+                class="text-[12px] leading-snug text-parchment/70"
+              >
+                <span class="text-parchment/35 tabular-nums mr-1.5">T{{ l.turn }}</span>{{ l.summary }}
+              </li>
+            </ul>
+            <p v-else-if="!game.synopsis.length" class="text-parchment/30 text-xs">
+              まだ物語は始まったばかり (ターンが進むとここに要約が積まれます)
+            </p>
+            <p v-else class="text-parchment/30 text-xs">なし (直近の章に含まれています)</p>
+          </section>
         </template>
       </template>
 
