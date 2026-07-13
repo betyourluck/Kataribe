@@ -13,7 +13,7 @@ mod site;
 
 use std::path::{Component, Path, PathBuf};
 
-use gm_core::{is_goal, CheckOutcome, GameState, ImageMode, Lang, Scenario, PLAYER};
+use gm_core::{is_goal, CheckOutcome, GameState, ImageMode, Lang, Scenario, ScenarioError, PLAYER};
 use harness::{
     advance_campaign_injected, carryover_narration, chronicle_entry, is_campaign_entry,
     load_campaign_package, load_lore, load_module_injected, load_package, load_session,
@@ -172,6 +172,24 @@ struct GameView {
     present_characters: Vec<CharacterView>,
     /// オートセーブから再開したときの再開情報 (spec 07 Phase C)。新規開始なら None。
     resumed: Option<ResumeView>,
+    /// scenario の lint (非 fatal な作者向け警告。死んだ flag_hint 等)。開幕ログに ⚠ で出す。
+    warnings: Vec<String>,
+}
+
+/// scenario の lint を作者向けの表示文にする (非 fatal — load は拒否せず開幕に ⚠ で報せる。
+/// fatal にすると配布済み content が受領側で死ぬので警告に留める)。
+fn scenario_warnings(scenario: &Scenario) -> Vec<String> {
+    scenario
+        .lints()
+        .into_iter()
+        .map(|l| match l {
+            ScenarioError::FlagHintOnAuthoredOnly { flag } => format!(
+                "フラグ「{flag}」の flag_hint は GM に届きません（トリガー/challenge が立てる専権フラグのため）。\
+                 GM に立てさせるならトリガー/challenge 側の set_flag を外し、筋書きで立てるならヒントを外してください"
+            ),
+            other => format!("{other:?}"),
+        })
+        .collect()
 }
 
 /// セーブから再開したときに frontend が開幕ログへ出す情報。
@@ -650,6 +668,27 @@ async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Package
         .collect()
 }
 
+/// パッケージのオートセーブを削除する (一覧から外す時の孤児セーブ掃除)。
+/// セーブは `app_data/saves/<パスのハッシュ>.yaml` のファイルなので、localStorage の一覧から
+/// パスを消すだけでは残り続けて溜まる。frontend が削除確認の上で呼ぶ。
+/// 削除したら true、元々無ければ false (どちらも成功)。
+#[tauri::command]
+fn delete_autosave(app: tauri::AppHandle, package_path: String) -> Result<bool, String> {
+    let root = repo_root();
+    let dir = if Path::new(&package_path).is_absolute() {
+        PathBuf::from(&package_path)
+    } else {
+        root.join(&package_path)
+    };
+    let save_path = autosave_path(&app, &normalize_path(&dir))
+        .ok_or("アプリデータフォルダを解決できない")?;
+    if save_path.exists() {
+        std::fs::remove_file(&save_path).map_err(|e| format!("セーブの削除に失敗: {e}"))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// LLM 接続設定の view (設定ダイアログの AIモデルタブ用)。ローカル app ゆえ api_key も返す
 /// (ユーザー自身の鍵を編集できるようにする)。
 #[derive(Serialize)]
@@ -960,7 +999,7 @@ fn open_package(
     app: &tauri::AppHandle,
     rel: &str,
     module: Option<&ModuleId>,
-) -> Result<(PathBuf, Scenario, Option<Campaign>, ModuleId, PackageManifest), String> {
+) -> Result<(PathBuf, Scenario, Option<Campaign>, ModuleId, PackageManifest, Vec<String>), String> {
     let root = repo_root();
     let pkg_dir = if Path::new(rel).is_absolute() {
         PathBuf::from(rel)
@@ -989,10 +1028,11 @@ fn open_package(
             load_module_injected(&loaded.campaign, &pkg_dir, &loaded.manifest, &target)
                 .map_err(|e| e.to_string())?
         };
-        Ok((pkg_dir, scenario, Some(loaded.campaign), target, loaded.manifest))
+        // campaign モジュールの未知フィールド lint は後続 (loader が生テキストを返さない)。
+        Ok((pkg_dir, scenario, Some(loaded.campaign), target, loaded.manifest, Vec::new()))
     } else {
         let loaded = load_package(&pkg_dir).map_err(|e| e.to_string())?;
-        Ok((pkg_dir, loaded.scenario, None, ModuleId::new(), loaded.manifest))
+        Ok((pkg_dir, loaded.scenario, None, ModuleId::new(), loaded.manifest, loaded.warnings))
     }
 }
 
@@ -1004,7 +1044,8 @@ async fn new_game(
     session: tauri::State<'_, SharedSession>,
 ) -> Result<GameView, String> {
     let rel = package_path.unwrap_or_else(|| DEFAULT_PACKAGE.to_string());
-    let (pkg_dir, scenario, campaign, current_module, manifest) = open_package(&app, &rel, None)?;
+    let (pkg_dir, scenario, campaign, current_module, manifest, lint_warnings) =
+        open_package(&app, &rel, None)?;
     // 伏線 (パッケージ内 memoria/) をロード。無ければ空。
     let lore = load_lore(&pkg_dir.join("memoria")).map_err(|e| e.to_string())?;
 
@@ -1032,6 +1073,11 @@ async fn new_game(
         bgm: bgm_for(&scenario, &state, &pkg_dir),
         present_characters: present_characters(&scenario, &state, &pkg_dir),
         resumed: None,
+        warnings: {
+            let mut w = lint_warnings;
+            w.extend(scenario_warnings(&scenario));
+            w
+        },
     };
 
     let save_path = autosave_path(&app, &pkg_dir);
@@ -1082,7 +1128,7 @@ async fn resume_game(
         autosave_path(&app, &normalize_path(&dir0)).ok_or("アプリデータフォルダを解決できない")?;
     let save = load_session(&save_path).map_err(|e| e.to_string())?;
 
-    let (pkg_dir, scenario, campaign, current_module, manifest) =
+    let (pkg_dir, scenario, campaign, current_module, manifest, lint_warnings) =
         open_package(&app, &package_path, save.module.as_ref())?;
     let lore = load_lore(&pkg_dir.join("memoria")).map_err(|e| e.to_string())?;
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
@@ -1119,6 +1165,11 @@ async fn resume_game(
             last_narration: normalize(&save.last_narration),
             warnings,
         }),
+        warnings: {
+            let mut w = lint_warnings;
+            w.extend(scenario_warnings(&scenario));
+            w
+        },
     };
 
     *session.lock().await = Some(GameSession {
@@ -1418,7 +1469,8 @@ pub fn run() {
             install_site_package,
             get_default_log_dir,
             save_log_file,
-            open_log_folder
+            open_log_folder,
+            delete_autosave
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -9,7 +9,17 @@
  */
 import { computed, ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { DEFAULT_MSG_COLOR, MESSAGE_FONTS, useGameStore } from "../stores/game";
+import Icon from "./Icon.vue";
+import {
+  DEFAULT_MSG_COLOR,
+  MESSAGE_FONTS,
+  useGameStore,
+  loadAiProfiles,
+  saveAiProfiles,
+  newProfileId,
+  profileMatchesConfig,
+  type AiModelProfile,
+} from "../stores/game";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const game = useGameStore();
@@ -97,6 +107,78 @@ async function loadLlm() {
     llmStatus.value = `読込失敗: ${e}`;
   }
 }
+
+// --- AI モデルプロファイル (複数登録・切替。localStorage) ---
+// 流れ: コンボで選ぶ → 下のフォームに即反映 (表示のみ) → 既存の「保存」で .env へ書込。
+// 決定ボタンは廃止 (選択→保存の二度手間を無くし、選択=表示・保存=.env 反映に分離)。
+const profiles = ref<AiModelProfile[]>([]);
+const selectedProfileId = ref("");
+// 新規追加フォーム (➕ で開く)。設定は下のフォーム値を使うので、ここでは表示名だけ入力する。
+const showAddForm = ref(false);
+const draftName = ref("");
+
+// 現在の .env と一致するプロファイルを選択状態にする (初期表示・保存後の同期)。
+function syncSelectionToConfig() {
+  const hit = profiles.value.find((p) => profileMatchesConfig(p, llm.value));
+  selectedProfileId.value = hit ? hit.id : "";
+}
+
+// コンボで選んだら、下のフォームへ即反映する (表示のみ・.env には書かない)。
+function onSelectProfile() {
+  const p = profiles.value.find((x) => x.id === selectedProfileId.value);
+  if (!p) return;
+  llm.value = {
+    base_url: p.baseUrl,
+    model: p.model,
+    api_key: p.apiKey,
+    use_tools: p.useTools,
+  };
+  llmStatus.value = `「${p.name}」を表示中（「保存」で .env に反映）`;
+}
+
+// [➕] 表示名の入力欄を開く。設定は下のフォームの現在値を登録する。
+function openAddForm() {
+  draftName.value = "";
+  showAddForm.value = true;
+}
+function cancelAddForm() {
+  showAddForm.value = false;
+}
+// 下のフォームの現在値 + 入力した表示名で新規プロファイルを登録し、選択状態にする。
+function saveDraft() {
+  const name = draftName.value.trim();
+  if (!name) {
+    llmStatus.value = "表示名を入力してください";
+    return;
+  }
+  const profile: AiModelProfile = {
+    id: newProfileId(),
+    name,
+    model: llm.value.model.trim(),
+    baseUrl: llm.value.base_url.trim(),
+    apiKey: llm.value.api_key.trim(),
+    useTools: llm.value.use_tools,
+  };
+  profiles.value = [...profiles.value, profile];
+  saveAiProfiles(profiles.value);
+  selectedProfileId.value = profile.id;
+  showAddForm.value = false;
+  llmStatus.value = `「${name}」を登録しました（「保存」で .env に反映）`;
+}
+
+// [🗑] 選択中プロファイルを削除する (確認あり)。.env には触れない。
+function deleteProfile() {
+  const p = profiles.value.find((x) => x.id === selectedProfileId.value);
+  if (!p) {
+    llmStatus.value = "削除するモデルを選択してください";
+    return;
+  }
+  if (!window.confirm(`登録モデル「${p.name}」を削除しますか？`)) return;
+  profiles.value = profiles.value.filter((x) => x.id !== p.id);
+  saveAiProfiles(profiles.value);
+  selectedProfileId.value = "";
+  llmStatus.value = `「${p.name}」を削除しました`;
+}
 async function saveLlm() {
   llmStatus.value = "保存中…";
   try {
@@ -107,14 +189,17 @@ async function saveLlm() {
       useTools: llm.value.use_tools,
     });
     llmStatus.value = "保存しました（.env に永続化／次の『新しいゲーム』から有効）";
+    syncSelectionToConfig(); // 直接編集が登録済みと一致すればコンボの選択に反映
     game.refreshLlmModel(); // TitleBar のバッジ + ウィンドウタイトルへ即時反映
   } catch (e) {
     llmStatus.value = `保存失敗: ${e}`;
   }
 }
 
-onMounted(() => {
-  loadLlm();
+onMounted(async () => {
+  profiles.value = loadAiProfiles();
+  await loadLlm(); // .env を読んでから一致プロファイルを選択状態にする
+  syncSelectionToConfig();
   loadDefaultLogDir();
   game.refreshDevMode();
 });
@@ -364,6 +449,45 @@ onMounted(() => {
           <!-- AIモデル (.env 連動) -->
           <section v-else-if="tab === 'model'" class="space-y-3">
             <h3 class="text-parchment font-bold">AIモデル</h3>
+
+            <!-- 登録モデル (localStorage)。選ぶと下のフォームに即反映 → 「保存」で .env へ書込。 -->
+            <div class="space-y-2">
+              <div class="flex items-center gap-1">
+                <select v-model="selectedProfileId" @change="onSelectProfile"
+                  class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none">
+                  <option value="" disabled>― 登録モデルを選ぶ ―</option>
+                  <option v-for="p in profiles" :key="p.id" :value="p.id">
+                    {{ p.name }}（{{ p.model || "モデル未設定" }}）
+                  </option>
+                </select>
+                <button
+                  class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment"
+                  title="現在の設定を登録モデルに追加" aria-label="登録モデルを追加" @click="openAddForm">
+                  <Icon name="plus" :size="16" />
+                </button>
+                <button
+                  class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
+                  :disabled="!selectedProfileId" title="選択中の登録モデルを削除" aria-label="登録モデルを削除"
+                  @click="deleteProfile">
+                  <Icon name="trash" :size="16" />
+                </button>
+              </div>
+
+              <!-- 追加: 表示名だけ入力 (設定は下のフォームの現在値を使う)。 -->
+              <div v-if="showAddForm" class="flex items-center gap-1">
+                <input v-model="draftName" placeholder="表示名（本番用 / お試し gemini 等）"
+                  class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+                  @keydown.enter="saveDraft" />
+                <button class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold"
+                  @click="saveDraft">登録</button>
+                <button class="rounded px-2 py-1 text-sm text-parchment/60 hover:text-parchment"
+                  @click="cancelAddForm">キャンセル</button>
+              </div>
+            </div>
+
+            <p class="text-parchment/50 text-xs">
+              下の欄が現在の接続先です。登録モデルを選ぶとここに反映されます。「保存」で .env に書き込みます。
+            </p>
             <label class="block text-sm text-parchment/70">
               モデル名 (LLM_MODEL)
               <input v-model="llm.model" placeholder="claude-opus-4-8 / gpt-4o-mini 等"

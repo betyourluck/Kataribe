@@ -94,6 +94,65 @@ function loadLogDir(): string {
 // (houkago は harness fixture へ移設、他サンプルは 2026-07-10 に配布から削除)。
 const BUILTIN_PACKAGES = ["packages/escape"];
 
+// --- AI モデルプロファイル (複数の LLM 設定を登録・切替。localStorage 永続) ---
+// 動機: ヘビーユーザーは複数モデルを試す。従来は .env を手で書き換えていたのを、登録済み
+// プロファイルから選んで「決定」で .env へ反映する形にする。**.env の書き込みは決定時のみ**
+// (選択変更だけでは書かない)。API キーは平文で localStorage に入る (BYO-key・ローカル app)。
+const AI_PROFILES_KEY = "kataribe.aiModelProfiles";
+export interface AiModelProfile {
+  id: string; // アプリ生成の主キー (name 重複を許すため)
+  name: string; // 表示名 (重複可)
+  model: string; // LLM_MODEL
+  baseUrl: string; // LLM_BASE_URL
+  apiKey: string; // LLM_API_KEY (平文・表示時マスク)
+  useTools: boolean; // LLM_USE_TOOLS (ツール呼び出し)
+}
+// localStorage から読む (壊れていれば空)。全項目を型で検査し、欠けは既定で補う (前方互換)。
+export function loadAiProfiles(): AiModelProfile[] {
+  try {
+    const raw = localStorage.getItem(AI_PROFILES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((p) => p && typeof p.id === "string" && typeof p.name === "string")
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        model: typeof p.model === "string" ? p.model : "",
+        baseUrl: typeof p.baseUrl === "string" ? p.baseUrl : "",
+        apiKey: typeof p.apiKey === "string" ? p.apiKey : "",
+        useTools: p.useTools !== false, // 既定 true
+      }));
+  } catch {
+    return [];
+  }
+}
+export function saveAiProfiles(list: AiModelProfile[]) {
+  localStorage.setItem(AI_PROFILES_KEY, JSON.stringify(list));
+}
+// アプリ側の主キー生成 (name 重複を許すため)。WebView2 は crypto.randomUUID 対応。
+export function newProfileId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `p_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
+  }
+}
+// プロファイルが現在の .env 設定と一致するか (初期表示で選択状態を復元する判定)。
+// name/id は .env に無いので接続を決める 4 項目 (trim 済) で突き合わせる。
+export function profileMatchesConfig(
+  p: AiModelProfile,
+  cfg: { base_url: string; model: string; api_key: string; use_tools: boolean },
+): boolean {
+  return (
+    p.baseUrl.trim() === cfg.base_url.trim() &&
+    p.model.trim() === cfg.model.trim() &&
+    p.apiKey.trim() === cfg.api_key.trim() &&
+    p.useTools === cfg.use_tools
+  );
+}
+
 // --- 配布サイト「Kataribe 書庫」(spec 05 Phase C) ---
 // サイト URL は設定項目 (既定 = 公式)。自前サーバも指せる = Outcasts 固有ロックインを避ける。
 const SITE_URL_KEY = "kataribe.siteUrl";
@@ -385,7 +444,26 @@ export const useGameStore = defineStore("game", {
     },
 
     // パスを一覧から外す。
-    removePackage(path: string) {
+    async removePackage(path: string) {
+      // オートセーブは app_data/saves のファイルなので、一覧からパスを消すだけでは孤児として
+      // 残り続ける。セーブがあるパッケージなら削除するか確認する (キャンセル = セーブは残す
+      // = パスを再追加すれば「続きから」が復活する)。
+      const entry = this.packages.find((p) => p.path === path);
+      if (entry?.autosave_turn != null) {
+        const title = entry.title || path;
+        if (
+          window.confirm(
+            `「${title}」のセーブデータ (turn ${entry.autosave_turn}) も削除しますか？\n` +
+              `キャンセル: セーブは残ります (パスを再追加すれば続きから遊べます)`,
+          )
+        ) {
+          try {
+            await invoke("delete_autosave", { packagePath: path });
+          } catch (e) {
+            this.logToast = `セーブの削除に失敗: ${e}`;
+          }
+        }
+      }
       this.packagePaths = this.packagePaths.filter((p) => p !== path);
       savePaths(this.packagePaths);
       if (this.packagePath === path) this.packagePath = this.packagePaths[0] ?? "";
@@ -561,6 +639,10 @@ export const useGameStore = defineStore("game", {
       this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
       this.log = [{ kind: "opening", text: view.description }];
       this.cacheWarned = false; // 新しいセッション = 新しいクライアント (計測もゼロから)
+      // scenario の lint (作者向け・非 fatal)。死んだ flag_hint 等を開幕で報せる。
+      for (const w of view.warnings ?? []) {
+        this.log.push({ kind: "system", text: `⚠ ${w}` });
+      }
       if (view.resumed) {
         this.log.push({ kind: "system", text: `── 続きから (turn ${view.resumed.turn}) ──` });
         if (view.resumed.last_narration) {

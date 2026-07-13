@@ -108,6 +108,8 @@ export interface GameView {
   present_characters: CharacterView[];
   /** オートセーブから再開したときの再開情報 (spec 07 Phase C)。新規開始なら null。 */
   resumed: ResumeView | null;
+  /** scenario の lint (非 fatal な作者向け警告。死んだ flag_hint 等)。開幕ログに ⚠ で出す。 */
+  warnings: string[];
 }
 
 /** セーブから再開したとき開幕ログへ出す情報。 */
