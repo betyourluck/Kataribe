@@ -35,4 +35,9 @@ pub enum HarnessError {
     /// セーブの読み込み・パース・版不一致 (spec 07)。
     #[error("セーブの読み込み失敗 ({path}): {detail}")]
     SessionLoad { path: String, detail: String },
+
+    /// あらすじ要約の失敗 (spec 10 — タイムアウト・空応答・API エラー)。
+    /// 非致命: 呼び出し側は abandon してプレイを続ける (あふれ=次ターン再試行 / 遷移=範囲凍結)。
+    #[error("あらすじ要約の失敗: {0}")]
+    Summarize(String),
 }

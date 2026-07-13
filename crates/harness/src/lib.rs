@@ -34,9 +34,9 @@ pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, Memo
 pub use proposer::DeltaProposer;
 pub use save::{load_session, save_session, SavedContent, SessionSave, SAVE_VERSION};
 pub use synopsis::{
-    mechanical_join, Summarizer, Synopsis, SynopsisEntry, SynopsisJob, SynopsisRequest,
-    SynopsisTrigger, SYNOPSIS_KEEP_RECENT, SYNOPSIS_MIN_LLM_TURNS, SYNOPSIS_OVERFLOW_THRESHOLD,
-    SYNOPSIS_TEXT_MAX,
+    mechanical_join, summarize_messages, Summarizer, Synopsis, SynopsisEntry, SynopsisJob,
+    SynopsisRequest, SynopsisTrigger, SYNOPSIS_KEEP_RECENT, SYNOPSIS_MIN_LLM_TURNS,
+    SYNOPSIS_OVERFLOW_THRESHOLD, SYNOPSIS_TEXT_MAX, SYNOPSIS_TIMEOUT_SECS,
 };
 pub use turn::{carryover_narration, chronicle_entry, run_turn, ChronicleTags, TurnLog, TurnOutcome};
 

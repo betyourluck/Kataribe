@@ -22,6 +22,7 @@ mod wire;
 pub use client::{CacheStat, LlmClient};
 pub use config::{LlmConfig, Provider};
 pub use error::LlmError;
+pub use parse::strip_reasoning_blocks;
 pub use wire::{ChatMessage, Role};
 
 use gm_core::StateDelta;

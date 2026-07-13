@@ -247,6 +247,43 @@ pub trait Summarizer {
     async fn summarize(&self, request: &SynopsisRequest) -> Result<String, HarnessError>;
 }
 
+/// 要約 1 回のタイムアウト (秒)。同期実行 (受理ターン直後) がプレイを長く止めないための上限。
+pub const SYNOPSIS_TIMEOUT_SECS: u64 = 15;
+
+/// リクエストを LLM messages に組む (純粋・テスト可)。tools/schema は使わない —
+/// プレーン生成なので no-tools サーバ (さくら/ローカル互換) でもそのまま動く。
+pub fn summarize_messages(request: &SynopsisRequest) -> Vec<llm_client::ChatMessage> {
+    vec![
+        llm_client::ChatMessage::system(request.system_prompt()),
+        llm_client::ChatMessage::user(request.user_prompt()),
+    ]
+}
+
+/// 本番実装: プレーン生成 ([`llm_client::LlmClient::generate`]) で章あらすじを書かせる。
+///
+/// - [`SYNOPSIS_TIMEOUT_SECS`] でタイムアウト (受理ターン直後の同期実行を長く止めない)。
+/// - 推論モデルの CoT (`<think>` 等) を除去 (#30 と同じ後処理 — no-tools の弱モデル対応)。
+/// - 空応答は Err (呼び出し側が abandon → 機械 join / リトライ経路へ)。
+///
+/// ネットワーク経路のため単体テスト対象外 (llm_client と同じ線引き)。
+/// 文面 (接地規律) は [`SynopsisRequest`] 側にあり Phase A でテスト済み。
+impl Summarizer for llm_client::LlmClient {
+    async fn summarize(&self, request: &SynopsisRequest) -> Result<String, HarnessError> {
+        let fut = self.generate(summarize_messages(request));
+        let text = tokio::time::timeout(std::time::Duration::from_secs(SYNOPSIS_TIMEOUT_SECS), fut)
+            .await
+            .map_err(|_| {
+                HarnessError::Summarize(format!("タイムアウト ({SYNOPSIS_TIMEOUT_SECS} 秒)"))
+            })?
+            .map_err(|e| HarnessError::Summarize(e.to_string()))?;
+        let text = llm_client::strip_reasoning_blocks(&text).trim().to_string();
+        if text.is_empty() {
+            return Err(HarnessError::Summarize("空の応答".into()));
+        }
+        Ok(text)
+    }
+}
+
 /// chronicle 1 行を engine 事実タグ込みで整形する (要約入力の接地素材)。
 fn grounded_line(log: &TurnLog) -> String {
     let mut s = format!("T{} プレイヤー「{}」→ {}", log.turn, log.player, log.summary);
@@ -475,6 +512,24 @@ mod tests {
         let user = req.user_prompt();
         assert!(user.contains("祠の章"), "章題");
         assert!(user.contains("事実の出典にしない"), "tail 節にも限定を明記");
+    }
+
+    /// 【Phase B: リクエスト形状】要約はプレーン生成 — system (規律) + user (章題・記録) の
+    /// 2 メッセージだけで、tools/schema を使わない (no-tools サーバでもそのまま動く)。
+    #[test]
+    fn summarize_messages_are_plain_system_plus_user() {
+        let req = SynopsisRequest {
+            title: "村の章".into(),
+            lines: vec!["T1 プレイヤー「見回す」→ 村に着いた".into()],
+            prev_tail: String::new(),
+        };
+        let msgs = summarize_messages(&req);
+        assert_eq!(msgs.len(), 2, "system + user のみ");
+        assert_eq!(msgs[0].role, llm_client::Role::System);
+        assert!(msgs[0].content.contains("発明しない"), "規律は system 側");
+        assert_eq!(msgs[1].role, llm_client::Role::User);
+        assert!(msgs[1].content.contains("村の章"), "章題は user 側");
+        assert!(msgs[1].content.contains("村に着いた"), "記録は user 側");
     }
 
     /// 【400 字カット + append-only の防御】complete は本文を文字境界安全に切り詰め、
