@@ -577,6 +577,54 @@ pub struct HistoryQuery<'a> {
     pub present: Vec<String>,
 }
 
+/// あらすじ (spec 10) を「これまでのあらすじ」として注入する (段落 0 件なら空文字)。
+///
+/// 圧縮済みの章 segment 列 = GM の**長期の物語記憶**。chronicle の注入予算からあふれた
+/// 古い経緯の「物語の連続した流れ」はこの経路でしか GM に届かない (retrieval は個別事実の
+/// ピンポイント想起 — 役割分担であって置き換えではない)。[`history_note`] の**前**に置く
+/// (古い記憶 → 新しい記憶の時系列順)。
+///
+/// 予算 2000 字・新しい章優先。あふれたら最古の章から「(それ以前の章は省略)」に潰す —
+/// 省略章の個別事実は retrieval が全量 chronicle から拾えるため「忘れない」は破れない。
+pub fn synopsis_note(synopsis: &[crate::SynopsisEntry]) -> String {
+    if synopsis.is_empty() {
+        return String::new();
+    }
+    const BUDGET: usize = 2000;
+    let block_of = |e: &crate::SynopsisEntry| format!("## {} (〜T{})\n{}\n", e.title, e.upto_turn, e.text);
+
+    // 新しい章から予算まで拾い、提示は古い順に戻す。
+    let mut kept: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for e in synopsis.iter().rev() {
+        let block = block_of(e);
+        let cost = block.chars().count();
+        if used + cost > BUDGET {
+            break;
+        }
+        used += cost;
+        kept.push(block);
+    }
+    // 予算が 1 章も入らない縮退でも、最新章だけは必ず出す (注入ゼロは本末転倒)。
+    if kept.is_empty() {
+        kept.push(block_of(synopsis.last().expect("non-empty")));
+    }
+    kept.reverse();
+
+    let mut s = String::from(
+        "\n\n# これまでのあらすじ (確定した過去の物語)\n\
+         圧縮済みの章の要約です。これに矛盾する語りをせず、済んだ出来事を初めてのように\
+         繰り返さないこと。\n",
+    );
+    if kept.len() < synopsis.len() {
+        s.push_str("(それ以前の章は省略)\n");
+    }
+    for block in kept {
+        s.push_str(&block);
+    }
+    s
+}
+
 /// 経緯ログ (chronicle) を「これまでの経緯」として注入する (空なら空文字)。
 ///
 /// 過去ターンの 1 行要約列 = GM の**中期記憶**。state (正本) は事実の現在値しか持たず、

@@ -317,6 +317,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &pending_checks,  // 前ターンの判定結果を注入
             &last_narration,  // 前ターンの語りを継続文脈として注入 (繰り返し防止)
             &history,         // 経緯ログ (中期記憶)。過去ターンの要約を還流
+            &[],              // あらすじ (spec 10)。CLI 結線は Phase C
         )
         .await;
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。

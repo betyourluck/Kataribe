@@ -258,6 +258,8 @@ impl TurnOutcome {
 /// (毎ターン messages を新規構築するので LLM は自分の直前の語りを記憶していない)。
 /// `history` は経緯ログ (chronicle)。過去ターンの 1 行要約列を「これまでの経緯」として
 /// 注入し、GM が数ターン前の経過を保持する (recent_narration の中期記憶版)。
+/// `synopsis` はあらすじ (spec 10)。圧縮済みの章 segment 列を「これまでのあらすじ」として
+/// 経緯の前に注入し、chronicle の予算からあふれた古い物語の連続性を保持する (長期記憶)。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn<P: DeltaProposer>(
     proposer: &P,
@@ -270,6 +272,7 @@ pub async fn run_turn<P: DeltaProposer>(
     recent_checks: &[CheckOutcome],
     recent_narration: &str,
     history: &[TurnLog],
+    synopsis: &[crate::SynopsisEntry],
 ) -> Result<TurnOutcome, HarnessError> {
     // 盤面と現在状態を毎ターン新規に提示する (state は正本の唯一の真実)。
     // history=過去ターンの経緯、recalled_lore=思い出された伏線、recent_checks=直前判定の結果、
@@ -278,12 +281,14 @@ pub async fn run_turn<P: DeltaProposer>(
         // dev モード (KATARIBE_DEV_MODE) なら DEV_META を先頭に足す (env 直読み、signature 不変)。
         ChatMessage::system(prompt::gm_system_prompt(scenario, prompt::dev_mode_enabled())),
         ChatMessage::user(format!(
-            "{}{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
+            "{}{}{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
             prompt::state_brief(state, scenario),
             // #49: 直前ターンで移動していたら、置いていかれた NPC を固有名で否定接地する
             // (GM 自身の移動語りの「同行の素振り」が recent_narration/chronicle 経由で
             // presence を汚染するのへの対抗。一般規律は具体の語りに負ける)。
             prompt::moved_note(scenario, state, history),
+            // spec 10: 圧縮済みの章あらすじ (長期の物語記憶)。経緯より古い時間を覆うので前に置く。
+            prompt::synopsis_note(synopsis),
             // spec 08-A: 現在の文脈 (行動文 + 現在地 + presence) をクエリに、直近は無条件・
             // それより古い経緯は関連するものだけ想起する二層注入。
             prompt::history_note(

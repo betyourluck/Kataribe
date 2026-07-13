@@ -16,6 +16,7 @@ mod package;
 pub mod prompt;
 mod proposer;
 mod save;
+mod synopsis;
 mod turn;
 
 pub use asset::{resolve_asset, AssetKind};
@@ -32,6 +33,11 @@ pub use loader::{inject_cast, load_characters};
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use proposer::DeltaProposer;
 pub use save::{load_session, save_session, SavedContent, SessionSave, SAVE_VERSION};
+pub use synopsis::{
+    mechanical_join, Summarizer, Synopsis, SynopsisEntry, SynopsisJob, SynopsisRequest,
+    SynopsisTrigger, SYNOPSIS_KEEP_RECENT, SYNOPSIS_MIN_LLM_TURNS, SYNOPSIS_OVERFLOW_THRESHOLD,
+    SYNOPSIS_TEXT_MAX,
+};
 pub use turn::{carryover_narration, chronicle_entry, run_turn, ChronicleTags, TurnLog, TurnOutcome};
 
 // =============================================================================
@@ -104,7 +110,7 @@ mod tests {
             value: true,
         }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 1),
             other => panic!("受理されるべき: {other:?}"),
@@ -125,7 +131,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 2, "2回目で受理"),
             other => panic!("最終的に受理されるべき: {other:?}"),
@@ -145,7 +151,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
 
         let second = p.seen_text(2);
         assert!(second.contains("却下"), "再生成プロンプトに却下の文脈があるはず");
@@ -166,7 +172,7 @@ mod tests {
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]), // 引き出し前で却下
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Rejected { attempts, last_reasons } => {
                 assert_eq!(attempts, 3);
@@ -186,7 +192,7 @@ mod tests {
         let mut s = fresh(&sc); // seed=42, cursor=0
         let p = ScriptedProposer::new(vec![delta(vec![StateOp::RequestRoll { sides: 20, dc: 10 }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { rolls, .. } => {
                 assert_eq!(rolls.len(), 1);
@@ -258,7 +264,7 @@ mod tests {
             text: "丘の上の古い樫の木の下で、二人は小指を絡めて誓った。".into(),
         }];
 
-        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "", &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "", &[], &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("思い出された記憶"), "想起の見出しが prompt に載る");
@@ -278,7 +284,7 @@ mod tests {
         }])]);
         let prev = "夕日が差し込む教室。モカが振り向いて微笑んだ。";
 
-        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev, &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev, &[], &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前までの語り"), "継続の見出しが prompt に載る");
@@ -312,7 +318,7 @@ mod tests {
             },
         ];
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &history)
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &history, &[])
             .await
             .unwrap();
 
@@ -330,6 +336,56 @@ mod tests {
         }
     }
 
+    /// 【spec 10】あらすじ (圧縮済みの章 segment) が「これまでのあらすじ」として prompt に
+    /// 注入され、経緯 (chronicle) より**前**に置かれる (古い記憶 → 新しい記憶の時系列順)。
+    /// 無ければ注入しない (ノイズを足さない)。
+    #[tokio::test]
+    async fn synopsis_is_woven_into_prompt_before_history() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = ScriptedProposer::new(vec![delta(vec![StateOp::SetFlag {
+            key: "drawer_opened".into(),
+            value: true,
+        }])]);
+        let synopsis = vec![SynopsisEntry {
+            upto_turn: 15,
+            title: "村の章".into(),
+            text: "旅人は村に着き、長老から祠の封印の話を聞いた。".into(),
+        }];
+        let history = vec![TurnLog {
+            turn: 16,
+            player: "祠へ向かう".into(),
+            summary: "祠の入口に立った".into(),
+            ..Default::default()
+        }];
+
+        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &history, &synopsis)
+            .await
+            .unwrap();
+
+        let text = p.seen_text(1);
+        assert!(text.contains("# これまでのあらすじ"), "あらすじの見出しが載る: {text}");
+        assert!(text.contains("村の章"), "章題が載る");
+        assert!(text.contains("封印の話を聞いた"), "章本文が載る");
+        assert!(text.contains("矛盾する語りをせず"), "確定した過去としての規律が載る");
+        let syn_pos = text.find("# これまでのあらすじ").unwrap();
+        let his_pos = text.find("# これまでの経緯").unwrap();
+        assert!(syn_pos < his_pos, "あらすじは経緯より前 (時系列順) に注入される");
+    }
+
+    /// 【spec 10】あらすじ無しならあらすじブロックを注入しない。
+    #[tokio::test]
+    async fn empty_synopsis_means_no_synopsis_block() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = ScriptedProposer::new(vec![delta(vec![StateOp::SetFlag {
+            key: "drawer_opened".into(),
+            value: true,
+        }])]);
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        assert!(!p.seen_text(1).contains("# これまでのあらすじ"), "あらすじ無しなら注入しない");
+    }
+
     /// 経緯が無い初回ターンは経緯ブロックを注入しない (ノイズを足さない)。
     #[tokio::test]
     async fn empty_history_means_no_chronicle_block() {
@@ -339,7 +395,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
         // GM_SYSTEM は summary の説明で『これまでの経緯』に言及するので、注入見出し (#) で判定する。
         assert!(!p.seen_text(1).contains("# これまでの経緯"), "経緯なしなら注入しない");
     }
@@ -483,7 +539,7 @@ mod tests {
         let sc = scenario();
         let mut state = fresh(&sc);
         let p = FlakyProposer { calls: Mutex::new(0) };
-        let out = run_turn(&p, &mut state, &sc, "調べる", 3, Lang::Ja, &[], &[], "", &[])
+        let out = run_turn(&p, &mut state, &sc, "調べる", 3, Lang::Ja, &[], &[], "", &[], &[])
             .await
             .expect("パース失敗はエラーでなく再生成で回復する");
         match out {
@@ -651,6 +707,29 @@ mod tests {
         assert!(note.contains("省略"), "省略した旨を明示する");
     }
 
+    /// 【あらすじの予算 (spec 10)】synopsis_note は予算 2000 字で新しい章を優先し、
+    /// あふれたら最古の章から省略する (省略した旨も明示)。章は古い順に提示される。
+    /// 縮退 (予算に 1 章も入らない) でも最新章だけは必ず出す。
+    #[test]
+    fn synopsis_note_respects_budget_drops_oldest_chapters() {
+        let synopsis: Vec<SynopsisEntry> = (1..=8)
+            .map(|i| SynopsisEntry {
+                upto_turn: i * 10,
+                title: format!("第{i}章"),
+                text: format!("第{i}章の物語。{}", "み".repeat(380)),
+            })
+            .collect();
+        let note = prompt::synopsis_note(&synopsis);
+        assert!(note.contains("# これまでのあらすじ"), "見出しが載る");
+        assert!(note.contains("第8章の物語"), "最新章は必ず残る");
+        assert!(!note.contains("第1章の物語"), "最古章は予算で落ちる");
+        assert!(note.contains("それ以前の章は省略"), "省略した旨を明示する");
+        let p7 = note.find("第7章の物語").expect("直近 2 章目も入る");
+        let p8 = note.find("第8章の物語").unwrap();
+        assert!(p7 < p8, "提示は古い順");
+        assert!(prompt::synopsis_note(&[]).is_empty(), "空なら注入しない");
+    }
+
     /// 【二層注入 (spec 08-A) = 60 ターンの序盤想起】長編で予算から溢れ「完全に忘れて」いた
     /// 序盤の出来事 (T3 で銀の鍵を入手) が、終盤 (T60 相当) の関連する行動
     /// (「銀の鍵を使う」) をクエリに retrieval され「(関連)」として再掲される。
@@ -705,7 +784,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]),
         ]);
-        let o1 = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[])
+        let o1 = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[])
             .await
             .unwrap();
         match o1 {
@@ -716,7 +795,7 @@ mod tests {
             }
             _ => panic!("受理されるはず"),
         }
-        let o2 = run_turn(&p, &mut s, &sc, "鍵を取る", 3, Lang::Ja, &[], &[], "", &[])
+        let o2 = run_turn(&p, &mut s, &sc, "鍵を取る", 3, Lang::Ja, &[], &[], "", &[], &[])
             .await
             .unwrap();
         match o2 {
@@ -755,7 +834,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("直前までの語り"), "直前の語り無しなら注入しない");
     }
 
@@ -769,7 +848,7 @@ mod tests {
             value: true,
         }])]);
 
-        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "", &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("思い出された記憶"), "伏線無しなら注入しない");
     }
 
@@ -798,7 +877,7 @@ mod tests {
             sound: String::new(),
         }];
 
-        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[], &[]).await.unwrap();
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前の判定結果"), "判定結果の見出しが載る");
         assert!(prompt_text.contains("成功"), "成否が載る");
