@@ -809,13 +809,12 @@ export const useGameStore = defineStore("game", {
           });
         }
         // あらすじ (spec 10): 追記差分を push (append-only)。章が確定したら「最近の出来事」から
-        // その章に呑まれた行 (turn <= upto_turn) を取り除き、控えめな system 行で報せる
-        // (可視タブは要約ドリフトの観測装置 — 更新に気づけることが監査性)。
+        // その章に呑まれた行 (turn <= upto_turn) を取り除く。会話ログには出さない
+        // (物語の外の帳簿イベント — 更新はタブを見れば分かる、ユーザーFB 2026-07-14)。
         for (const line of turn.new_log ?? []) this.recentLog.push(line);
         for (const s of turn.new_synopsis ?? []) {
           this.synopsis.push(s);
           this.recentLog = this.recentLog.filter((l) => l.turn > s.upto_turn);
-          this.log.push({ kind: "system", text: `📖 あらすじに「${s.title}」を追記した` });
         }
         this.state = turn.state;
         this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
