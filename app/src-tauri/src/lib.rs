@@ -442,6 +442,27 @@ fn save_log_file(
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// パッケージフォルダを OS のフォルダ選択ダイアログで選ばせる (パッケージ一覧の「参照」)。
+/// tauri-plugin-dialog を足さず rfd (ネイティブダイアログ) を custom command で完結させる
+/// (open_log_folder が tauri-plugin-shell を避けたのと同じ「追加権限ゼロ」方針)。**同期コマンド
+/// ゆえメインスレッドで走る** (Tauri v2) — モーダルダイアログのメッセージポンプが正しく回る。
+/// `start` が実在フォルダなら初期ディレクトリに使う (前回追加したパッケージの親フォルダ)。
+/// 返り値は選ばれた絶対パス、キャンセルなら None。
+#[tauri::command]
+fn pick_package_folder(start: Option<String>) -> Option<String> {
+    let mut dialog = rfd::FileDialog::new().set_title("パッケージフォルダを選択");
+    if let Some(dir) = start
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(Path::new)
+        .filter(|p| p.is_dir())
+    {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.pick_folder().map(|p| p.to_string_lossy().into_owned())
+}
+
 /// ログフォルダを OS のファイルマネージャで開く (設定ダイアログのボタン)。
 #[tauri::command]
 fn open_log_folder(app: tauri::AppHandle, folder: String) -> Result<(), String> {
@@ -828,6 +849,9 @@ struct RemotePackage {
     download_count: i64,
     avg_rating: Option<f64>,
     review_count: i64,
+    /// 作者が納本時に自己申告する対応 Kataribe バージョン (例 "v0.2.0")。未申告なら None
+    /// (Option ゆえ古い版の書庫や未申告パッケージでも deserialize は通る)。
+    kataribe_version: Option<String>,
 }
 
 /// 書庫の一覧応答 (items + ページネーション)。
@@ -1470,6 +1494,7 @@ pub fn run() {
             get_default_log_dir,
             save_log_file,
             open_log_folder,
+            pick_package_folder,
             delete_autosave
         ])
         .run(tauri::generate_context!())

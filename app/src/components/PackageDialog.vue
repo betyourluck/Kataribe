@@ -8,6 +8,7 @@
 import { ref } from "vue";
 import { useGameStore, SITE_CATEGORIES } from "../stores/game";
 import type { RemotePackage } from "../types/api";
+import Icon from "./Icon.vue";
 
 const game = useGameStore();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -128,6 +129,14 @@ function totalPages(): number {
             @keyup.enter="add"
           />
           <button
+            class="shrink-0 text-parchment/60 hover:text-ember px-1.5 py-1"
+            title="フォルダ選択ダイアログで参照する (前回追加した場所から開く)"
+            aria-label="参照"
+            @click="game.browseAndAddPackage()"
+          >
+            <Icon name="folder" :size="18" />
+          </button>
+          <button
             :disabled="!newPath.trim()"
             class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
             @click="add"
@@ -200,6 +209,13 @@ function totalPages(): number {
                 <div class="flex items-center gap-2">
                   <span class="font-bold text-parchment truncate">{{ p.title }}</span>
                   <span class="shrink-0 rounded bg-ash/70 px-1.5 text-xs text-parchment/70">{{ categoryLabel(p.category) }}</span>
+                  <span
+                    v-if="p.kataribe_version"
+                    class="shrink-0 rounded bg-ash/50 px-1.5 text-xs text-parchment/60"
+                    title="作者が申告した対応 Kataribe バージョン"
+                  >
+                    Kataribe {{ p.kataribe_version }}
+                  </span>
                   <span
                     v-if="p.is_mature"
                     class="shrink-0 rounded bg-red-900/70 px-1.5 text-xs text-red-200"

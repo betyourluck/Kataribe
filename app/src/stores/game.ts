@@ -24,6 +24,18 @@ function assetUrl(path: string | null): string | null {
 
 // localStorage キー: ユーザーが選べるパッケージフォルダのパス一覧 (配布物の置き場)。
 const PACKAGES_KEY = "kataribe.packagePaths";
+// 前回追加したパッケージの「親フォルダ」。参照ダイアログの初期ディレクトリに使う
+// (多くの人は同じ親フォルダの下に複数パッケージを置くので、次回そこから選べる)。
+const LAST_PKG_PARENT_KEY = "kataribe.lastPackageParent";
+function loadLastPackageParent(): string {
+  return localStorage.getItem(LAST_PKG_PARENT_KEY) || "";
+}
+/** パスの親フォルダを返す (Windows `\` と Unix `/` の両区切りに対応、末尾区切りは無視)。 */
+function parentDir(path: string): string {
+  const p = path.trim().replace(/[/\\]+$/, "");
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return i > 0 ? p.slice(0, i) : "";
+}
 // 背景の明るさ (0=暗幕最大で真っ暗 〜 100=暗幕なしで画像そのまま)。既定は中間の 50。
 const BG_BRIGHTNESS_KEY = "kataribe.bgBrightness";
 function loadBgBrightness(): number {
@@ -230,6 +242,8 @@ interface GameState {
   packagePath: string;
   // localStorage が保持するパッケージフォルダのパス一覧。
   packagePaths: string[];
+  // 前回追加したパッケージの親フォルダ (参照ダイアログの初期ディレクトリ)。無ければ空。
+  lastPackageParent: string;
   // 各パスの manifest を読んだ一覧 view (backend list_packages の結果)。
   packages: PackageEntry[];
   // --- 配布サイト (spec 05 Phase C) ---
@@ -276,6 +290,7 @@ export const useGameStore = defineStore("game", {
       audioMuted: loadAudioMuted(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
       packagePaths: paths,
+      lastPackageParent: loadLastPackageParent(),
       packages: [],
       siteUrl: loadSiteUrl(),
       remote: null,
@@ -435,12 +450,33 @@ export const useGameStore = defineStore("game", {
     },
 
     // パッケージフォルダのパスを一覧に追加する (localStorage に永続化)。
+    // 追加できたら「親フォルダ」を覚え、次回の参照ダイアログの初期位置にする。
     addPackage(path: string) {
       const p = path.trim();
       if (!p || this.packagePaths.includes(p)) return;
       this.packagePaths.push(p);
       savePaths(this.packagePaths);
+      const parent = parentDir(p);
+      if (parent) {
+        this.lastPackageParent = parent;
+        localStorage.setItem(LAST_PKG_PARENT_KEY, parent);
+      }
       this.refreshPackages();
+    },
+
+    // OS ネイティブのフォルダ選択ダイアログでパッケージフォルダを選び、そのまま一覧へ追加する
+    // (パッケージ一覧の「参照」ボタン)。初期ディレクトリは前回追加の親フォルダ。
+    // 選択がキャンセルされたら何もしない。無効な (package.yaml の無い) フォルダを選んでも
+    // 追加はされ、一覧に「読込失敗」で並ぶ (手入力パスと同じ扱い)。
+    async browseAndAddPackage() {
+      try {
+        const picked = await invoke<string | null>("pick_package_folder", {
+          start: this.lastPackageParent,
+        });
+        if (picked) this.addPackage(picked);
+      } catch (e) {
+        this.error = `フォルダの選択に失敗しました: ${e}`;
+      }
     },
 
     // パスを一覧から外す。

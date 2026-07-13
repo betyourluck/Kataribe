@@ -200,6 +200,8 @@ export interface RemotePackage {
   download_count: number;
   avg_rating: number | null;
   review_count: number;
+  /** 作者が納本時に自己申告する対応 Kataribe バージョン (例 "v0.2.0")。未申告なら null。 */
+  kataribe_version: string | null;
 }
 
 /** 書庫の一覧応答 (items + ページネーション)。 */
