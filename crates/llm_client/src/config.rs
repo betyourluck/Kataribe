@@ -115,6 +115,59 @@ impl LlmConfig {
         })
     }
 
+    /// あらすじ要約用の設定 (spec 10)。`SUMMARY_LLM_MODEL` か `SUMMARY_LLM_BASE_URL` が
+    /// 設定されていれば `Some` — 未指定フィールドは GM (本体) 設定から継承する
+    /// (「安いモデルだけ差し替える」が SUMMARY_LLM_MODEL 1 行で書ける)。
+    /// どちらも無ければ `None` (呼び出し側は GM の client を共用 = 受領者ゼロ設定)。
+    pub fn summary_from_env(base: &LlmConfig) -> Result<Option<Self>, LlmError> {
+        Self::summary_overrides(
+            base,
+            env_opt("SUMMARY_LLM_BASE_URL"),
+            env_opt("SUMMARY_LLM_API_KEY"),
+            env_opt("SUMMARY_LLM_MODEL"),
+            env_opt("SUMMARY_LLM_PROVIDER"),
+        )
+    }
+
+    /// [`Self::summary_from_env`] の純粋ロジック (env 非依存・テスト可)。
+    /// provider は明示 > 実効 base_url からの自動判定 (本体の provider を継がない —
+    /// base_url が変われば話すべきプロトコルも変わる)。
+    pub fn summary_overrides(
+        base: &LlmConfig,
+        base_url: Option<String>,
+        api_key: Option<String>,
+        model: Option<String>,
+        provider: Option<String>,
+    ) -> Result<Option<Self>, LlmError> {
+        if base_url.is_none() && model.is_none() {
+            return Ok(None);
+        }
+        let effective_url = base_url.unwrap_or_else(|| base.base_url.clone());
+        let provider = match provider {
+            None => Provider::detect(&effective_url),
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "anthropic" | "native" => Provider::Anthropic,
+                "openai" | "openai_compat" | "compat" => Provider::OpenAiCompat,
+                other => {
+                    return Err(LlmError::Config(format!(
+                        "環境変数 SUMMARY_LLM_PROVIDER の値 '{other}' を解釈できません (anthropic / openai)"
+                    )))
+                }
+            },
+        };
+        Ok(Some(Self {
+            base_url: effective_url,
+            api_key: api_key.unwrap_or_else(|| base.api_key.clone()),
+            model: model.unwrap_or_else(|| base.model.clone()),
+            temperature: base.temperature,
+            max_tokens: base.max_tokens,
+            request_timeout: base.request_timeout,
+            max_retries: base.max_retries,
+            use_tools: base.use_tools,
+            provider,
+        }))
+    }
+
     /// テスト・明示構築用。`base_url` と `api_key` を与えて残りは既定値 (provider は自動判定)。
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
         let base_url = base_url.into();

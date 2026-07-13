@@ -19,7 +19,7 @@ use harness::{
     load_campaign_package, load_lore, load_module_injected, load_package, load_session,
     read_manifest, resolve_asset, resolve_recall, run_turn, save_session, AssetKind, Campaign,
     CampaignMemory, LoreStore, MemoryFragment, ModuleId, PackageManifest, SavedContent,
-    SessionSave, TurnLog, TurnOutcome, SAVE_VERSION,
+    SessionSave, Summarizer, Synopsis, SynopsisJob, TurnLog, TurnOutcome, SAVE_VERSION,
 };
 use llm_client::{CacheStat, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
@@ -157,6 +157,28 @@ struct BeatView {
     sound: Option<String>,
 }
 
+/// あらすじ 1 章の view (spec 10)。リスト key は upto_turn (title は表示専用)。
+#[derive(Serialize, Clone)]
+struct SynopsisView {
+    upto_turn: u32,
+    title: String,
+    text: String,
+}
+
+/// 「最近の出来事」の 1 行 (未圧縮 chronicle の要約。あらすじタブの下段)。
+#[derive(Serialize, Clone)]
+struct LogLineView {
+    turn: u32,
+    summary: String,
+}
+
+fn synopsis_view(e: &harness::SynopsisEntry) -> SynopsisView {
+    SynopsisView { upto_turn: e.upto_turn, title: e.title.clone(), text: normalize(&e.text) }
+}
+fn log_line_view(l: &TurnLog) -> LogLineView {
+    LogLineView { turn: l.turn, summary: normalize(&l.summary) }
+}
+
 /// 開幕 view (new_game の戻り)。
 #[derive(Serialize)]
 struct GameView {
@@ -174,6 +196,10 @@ struct GameView {
     resumed: Option<ResumeView>,
     /// scenario の lint (非 fatal な作者向け警告。死んだ flag_hint 等)。開幕ログに ⚠ で出す。
     warnings: Vec<String>,
+    /// あらすじ全量 (spec 10)。新規開始は空、再開はセーブから復元。以後は TurnView の差分で伸びる。
+    synopsis: Vec<SynopsisView>,
+    /// 「最近の出来事」= 未圧縮 chronicle の 1 行要約列 (再開時の初期表示。以後は差分で伸びる)。
+    recent_log: Vec<LogLineView>,
 }
 
 /// scenario の lint を作者向けの表示文にする (非 fatal — load は拒否せず開幕に ⚠ で報せる。
@@ -238,6 +264,12 @@ struct TurnView {
     /// プロンプトキャッシュの健全性 (このセッションの累計)。frontend が連続 miss を検知して
     /// 「キャッシュ経路が壊れているかも」を警告する (#44/#45 — 漏出は usage が一次ソース)。
     cache: CacheStat,
+    /// このターンで確定したあらすじ章の**追記差分** (spec 10)。append-only ゆえ frontend は
+    /// push するだけ。通常 0〜1 件 (凍結リトライの強制消化と遷移圧縮が重なると 2 件)。
+    new_synopsis: Vec<SynopsisView>,
+    /// このターンで chronicle に積まれた行の差分 (「最近の出来事」用。通常 1 件、遷移ターンは
+    /// 章替わりマーカー込みで 2 件、却下ターンは 0 件)。
+    new_log: Vec<LogLineView>,
 }
 
 /// campaign のモジュール遷移 (前モジュールの goal 到達 → 次モジュールへ state を糸通しして差し替え)。
@@ -352,6 +384,10 @@ struct GameSession {
     save_path: Option<PathBuf>,
     /// 起動時に指定されたパッケージパス (SessionSave.content に刻む再ロード参照)。
     package_path: String,
+    /// あらすじ (spec 10)。圧縮済み章 + 遷移契機の凍結リトライ範囲。セーブ対象。
+    synopsis: Synopsis,
+    /// あらすじ要約用の専用 client (SUMMARY_LLM_*)。None なら GM の client を共用。
+    summarizer: Option<LlmClient>,
 }
 
 /// new_game 前は None。
@@ -772,6 +808,55 @@ fn set_llm_config(
     upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
 }
 
+/// あらすじ要約用 LLM 設定の view (spec 10)。enabled=false なら GM と同じ client を共用する。
+#[derive(Serialize)]
+struct SummaryLlmConfigView {
+    base_url: String,
+    model: String,
+    api_key: String,
+    /// base_url か model のどちらかが設定されていれば true (summary_from_env の有効判定と同基準)。
+    enabled: bool,
+}
+
+/// 現在のあらすじ要約用設定を返す。設定「AIモデル」タブの初期値。
+#[tauri::command]
+fn get_summary_llm_config() -> SummaryLlmConfigView {
+    let opt = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let base_url = opt("SUMMARY_LLM_BASE_URL");
+    let model = opt("SUMMARY_LLM_MODEL");
+    SummaryLlmConfigView {
+        enabled: base_url.is_some() || model.is_some(),
+        base_url: base_url.unwrap_or_default(),
+        model: model.unwrap_or_default(),
+        api_key: std::env::var("SUMMARY_LLM_API_KEY").unwrap_or_default(),
+    }
+}
+
+/// あらすじ要約用 LLM 設定を更新する (`set_llm_config` と同経路 = プロセス env 即時 +
+/// app_data/.env 永続)。**全て空 = 無効化** (GM と同じ client 共用へ戻す —
+/// 空値は summary_from_env が未設定として filter する)。次の new_game/resume から効く。
+#[tauri::command]
+fn set_summary_llm_config(
+    app: tauri::AppHandle,
+    base_url: String,
+    model: String,
+    api_key: String,
+) -> Result<(), String> {
+    std::env::set_var("SUMMARY_LLM_BASE_URL", &base_url);
+    std::env::set_var("SUMMARY_LLM_MODEL", &model);
+    std::env::set_var("SUMMARY_LLM_API_KEY", &api_key);
+    let updates = [
+        ("SUMMARY_LLM_BASE_URL".to_string(), base_url),
+        ("SUMMARY_LLM_MODEL".to_string(), model),
+        ("SUMMARY_LLM_API_KEY".to_string(), api_key),
+    ];
+    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
+    }
+    upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
+}
+
 /// env フラグの truthy 判定 (harness::prompt::is_truthy と同基準)。`1`/`true`/`yes`/`on`。
 fn env_is_truthy(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
@@ -1075,6 +1160,12 @@ async fn new_game(
 
     // LLM クライアント (.env は main で読み込み済)。
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
+    // あらすじ要約用の専用 client (SUMMARY_LLM_*、spec 10)。未設定なら GM の client 共用。
+    let summarizer = LlmConfig::summary_from_env(&config)
+        .map_err(|e| e.to_string())?
+        .map(LlmClient::new)
+        .transpose()
+        .map_err(|e| e.to_string())?;
     let client = LlmClient::new(config).map_err(|e| e.to_string())?;
 
     let seed = resolve_seed();
@@ -1102,6 +1193,8 @@ async fn new_game(
             w.extend(scenario_warnings(&scenario));
             w
         },
+        synopsis: Vec::new(),
+        recent_log: Vec::new(),
     };
 
     let save_path = autosave_path(&app, &pkg_dir);
@@ -1121,6 +1214,8 @@ async fn new_game(
         manifest,
         save_path,
         package_path: rel,
+        synopsis: Synopsis::default(),
+        summarizer,
         // 言語設定タブ由来の lang を優先、無ければ env 既定。
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
@@ -1156,6 +1251,11 @@ async fn resume_game(
         open_package(&app, &package_path, save.module.as_ref())?;
     let lore = load_lore(&pkg_dir.join("memoria")).map_err(|e| e.to_string())?;
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
+    let summarizer = LlmConfig::summary_from_env(&config)
+        .map_err(|e| e.to_string())?
+        .map(LlmClient::new)
+        .transpose()
+        .map_err(|e| e.to_string())?;
     let client = LlmClient::new(config).map_err(|e| e.to_string())?;
 
     // 版不一致は警告のみ (typo 修正でセーブを全滅させない。壊れは engine の閉世界却下が守る)。
@@ -1194,6 +1294,12 @@ async fn resume_game(
             w.extend(scenario_warnings(&scenario));
             w
         },
+        // あらすじ全量 + 未圧縮 tail (spec 10)。再開直後からタブが埋まる。
+        synopsis: save.synopsis.entries.iter().map(synopsis_view).collect(),
+        recent_log: {
+            let upto = save.synopsis.compressed_upto();
+            save.history.iter().filter(|l| l.turn > upto).map(log_line_view).collect()
+        },
     };
 
     *session.lock().await = Some(GameSession {
@@ -1212,6 +1318,8 @@ async fn resume_game(
         manifest,
         save_path: Some(save_path),
         package_path,
+        synopsis: save.synopsis,
+        summarizer,
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
             Some("ja") | Some("Ja") | Some("JA") => Lang::Ja,
@@ -1221,15 +1329,39 @@ async fn resume_game(
     Ok(view)
 }
 
+/// あらすじ圧縮ジョブを実行する (spec 10)。成功 = complete / 失敗 = abandon (非致命 —
+/// あふれ契機は次ターン再計算、遷移契機は範囲凍結で同一リトライ)。
+/// 要約は SUMMARY_LLM_* の専用 client、無ければ GM の client を共用する。
+async fn run_synopsis_job(sess: &mut GameSession, job: &SynopsisJob) {
+    let req = sess.synopsis.build_request(&sess.history, job);
+    let result = match &sess.summarizer {
+        Some(s) => s.summarize(&req).await,
+        None => sess.client.summarize(&req).await,
+    };
+    match result {
+        Ok(text) => sess.synopsis.complete(job, &text),
+        Err(e) => {
+            eprintln!("[警告] あらすじ要約に失敗 (プレイは続行し後で再試行): {e}");
+            sess.synopsis.abandon(job);
+        }
+    }
+}
+
 #[tauri::command]
 async fn play_turn(
+    app: tauri::AppHandle,
     action: String,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<TurnView, String> {
+    use tauri::Emitter;
     let mut guard = session.lock().await;
     let sess = guard
         .as_mut()
         .ok_or("ゲームが開始されていません (先に new_game を呼んでください)")?;
+
+    // spec 10: このターンで増えた分の差分計上用スナップショット (あらすじ / chronicle)。
+    let syn_before = sess.synopsis.entries.len();
+    let hist_before = sess.history.len();
 
     // 前ターンの伏線・判定結果・語りを取り出して注入し、pending を空にする。
     let pending = std::mem::take(&mut sess.pending_lore);
@@ -1246,6 +1378,7 @@ async fn play_turn(
         &pending_checks,
         &prev_narration,
         &sess.history,
+        &sess.synopsis.entries,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -1356,6 +1489,8 @@ async fn play_turn(
                 present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
                 transition: None,
                 cache: sess.client.cache_stat(),
+                new_synopsis: Vec::new(), // 圧縮ジョブの後に差分で埋める
+                new_log: Vec::new(),
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -1379,12 +1514,17 @@ async fn play_turn(
             present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
             transition: None,
             cache: sess.client.cache_stat(),
+            new_synopsis: Vec::new(),
+            new_log: Vec::new(),
         },
     };
 
     // --- campaign 前進 (reached → transition の結線、CLI play と同型) ---
     // goal 到達 + campaign パッケージなら、発火 GoalId で次モジュールへ state を糸通しして遷移する。
     // 駆動は LLM 非依存 (engine が決める GoalId と作者の地図だけ)。
+    // spec 10: このターンで遷移契機の圧縮を回したか (回したならあふれ契機は次ターンへ譲る =
+    // 1 ターン高々 1 ジョブ、失敗直後の即再試行で応答を二重に止めない)。
+    let mut ran_transition_job = false;
     if view.accepted && view.goal_reached {
         if let Some(campaign) = sess.campaign.clone() {
             let from = sess.current_module.clone();
@@ -1401,6 +1541,14 @@ async fn play_turn(
             // 辺が在る = 次モジュールへ (骨格だけ差し替え、状態は transition で持ち越し済)。
             // 辺が無い (advance=None) = 終端エンディング → goal_reached=true のまま = キャンペーン完了。
             if let Some(adv) = advance {
+                // spec 10: 章の締めであらすじ圧縮 (章替わりマーカーを刻む前 = 新章の行を
+                // 範囲に混ぜない。章題は遷移元モジュールの title)。
+                let from_title = sess.scenario.title.clone();
+                if let Some(job) = sess.synopsis.on_transition(&sess.history, &from_title) {
+                    let _ = app.emit("synopsis-compacting", ());
+                    run_synopsis_job(sess, &job).await;
+                    ran_transition_job = true;
+                }
                 sess.current_module = adv.module_id;
                 sess.scenario = adv.scenario;
                 sess.state = adv.state;
@@ -1438,6 +1586,17 @@ async fn play_turn(
         }
     }
 
+    // spec 10: あふれ契機 (+ 遷移凍結のリトライ) の圧縮。受理ターンのみ・1 ターン高々 1 ジョブ。
+    if view.accepted && !ran_transition_job {
+        if let Some(job) = sess.synopsis.next_job(&sess.history) {
+            let _ = app.emit("synopsis-compacting", ());
+            run_synopsis_job(sess, &job).await;
+        }
+    }
+    // spec 10: このターンの差分を view に載せる (あらすじは append-only ゆえ frontend は push のみ)。
+    view.new_synopsis = sess.synopsis.entries[syn_before..].iter().map(synopsis_view).collect();
+    view.new_log = sess.history[hist_before..].iter().map(log_line_view).collect();
+
     // オートセーブ (spec 07 Phase C): 受理ターン + campaign 遷移が全て確定したこの地点で書く。
     // 却下では書かない (state 無傷 = セーブも不変)。失敗は警告のみ (救済機構が本体を殺さない)。
     if view.accepted {
@@ -1453,6 +1612,7 @@ async fn play_turn(
                 last_narration: sess.last_narration.clone(),
                 pending_checks: sess.pending_checks.clone(),
                 pending_lore: sess.pending_lore.clone(),
+                synopsis: sess.synopsis.clone(),
             };
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -1487,6 +1647,8 @@ pub fn run() {
             list_packages,
             get_llm_config,
             set_llm_config,
+            get_summary_llm_config,
+            set_summary_llm_config,
             get_dev_mode,
             set_dev_mode,
             fetch_site_packages,

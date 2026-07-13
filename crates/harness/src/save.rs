@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::campaign::{CampaignMemory, ModuleId};
 use crate::error::HarnessError;
 use crate::memoria::MemoryFragment;
+use crate::synopsis::Synopsis;
 use crate::turn::TurnLog;
 
 /// セーブ形式の現行版。読み込み時に不一致なら拒否する (v1 は実験的)。
@@ -67,6 +68,10 @@ pub struct SessionSave {
     /// 発火済み recall の持ち越し (fragment 丸ごと = memoria/ 欠損でもロード可能)。
     #[serde(default)]
     pub pending_lore: Vec<MemoryFragment>,
+    /// あらすじ (spec 10) — 圧縮済み章 + 遷移契機の凍結リトライ範囲 (pending_transition)。
+    /// history と同一セーブで snapshot されるので resume では常に整合する。
+    #[serde(default)]
+    pub synopsis: Synopsis,
 }
 
 /// セーブを YAML で書く。**tmp → rename の原子的置換** — 受理ターン毎の上書き運用で

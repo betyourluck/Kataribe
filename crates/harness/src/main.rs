@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use gm_core::{GameState, Lang, Scenario};
 use harness::{
     advance_campaign, inject_cast, load_campaign, load_lore, load_module, resolve_recall, run_turn,
-    Campaign, TurnOutcome,
+    Campaign, Summarizer, TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
 
@@ -61,6 +61,43 @@ fn resolve_seed() -> u64 {
 }
 /// オートセーブの既定パス (spec 07)。`--save <path>` で変更可。
 const DEFAULT_SAVE: &str = "kataribe_autosave.yaml";
+
+/// `--key <value>` 形式の引数を取り出す (無ければ None、値欠落は Err)。
+fn take_flag_value(args: &mut Vec<String>, key: &str) -> Result<Option<String>, String> {
+    match args.iter().position(|a| a == key) {
+        Some(i) if i + 1 < args.len() => {
+            let v = args.remove(i + 1);
+            args.remove(i);
+            Ok(Some(v))
+        }
+        Some(_) => Err(format!("{key} の後に値を指定してください")),
+        None => Ok(None),
+    }
+}
+
+/// あらすじ圧縮ジョブを実行する (spec 10)。成功 = complete / 失敗 = abandon (非致命 —
+/// あふれ契機は次ターン再計算、遷移契機は範囲凍結で同一リトライ)。
+/// 要約は SUMMARY_LLM_* の専用 client、無ければ GM の client を共用する。
+async fn run_synopsis_job(
+    summary_client: Option<&LlmClient>,
+    gm_client: &LlmClient,
+    synopsis: &mut harness::Synopsis,
+    history: &[harness::TurnLog],
+    job: &harness::SynopsisJob,
+) {
+    let req = synopsis.build_request(history, job);
+    let result = match summary_client {
+        Some(s) => s.summarize(&req).await,
+        None => gm_client.summarize(&req).await,
+    };
+    match result {
+        Ok(text) => synopsis.complete(job, &text),
+        Err(e) => {
+            eprintln!("[警告] あらすじ要約に失敗 (プレイは続行し後で再試行): {e}");
+            synopsis.abandon(job);
+        }
+    }
+}
 
 /// `parent/parent` を repo root とみなす (scenarios/ campaigns/ characters/ memoria/ の親)。
 fn root_of(path: &str) -> PathBuf {
@@ -108,6 +145,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
             PathBuf::from(DEFAULT_SAVE)
         }
         None => PathBuf::from(DEFAULT_SAVE),
+    };
+
+    // spec 10: 要約モデルの別指定。優先順位 = 引数 > .env の SUMMARY_LLM_* > GM 設定共用。
+    // 引数は env へ写すだけ (summary_from_env が一元解決)。app_data は探さない (app 専用)。
+    if let Some(v) = take_flag_value(&mut args, "--summary-model")? {
+        std::env::set_var("SUMMARY_LLM_MODEL", v);
+    }
+    if let Some(v) = take_flag_value(&mut args, "--summary-base-url")? {
+        std::env::set_var("SUMMARY_LLM_BASE_URL", v);
+    }
+    let summary_client: Option<LlmClient> = match LlmConfig::summary_from_env(client.config())? {
+        Some(c) => {
+            eprintln!("[あらすじ要約] {} / model={}", c.base_url, c.model);
+            Some(LlmClient::new(c)?)
+        }
+        None => None,
     };
 
     // `--seed <N>` で新規開始の seed を固定 (テスト/再現用)。台本テストが env より明示的に書ける。
@@ -238,6 +291,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
+    // あらすじ (spec 10)。再開時はセーブから復元 (凍結リトライ範囲込み)。
+    let mut synopsis: harness::Synopsis =
+        resume_save.as_ref().map(|s| s.synopsis.clone()).unwrap_or_default();
+
     // --- 開幕描写 ---
     println!("=== {} ===", scenario.title);
     if let Some(loc) = scenario.location(&state.location) {
@@ -245,6 +302,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     if let Some(save) = &resume_save {
         println!("── セーブから再開 (turn {}) ──", save.state.turn);
+        if !synopsis.entries.is_empty() {
+            println!("（これまでのあらすじ）");
+            for e in &synopsis.entries {
+                println!("◆ {} — {}", e.title, e.text);
+            }
+            println!();
+        }
         if !save.last_narration.is_empty() {
             println!("（前回までの語り）\n{}\n", save.last_narration);
         }
@@ -289,6 +353,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 last_narration: last_narration.clone(),
                 pending_checks: pending_checks.clone(),
                 pending_lore: pending_lore.clone(),
+                synopsis: synopsis.clone(),
             };
             if let Err(e) = harness::save_session(&save_path, &save) {
                 // 救済機構がセッション本体を殺さない: 警告して続行。
@@ -317,7 +382,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &pending_checks,  // 前ターンの判定結果を注入
             &last_narration,  // 前ターンの語りを継続文脈として注入 (繰り返し防止)
             &history,         // 経緯ログ (中期記憶)。過去ターンの要約を還流
-            &[],              // あらすじ (spec 10)。CLI 結線は Phase C
+            &synopsis.entries, // あらすじ (長期の物語記憶、spec 10)
         )
         .await;
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
@@ -398,6 +463,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             match advance_campaign(camp, &root, &mut campaign_memory, from, &scenario, &state)? {
                                 // 辺が在る = 次モジュールへ。状態を持ち越し骨格だけ差し替える。
                                 Some(adv) => {
+                                    // spec 10: 章の締めであらすじ圧縮 (章替わりマーカーを刻む前 =
+                                    // 新章の行を範囲に混ぜない。章題は遷移元モジュールの title)。
+                                    if let Some(job) = synopsis.on_transition(&history, &scenario.title)
+                                    {
+                                        println!("  （あらすじをまとめています…）");
+                                        run_synopsis_job(
+                                            summary_client.as_ref(),
+                                            &client,
+                                            &mut synopsis,
+                                            &history,
+                                            &job,
+                                        )
+                                        .await;
+                                    }
                                     println!(
                                         "\n━━ エンディング『{reached}』→ 次モジュール『{}』へ ━━",
                                         adv.scenario.title
@@ -436,6 +515,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             break;
                         }
                     }
+                }
+
+                // spec 10: あふれ契機 (+ 遷移凍結のリトライ) の圧縮。1 ターン高々 1 ジョブ。
+                // 遷移ターンは上の分岐で continue/break 済みなのでここには来ない。
+                if let Some(job) = synopsis.next_job(&history) {
+                    println!("  （あらすじをまとめています…）");
+                    run_synopsis_job(summary_client.as_ref(), &client, &mut synopsis, &history, &job)
+                        .await;
                 }
             }
             Ok(TurnOutcome::Rejected { last_reasons, attempts }) => {

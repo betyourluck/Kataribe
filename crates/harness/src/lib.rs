@@ -670,6 +670,19 @@ mod tests {
             last_narration: "霧が窓を這う。".into(),
             pending_checks: vec![],
             pending_lore: vec![],
+            synopsis: Synopsis {
+                entries: vec![SynopsisEntry {
+                    upto_turn: 5,
+                    title: "序章".into(),
+                    text: "旅人が村に着いた。".into(),
+                }],
+                pending_transition: Some(SynopsisJob {
+                    start: 6,
+                    end: 7,
+                    title: "村の章".into(),
+                    trigger: SynopsisTrigger::Transition,
+                }),
+            },
         };
         let path = std::env::temp_dir().join("kataribe_poc_session_save.yaml");
         save_session(&path, &save).expect("保存できる");
@@ -678,6 +691,8 @@ mod tests {
         assert_eq!(loaded.history.len(), 1, "chronicle が戻る");
         assert_eq!(loaded.last_narration, "霧が窓を這う。", "継続性が戻る");
         assert!(matches!(loaded.content, SavedContent::Package { ref path } if path.contains("escape")));
+        // spec 10: あらすじ (segment + 遷移凍結リトライ範囲) もセーブを跨いで生きる。
+        assert_eq!(loaded.synopsis, save.synopsis, "あらすじと凍結リトライ範囲が戻る");
 
         // 版不一致は拒否 (v1 は実験的 — 黙って壊れた再開をしない)。
         let mut old = save.clone();
@@ -685,6 +700,32 @@ mod tests {
         save_session(&path, &old).expect("保存はできる");
         assert!(load_session(&path).is_err(), "版不一致はロード拒否");
         std::fs::remove_file(&path).ok();
+    }
+
+    /// 【spec 10: 旧セーブ互換】synopsis フィールドの無い spec 07/08 期のセーブ YAML も
+    /// そのまま読める (serde default = 空のあらすじで再開)。
+    #[test]
+    fn old_save_without_synopsis_field_deserializes() {
+        let sc = scenario();
+        let save = SessionSave {
+            version: SAVE_VERSION,
+            content: SavedContent::Package { path: "packages/escape".into() },
+            package_version: String::new(),
+            module: None,
+            state: fresh(&sc),
+            campaign_memory: CampaignMemory::new(),
+            history: vec![],
+            last_narration: String::new(),
+            pending_checks: vec![],
+            pending_lore: vec![],
+            synopsis: Synopsis::default(),
+        };
+        // 現行形式から synopsis キーを取り除く = spec 07/08 期のセーブを機械的に再現。
+        let mut val = serde_yaml::to_value(&save).expect("直列化できる");
+        val.as_mapping_mut().unwrap().remove("synopsis");
+        let loaded: SessionSave = serde_yaml::from_value(val).expect("旧形式が読める");
+        assert!(loaded.synopsis.entries.is_empty(), "あらすじは空で始まる");
+        assert!(loaded.synopsis.pending_transition.is_none());
     }
 
     /// 【経緯の予算】history_note は文字予算内で新しい方を残し、古い方から省略する

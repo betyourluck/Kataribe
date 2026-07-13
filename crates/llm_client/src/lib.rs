@@ -176,6 +176,46 @@ mod tests {
         vec![ChatMessage::system("あなたはGM"), ChatMessage::user("引き出しを開ける")]
     }
 
+    /// 【spec 10: 要約モデルの別指定】SUMMARY_LLM_* の解決 — model か base_url が指定されて
+    /// いれば Some (未指定フィールドは GM 本体設定から継承)、どちらも無ければ None
+    /// (= GM の client 共用)。provider は明示 > **実効 base_url** からの自動判定
+    /// (本体の provider を継がない — url が変われば話すべきプロトコルも変わる)。
+    #[test]
+    fn summary_overrides_inherit_base_and_detect_provider() {
+        let base = LlmConfig::new("https://api.anthropic.com/v1", "sk-main", "claude-opus-4-8");
+        assert_eq!(base.provider, Provider::Anthropic);
+
+        // どちらも未指定 → None (GM 共用)。
+        assert!(LlmConfig::summary_overrides(&base, None, None, None, None).unwrap().is_none());
+
+        // model だけ差し替え → base_url/api_key は継承、provider は実効 url (anthropic) のまま。
+        let cheap = LlmConfig::summary_overrides(
+            &base, None, None, Some("claude-haiku-4-5-20251001".into()), None)
+            .unwrap()
+            .expect("model 指定で有効");
+        assert_eq!(cheap.model, "claude-haiku-4-5-20251001");
+        assert_eq!(cheap.base_url, base.base_url, "base_url は継承");
+        assert_eq!(cheap.api_key, "sk-main", "api_key は継承");
+        assert_eq!(cheap.provider, Provider::Anthropic);
+
+        // base_url ごと差し替え → provider は新 url から再判定 (本体の anthropic を継がない)。
+        let local = LlmConfig::summary_overrides(
+            &base, Some("http://localhost:8080/v1".into()), None, Some("gemma".into()), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(local.provider, Provider::OpenAiCompat, "実効 url から再判定");
+
+        // provider 明示は自動判定に勝つ / 不正値は Err。
+        let forced = LlmConfig::summary_overrides(
+            &base, Some("http://proxy.example/v1".into()), None, Some("m".into()),
+            Some("anthropic".into()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(forced.provider, Provider::Anthropic);
+        assert!(LlmConfig::summary_overrides(
+            &base, None, None, Some("m".into()), Some("banana".into())).is_err());
+    }
+
     /// 【スキーマ機械生成】StateDelta schema が narration/ops を持ち、
     /// 全 StateOp バリアントの判別子 "op" を含む (規格=実装の単一真実源)。
     #[test]
