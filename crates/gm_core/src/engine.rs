@@ -136,8 +136,44 @@ fn validate_ops(
         // この op が合法なら射影へ仮適用 (不正な op は射影に乗せず、残りは現射影で診断を続ける)。
         if reasons.len() == before {
             apply_deterministic_op(&mut proj, scenario, op);
+            // ダイス op の帰結は原則非射影 (出目は apply 時確定) だが、attempt_challenge の
+            // **全帰結に共通する効果**だけは射影する — どの出目でも必ず起きる = 裁定時に
+            // 確定扱いしても「裁定は適用のドライラン」の健全性を破らない。日次フラグを
+            // 全帰結に書く作法 ([挑戦, 帰宅 move] の束ね) が一発受理になる。
+            // 帰結**依存**の効果 (片側だけ/tier) は従来どおり非射影 = ダイスはターンを割る。
+            if let StateOp::AttemptChallenge { challenge, .. } = op {
+                if let Some(def) = scenario.challenge(challenge) {
+                    for eff in guaranteed_challenge_effects(def) {
+                        apply_deterministic_op(&mut proj, scenario, &eff);
+                    }
+                }
+            }
         }
     }
+}
+
+/// challenge の**全帰結に共通する効果** = 出目に依らず必ず起きる op 列。
+/// on_success と on_failure の効果の**多重集合の交差** (過剰射影は誤受理の芽なので個数も厳密) と、
+/// 両帰結が同じフラグを立てる場合の set_flag。tier は加算的で outcome 効果を打ち消さないため
+/// 交差の健全性に影響しない (tier 限定の効果は共通でないので入らない)。片側が None なら空。
+fn guaranteed_challenge_effects(def: &crate::spine::ChallengeDef) -> Vec<StateOp> {
+    let (Some(s), Some(f)) = (&def.on_success, &def.on_failure) else {
+        return Vec::new();
+    };
+    let mut pool: Vec<&StateOp> = f.effects.iter().collect();
+    let mut out: Vec<StateOp> = Vec::new();
+    for e in &s.effects {
+        if let Some(i) = pool.iter().position(|p| *p == e) {
+            pool.remove(i);
+            out.push(e.clone());
+        }
+    }
+    if let (Some(sf), Some(ff)) = (&s.flag, &f.flag) {
+        if sf == ff {
+            out.push(StateOp::SetFlag { key: sf.clone(), value: true });
+        }
+    }
+    out
 }
 
 /// 1 op の力学を `state` (裁定では射影クローン) に対して検証する。
@@ -214,6 +250,19 @@ fn validate_op(
                     });
                     return;
                 }
+                // authored 専権フラグ (トリガー/challenge の帰結が書く) は LLM が true にも
+                // **false にも**倒せない (筋書きの先取り/巻き戻しの遮断)。従来この検査が無く、
+                // 語彙の除外は prompt 層のみ = `value:false` は素通りで受理されていた (#50:
+                // GM が「退勤」の意味論で会社フラグを false に倒し、同 delta の move gate を
+                // 自分で壊す / 単独なら authored 機構を静かに妨害できた)。トリガー効果は
+                // `apply_ops` 直行なので従来どおり書ける (grant_skill 等の op 専権と同型)。
+                if scenario.authored_only_flags().contains(key) {
+                    reasons.push(RejectReason::FlagNotAllowed {
+                        key: key.clone(),
+                        available: scenario.usable_flags().into_iter().collect(),
+                    });
+                    return;
+                }
                 if *value {
                     let gate = scenario.flag_gate(key);
                     if !gate.eval(state) {
@@ -271,12 +320,14 @@ fn validate_op(
                                 });
                             }
                         }
-                        // 判定の素性は authored。stat 修正を使う場合のみ、挑戦する entity が
-                        // その stat を宣言済みであること (stat 無し = 能力に依らない純粋ダイス)。
+                        // 判定の素性は authored。主体も authored 固定 (def.entity) があれば
+                        // それが op の entity を上書きする (LLM の entity 省略/誤指定に依らない)。
+                        // stat 修正を使う場合のみ、判定主体がその stat を宣言済みであること。
+                        let subject = def.entity.as_ref().unwrap_or(entity);
                         if let Some(stat) = &def.stat {
-                            if !scenario.knows_stat(entity, stat) {
+                            if !scenario.knows_stat(subject, stat) {
                                 reasons.push(RejectReason::UnknownStat {
-                                    entity: entity.clone(),
+                                    entity: subject.clone(),
                                     key: stat.clone(),
                                 });
                             }
@@ -617,8 +668,10 @@ fn apply_ops(
                 // ここに到達する challenge は必ず存在する (adjudicate 通過後)。
                 if let Some(def) = scenario.challenge(challenge) {
                     let roll = state.rng.roll(def.sides);
+                    // 判定主体: authored 固定 (def.entity) が op の entity を上書きする。
+                    let subject = def.entity.as_ref().unwrap_or(entity);
                     // stat 無し = 能力に依らない純粋ダイス (修正値 0)。
-                    let stat_mod = def.stat.as_ref().map_or(0, |s| state.stat_of(entity, s));
+                    let stat_mod = def.stat.as_ref().map_or(0, |s| state.stat_of(subject, s));
                     // 条件付き修正: when (Gate) が真の分だけ bonus を加える (導師の教えで +5 等)。
                     let cond_mod: i64 = def.modifiers.iter().filter(|m| m.when.eval(state)).map(|m| m.bonus).sum();
                     let modifier = stat_mod + cond_mod;
@@ -629,11 +682,15 @@ fn apply_ops(
                     if let Some(flag) = outcome.and_then(|o| o.flag.as_ref()) {
                         state.flags.insert(flag.clone(), true);
                     }
-                    // 極 (tier): 自然出目が min(=1)/max(=sides) に該当する authored tier を引く。
+                    // 極 (tier): 自然出目が min/max/閾値に該当する authored tier を引く。
+                    // 複数該当時は BTreeMap のキー名昇順で最初が勝つ (決定論)。
                     // 該当 tier に flag があれば engine が直書きする (通常成否フラグと併存)。
+                    // 閾値欠落 (validate が弾く前提だが) は発火させない安全側 (map_or false)。
                     let hit = def.tiers.iter().find(|(_, t)| match t.natural {
                         crate::spine::Natural::Min => roll == 1,
                         crate::spine::Natural::Max => roll == def.sides,
+                        crate::spine::Natural::AtMost => t.threshold.is_some_and(|n| roll <= n),
+                        crate::spine::Natural::AtLeast => t.threshold.is_some_and(|n| roll >= n),
                     });
                     let tier = hit.map(|(name, _)| name.clone());
                     if let Some((_, t)) = hit {
@@ -668,7 +725,8 @@ fn apply_ops(
                         .or_else(|| outcome.map(|o| o.sound.clone()))
                         .unwrap_or_default();
                     checks.push(CheckOutcome {
-                        entity: entity.clone(),
+                        // 提示は実際に振った主体 (authored 固定があればそれ) — UI/還流が正しい名を出す。
+                        entity: subject.clone(),
                         stat: def.stat.clone().unwrap_or_default(),
                         sides: def.sides,
                         roll,
@@ -1819,8 +1877,9 @@ goal: { kind: always }
         .unwrap();
         assert!(sc.validate().is_empty(), "{:?}", sc.validate());
         let mut s = sc.initial_state(3);
-        apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "投票フェーズ".into(), value: true }]))
-            .unwrap();
+        // 投票フェーズはトリガー effects が閉じる = 専権フラグ (#50 で LLM set_flag は却下される)。
+        // フェーズを開くのは authored 側の仕事なので、authored 効果相当の直接操作でセットアップする。
+        s.flags.insert("投票フェーズ".into(), true);
 
         // NPC の票だけでは発火しない — プレイヤーの票がイベント。
         let out = apply(
@@ -3398,6 +3457,288 @@ locations:
         assert!(s.flag("won"), "教えの有利で DC を越えて成功 (修正が load-bearing)");
     }
 
+    /// 【専権フラグの engine バックストップ (#50)】authored 専権フラグ (トリガー/challenge が書く)
+    /// への LLM set_flag は **true にも false にも**倒せない。従来この検査が無く、語彙除外は
+    /// prompt 層のみ = `value:false` は素通り受理だった — 実測 (1ldk): GM が「退勤」の意味論で
+    /// [set_flag 会社=false, move(gate:会社==true)] を束ね、**射影の中で自分の move を壊して**
+    /// 「画面は true なのに『true が必要』で却下」の怪奇を毎日再演。単独提案なら authored 機構を
+    /// 静かに妨害できた (grant_skill/set_attribute と同じ防衛線がフラグには欠けていた)。
+    #[test]
+    fn llm_cannot_set_authored_only_flags_either_direction() {
+        let yaml = r#"
+title: t
+start: office
+allowed_flags: [会社で仕事をする, 挨拶した]
+triggers:
+  - id: work_start
+    when: { kind: location_is, at: office }
+    effects:
+      - { op: set_flag, key: 会社で仕事をする, value: true }
+goal: { kind: always }
+locations:
+  office:
+    description: d
+    items: {}
+    exits:
+      - { to: home, gate: { kind: flag_is, key: 会社で仕事をする, value: true } }
+  home: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        // トリガー効果は従来どおり書ける (apply_ops 直行 = authored 信頼)。
+        apply(&mut s, &sc, &d(vec![])).unwrap();
+        assert!(s.flag("会社で仕事をする"), "authored トリガーは専権フラグを書ける");
+
+        // LLM の false 倒し (退勤の意味論) は却下 — 単独でも束ねでも state を汚せない。
+        let clock_out = d(vec![StateOp::SetFlag { key: "会社で仕事をする".into(), value: false }]);
+        match adjudicate(&s, &sc, &clock_out) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::FlagNotAllowed { key, .. } if key == "会社で仕事をする")),
+                "専権フラグの false 倒しを却下: {reasons:?}"
+            ),
+            Verdict::Accept => panic!("専権フラグへの set_flag false は却下されるべき (#50)"),
+        }
+        // true 立ても同様に却下 (先取りの遮断)。
+        let preempt = d(vec![StateOp::SetFlag { key: "会社で仕事をする".into(), value: true }]);
+        assert!(matches!(adjudicate(&s, &sc, &preempt), Verdict::Reject { .. }));
+
+        // #50 の self-sabotage 再現: [set_flag false, move] — 従来は set_flag が射影に乗り
+        // move が「true が必要」で落ちた (画面は true なのに)。今は set_flag 自体が却下され、
+        // move は無傷の射影で評価される (却下理由が正しい原因を名指しする)。
+        let sabotage = d(vec![
+            StateOp::SetFlag { key: "会社で仕事をする".into(), value: false },
+            StateOp::Move { to: "home".into() },
+        ]);
+        match adjudicate(&s, &sc, &sabotage) {
+            Verdict::Reject { reasons } => {
+                assert!(
+                    reasons.iter().any(|r| matches!(r, RejectReason::FlagNotAllowed { .. })),
+                    "真因 (専権フラグへの set_flag) が名指しされる: {reasons:?}"
+                );
+                assert!(
+                    !reasons.iter().any(|r| matches!(r, RejectReason::MoveGateUnmet { .. })),
+                    "却下 op は射影に乗らないので move は壊れない (誤診の除去): {reasons:?}"
+                );
+            }
+            Verdict::Accept => panic!("却下されるべき"),
+        }
+        // 非専権フラグ (挨拶した) は従来どおり LLM が set_flag できる。
+        let ok = d(vec![StateOp::SetFlag { key: "挨拶した".into(), value: true }]);
+        assert!(matches!(adjudicate(&s, &sc, &ok), Verdict::Accept), "通常フラグは不変");
+    }
+
+    /// 【全帰結共通効果の射影】attempt_challenge の効果のうち on_success/on_failure の**両方**に
+    /// あるもの (=どの出目でも必ず起きる) は裁定の射影に乗る → [挑戦, その帰結を gate にした move]
+    /// の束ねが一発受理される (日次フラグを全帰結に書く作法の摩擦を機構ごと消す)。
+    /// 片側にしか無い効果 (帰結依存) は従来どおり非射影 = その gate の move は却下のまま
+    /// (「ダイスはターンを割る」原則は帰結依存の手に対して不変)。
+    #[test]
+    fn adjudication_projects_outcome_invariant_challenge_effects() {
+        let yaml = r#"
+title: t
+start: office
+allowed_flags: [会社で仕事をする, 好調]
+challenges:
+  work:
+    sides: 20
+    dc: 10
+    on_success:
+      effects:
+        - { op: set_flag, key: 会社で仕事をする, value: true }
+        - { op: set_flag, key: 好調, value: true }
+    on_failure:
+      effects:
+        - { op: set_flag, key: 会社で仕事をする, value: true }
+goal: { kind: always }
+locations:
+  office:
+    description: d
+    items: {}
+    exits:
+      - { to: home, gate: { kind: flag_is, key: 会社で仕事をする, value: true } }
+      - { to: bar, gate: { kind: flag_is, key: 好調, value: true } }
+  home: { description: d, items: {}, exits: [] }
+  bar: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty());
+
+        // 会社で仕事をする は全帰結共通 → 射影され、[挑戦, 帰宅] の束ねが一発受理。
+        let mut s = sc.initial_state(1);
+        let bundle = d(vec![
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "work".into() },
+            StateOp::Move { to: "home".into() },
+        ]);
+        assert!(
+            matches!(adjudicate(&s, &sc, &bundle), Verdict::Accept),
+            "全帰結共通の効果は裁定時に確定扱い → 束ねが通る"
+        );
+        apply(&mut s, &sc, &bundle).unwrap();
+        assert_eq!(s.location, "home", "適用でも移動まで一気に進む");
+        assert!(s.flag("会社で仕事をする"));
+
+        // 好調 は成功側にしか無い (帰結依存) → 非射影のまま。それを gate にした move は却下。
+        let s2 = sc.initial_state(1);
+        let gamble = d(vec![
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "work".into() },
+            StateOp::Move { to: "bar".into() },
+        ]);
+        match adjudicate(&s2, &sc, &gamble) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::MoveGateUnmet { to, .. } if to == "bar")),
+                "帰結依存の効果は射影しない (ダイスはターンを割る): {reasons:?}"
+            ),
+            Verdict::Accept => panic!("成功限定の帰結を先取りした move は却下されるべき"),
+        }
+    }
+
+    /// 【判定主体の authored 固定】`ChallengeDef.entity` があれば op の entity を**上書き**して
+    /// その entity の stat で振る — LLM は既定で player を主体にするため、NPC の stat を使う
+    /// challenge (裏でヒナの浮気判定等) が UnknownStat で毎回却下されていた (実プレイ発見)。
+    /// 「判定の素性は authored」の主体版。entity 省略 (=player) でも誤指定でも正しく振られる。
+    #[test]
+    fn challenge_authored_entity_overrides_op_entity() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [seen]
+characters:
+  hina: { name: ヒナ, stats: { 主人公❤: { initial: 50 } } }
+challenges:
+  hina_work:
+    entity: hina
+    stat: 主人公❤
+    sides: 1
+    dc: 51
+    on_success: { flag: seen }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "hina は 主人公❤ を宣言済み: {:?}", sc.validate());
+        let mut s = sc.initial_state(1);
+
+        // LLM が entity を省略 (=player 既定) しても、authored 固定 (hina) で判定される。
+        // player は 主人公❤ を持たないが、主体が hina に上書きされるので却下されない。
+        let delta = d(vec![StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "hina_work".into() }]);
+        assert!(matches!(adjudicate(&s, &sc, &delta), Verdict::Accept), "player 指定でも却下されない");
+        let o = apply(&mut s, &sc, &delta).unwrap();
+        let c = &o.checks[0];
+        assert_eq!(c.entity, "hina", "実際に振った主体 (hina) が surface される");
+        assert_eq!(c.modifier, 50, "hina の 主人公❤ (50) が修正に乗る");
+        assert!(c.success, "1d1(1)+50=51 >= DC51");
+        assert!(s.flag("seen"), "帰結フラグも通常どおり");
+    }
+
+    /// 【幻主体の load 時遮断】authored 判定主体が判定 stat を宣言していなければ validate が
+    /// ChallengeStatUndeclared で弾く (プレイ中の UnknownStat 却下でなく load 時に名指し)。
+    #[test]
+    fn validate_rejects_challenge_authored_entity_without_stat() {
+        let yaml = r#"
+title: t
+start: room
+characters:
+  hina: { name: ヒナ }
+challenges:
+  hina_work: { entity: hina, stat: 主人公❤, sides: 6, dc: 3 }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::ChallengeStatUndeclared { challenge, entity, stat }
+                    if challenge == "hina_work" && entity == "hina" && stat == "主人公❤")),
+            "stat 未宣言の authored 主体を load 時に弾く: {:?}", sc.validate()
+        );
+    }
+
+    /// 【tier の閾値 (at_most/at_least)】d100 のように sides が大きく min(=1) では滅多に発火しない盤面で、
+    /// 下位/上位帯を極にできる。自然出目そのもの (修正前) で判定。帯外の出目では発火しない。
+    /// 決定論 seed: 2→d100=11 (≤20), 3→54 (帯外), 13→96 (≥96)。
+    #[test]
+    fn tier_threshold_at_most_and_at_least_fire_on_band() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [fumbled, crit_hit]
+challenges:
+  strike:
+    sides: 100
+    dc: 50
+    tiers:
+      crit_fail: { natural: at_most, threshold: 20, flag: fumbled }
+      crit:      { natural: at_least, threshold: 96, flag: crit_hit }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "1..=sides 内の閾値は健全");
+        let attempt = || d(vec![StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "strike".into() }]);
+
+        // 下位帯 (roll 11 <= 20) → crit_fail 発火。
+        let mut lo = sc.initial_state(2);
+        let o = apply(&mut lo, &sc, &attempt()).unwrap();
+        assert_eq!(o.checks[0].roll, 11, "seed 2 で d100=11");
+        assert_eq!(o.checks[0].tier.as_deref(), Some("crit_fail"), "roll 11 は at_most:20 帯");
+        assert!(lo.flag("fumbled") && !lo.flag("crit_hit"), "下位帯フラグだけ立つ");
+
+        // 上位帯 (roll 96 >= 96) → crit 発火。
+        let mut hi = sc.initial_state(13);
+        let o = apply(&mut hi, &sc, &attempt()).unwrap();
+        assert_eq!(o.checks[0].roll, 96, "seed 13 で d100=96");
+        assert_eq!(o.checks[0].tier.as_deref(), Some("crit"), "roll 96 は at_least:96 帯");
+        assert!(hi.flag("crit_hit") && !hi.flag("fumbled"), "上位帯フラグだけ立つ");
+
+        // 帯外 (roll 54) → どの tier にも該当せず発火なし。
+        let mut mid = sc.initial_state(3);
+        let o = apply(&mut mid, &sc, &attempt()).unwrap();
+        assert_eq!(o.checks[0].roll, 54, "seed 3 で d100=54");
+        assert_eq!(o.checks[0].tier, None, "帯外は極に該当しない");
+        assert!(!mid.flag("fumbled") && !mid.flag("crit_hit"), "帯外はどのフラグも立たない");
+    }
+
+    /// 【tier 閾値の範囲外を load 時に弾く】at_most/at_least は 1..=sides の範囲でなければ
+    /// 常時発火/絶対不発火の幻値なので validate が TierThresholdOutOfRange を返す (min/max は検査不要)。
+    #[test]
+    fn validate_rejects_out_of_range_tier_threshold() {
+        let mk = |tier: &str| {
+            Scenario::from_yaml(&format!(
+                "title: t\nstart: room\nallowed_flags: [f]\n\
+                 challenges:\n  c:\n    sides: 100\n    dc: 50\n    tiers:\n      t: {{ {tier}, flag: f }}\n\
+                 goal: {{ kind: always }}\n\
+                 locations:\n  room: {{ description: d, items: {{}}, exits: [] }}\n"
+            ))
+            .unwrap()
+        };
+        // 範囲外: sides=100 に対し 200 (常時発火) / 0 (絶対不発火) / 閾値欠落 (無制限)。
+        for bad in [
+            "natural: at_most, threshold: 200",
+            "natural: at_least, threshold: 200",
+            "natural: at_most, threshold: 0",
+            "natural: at_most", // threshold 欠落
+        ] {
+            let errs = mk(bad).validate();
+            assert!(
+                errs.iter().any(|e| matches!(e, crate::spine::ScenarioError::TierThresholdOutOfRange { .. })),
+                "{bad} は範囲外/欠落として弾く: {errs:?}"
+            );
+        }
+        // 範囲内 (境界含む) と min/max (threshold 不要) は健全。
+        for ok in [
+            "natural: at_most, threshold: 1",
+            "natural: at_most, threshold: 100",
+            "natural: at_least, threshold: 100",
+            "natural: min",
+            "natural: max",
+        ] {
+            assert!(mk(ok).validate().is_empty(), "{ok} は健全なはず");
+        }
+    }
+
     /// 【インライン結末ナレーション】challenge の on_failure/on_success/tier に authored narration を
     /// 付けると `CheckOutcome.narration` に載り、**繰り返す失敗でも毎回**出る (トリガーと違い latch しない)。
     /// フラグ無しの失敗でも語れる。極(tier)の narration は通常成否より優先。
@@ -3501,6 +3842,48 @@ locations:
             sc.validate().iter().any(|e| matches!(e,
                 crate::spine::ScenarioError::FlagHintUndeclared { flag } if flag == "ghost")),
             "未宣言フラグへのヒントを validate が弾く: {:?}", sc.validate()
+        );
+    }
+
+    /// 【二重所有の罠 / flag_hint × 専権フラグ】「GM に立てさせたい」意図の flag_hint を、
+    /// トリガー/challenge の effects が書く**専権フラグ**に付けると、そのフラグは GM の usable
+    /// 一覧に一切出ずヒントが死ぬ (作者が踏みやすい罠)。**lint (警告・非 fatal)** — プレイは
+    /// 壊れないので validate (load 拒否) にはしない。fatal にすると配布済み content が受領側で
+    /// 死ぬ (実測: 書庫アップロード済みシナリオの大半が該当、2026-07-12 ユーザー報告)。
+    #[test]
+    fn flag_hint_on_authored_only_is_lint_not_fatal() {
+        // 午後 はトリガー effects が set_flag する = 専権。そこに flag_hint を付けると死ぬ。
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [仕事完了, 午後]
+flag_hints:
+  仕事完了: 仕事を終えたら立てる
+  午後: 午後になったら立てる
+triggers:
+  - id: 時間経過
+    when: { kind: flag_is, key: 仕事完了, value: true }
+    effects:
+      - { op: set_flag, key: 午後, value: true }
+goal: { kind: always }
+locations:
+  room: { description: d, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        // validate は通る (fatal にしない = 既存の配布済み content を殺さない)。
+        assert!(sc.validate().is_empty(), "死んだヒントで load を拒否しない: {:?}", sc.validate());
+        // lints が警告として名指しする。
+        let warns = sc.lints();
+        assert!(
+            warns.iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::FlagHintOnAuthoredOnly { flag } if flag == "午後")),
+            "専権フラグへのヒントを lint が報せる: {warns:?}"
+        );
+        // 仕事完了 は純粋 set_flag (GM が立てる) なのでヒントは生きる → lint にも出ない。
+        assert!(
+            !warns.iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::FlagHintOnAuthoredOnly { flag } if flag == "仕事完了")),
+            "GM が立てるフラグへのヒントは健全: {warns:?}"
         );
     }
 

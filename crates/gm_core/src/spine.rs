@@ -319,14 +319,26 @@ pub enum ImageMode {
 }
 
 /// tier がどの**自然出目** (修正前の素の `1d{sides}`) で発火するか。
-/// `sides` 相対なので die サイズに依存しない (`max` は d6→6, d20→20)。
+/// `min`/`max` は die サイズに依存しない極点、`at_most`/`at_least` は [`TierDef::threshold`] と
+/// 組で**幅**を持たせる閾値。
+///
+/// **判定するのは自然出目そのもの** (stat 修正も modifiers の bonus も乗る前) なので、
+/// 「素の下振れ = 大失敗」という tier の設計思想は幅を持たせても保たれる。d100 のように
+/// `sides` が大きく `min` (=1 のみ, 1%) では滅多に発火しない盤面で、下位/上位帯を極にできる。
+///
+/// 全て単項 (data を持たない) ゆえ YAML では文字列 (`natural: at_most`)。閾値は兄弟フィールド
+/// `threshold` で持つ (`{ natural: at_most, threshold: 20 }`)。既存の `natural: min` は不変。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Natural {
-    /// 最小目 (`roll == 1`)。大失敗 (fumble) の定番条件。
+    /// 最小目 (`roll == 1`)。大失敗 (fumble) の定番条件。`threshold` 不要。
     Min,
-    /// 最大目 (`roll == sides`)。大成功 (crit) の定番条件。
+    /// 最大目 (`roll == sides`)。大成功 (crit) の定番条件。`threshold` 不要。
     Max,
+    /// `roll <= threshold`。下位帯を極にする (d100 で「20 以下は大失敗」等)。`threshold` 必須 (`1..=sides`)。
+    AtMost,
+    /// `roll >= threshold`。上位帯を極にする (d100 で「96 以上は大成功」等)。`threshold` 必須 (`1..=sides`)。
+    AtLeast,
 }
 
 /// 判定結果の極 (tier)。**作者が定義する** — どの自然出目で発火し、何を帰結フラグに立てるか。
@@ -335,6 +347,10 @@ pub enum Natural {
 pub struct TierDef {
     /// この tier が発火する自然出目の極。
     pub natural: Natural,
+    /// `at_most`/`at_least` の閾値 (`1..=sides`、[`Scenario::validate`] が検査)。
+    /// `min`/`max` では不要 (無視される)。省略時 `None`。
+    #[serde(default)]
+    pub threshold: Option<u32>,
     /// 該当時に**同一 apply 内で原子適用**する機械効果 (authored 専権 — trigger effects と
     /// 同じ信頼モデル。LLM は challenge を「選ぶ」だけで帰結を持てない)。stat/attribute/
     /// スキル等をフラグ+トリガーの2点セット無しで直接動かせる。`attempt_challenge` は
@@ -391,6 +407,13 @@ pub struct ChallengeDef {
     /// LLM への提示文 (どんな行動の判定か。`scenario_brief` に出して GM に選ばせる)。
     #[serde(default)]
     pub description: String,
+    /// **判定主体の authored 固定** (任意)。`Some` なら op の `entity` を**上書き**して、
+    /// この entity の stat で振る (LLM が entity を省略/誤指定しても正しい主体で判定される —
+    /// 実測: LLM は既定で player を主体にするため、NPC の stat を使う challenge が
+    /// UnknownStat で毎回却下されていた)。「判定の素性 (stat/sides/dc/帰結) は authored」の
+    /// 主体版 = 閉世界の一貫。`None` なら従来どおり op の entity (省略時 player)。
+    #[serde(default)]
+    pub entity: Option<EntityId>,
     /// この挑戦に挑める前提条件 (Gate)。`Some` で偽なら `attempt_challenge` を却下 (挑戦の解禁/封鎖)。
     /// 「導師に会うまでは秘奥義に挑めない」等。`None` なら常に挑める。
     #[serde(default)]
@@ -432,6 +455,13 @@ pub enum ScenarioError {
     PersistentFlagUndeclared { flag: FlagKey },
     /// `flag_hints` のキーが `allowed_flags` に宣言されていない (幻フラグへのヒント)。
     FlagHintUndeclared { flag: FlagKey },
+    /// `flag_hints` のキーが**専権フラグ** (トリガー/challenge の effects が書く) に付いている
+    /// (二重所有の罠)。ヒントは「GM に set_flag で立てさせたい」意図表明だが、専権フラグは GM の
+    /// usable 一覧に一切出ないので**ヒントが死ぬ**。フラグの書き手を GM か engine のどちらか一方に
+    /// 決める (トリガー/challenge から外して純粋 set_flag にするか、ヒントを外す)。
+    /// **lint** ([`Scenario::lints`]) — プレイは壊れないので load は拒否しない (警告表示のみ。
+    /// fatal にすると配布済み content が受領側で死ぬ)。
+    FlagHintOnAuthoredOnly { flag: FlagKey },
     /// `flag_titles` のキーが `allowed_flags` に宣言されていない (幻フラグへの表示名)。
     FlagTitleUndeclared { flag: FlagKey },
     /// `hidden_flags` のキーが `allowed_flags` に宣言されていない (幻フラグの秘匿)。
@@ -454,6 +484,20 @@ pub enum ScenarioError {
     /// challenge の effects に `attempt_challenge` が入っている (A→A の無限再帰の芽)。
     /// 判定の連鎖は flag→トリガー経由で書く。
     ChallengeEffectRecursive { challenge: ChallengeId },
+    /// challenge の authored 判定主体 (`ChallengeDef::entity`) が、判定に使う stat を宣言して
+    /// いない (幻主体/幻ステータス)。player は `initial_stats`、NPC は `CharacterDef::stats` で宣言。
+    ChallengeStatUndeclared {
+        challenge: ChallengeId,
+        entity: EntityId,
+        stat: StatKey,
+    },
+    /// tier の `at_most`/`at_least` 閾値が `1..=sides` の範囲外 (常時発火/絶対不発火の幻値)。
+    TierThresholdOutOfRange {
+        challenge: ChallengeId,
+        tier: String,
+        threshold: u32,
+        sides: u32,
+    },
     /// `role_assignment` の pool 人数合計と among の人数が一致しない (配りきれない/余る)。
     RoleAssignmentCountMismatch { pool_total: u32, among: usize },
     /// `role_assignment.among` にこのシナリオが知らない entity が居る (幻キャラへの配布)。
@@ -741,6 +785,24 @@ impl Scenario {
 
     /// **静的整合性**を検査する (load 時に呼ぶ)。空 Vec なら健全。
     ///
+    /// **lint** — プレイは壊れないが作者の意図どおりに動かない書き方を報せる (非 fatal・表示のみ)。
+    /// [`Self::validate`] (整合性の破れ = load 拒否) とは重大度で分ける: fatal にすると配布済み
+    /// content が受領側で死ぬ (受領者は直せない) ため、lint は警告として提示層が surface する。
+    ///
+    /// 現在の lint: **専権フラグへの flag_hint** (二重所有の罠) — ヒントは「GM に set_flag で
+    /// 立てさせたい」意図表明だが、トリガー/challenge の effects が書くフラグは GM の usable
+    /// 一覧に出ないのでヒントが死ぬ。書き手を GM か engine のどちらか一方に決める。
+    pub fn lints(&self) -> Vec<ScenarioError> {
+        let mut warns = Vec::new();
+        let authored_only = self.authored_only_flags();
+        for flag in self.flag_hints.keys() {
+            if self.allowed_flags.contains(flag) && authored_only.contains(flag) {
+                warns.push(ScenarioError::FlagHintOnAuthoredOnly { flag: flag.clone() });
+            }
+        }
+        warns
+    }
+
     /// PoC-1: 各 challenge の tier が立てる帰結フラグが `allowed_flags` に宣言済みかを見る。
     /// engine は tier 該当時にこのフラグを (flag_rules gate を迂回して) 直書きするので、
     /// 未宣言フラグを許すと閉世界が破れる。apply 中の panic でなく load 時に弾く。
@@ -761,6 +823,33 @@ impl Scenario {
                         tier: label.to_string(),
                         flag: flag.clone(),
                     });
+                }
+            }
+            // authored 判定主体 (entity) が判定 stat を宣言していることを load 時に確認する
+            // (幻主体はプレイ中の UnknownStat 却下でなく load 時に名指しで弾く)。
+            if let (Some(e), Some(s)) = (&def.entity, &def.stat) {
+                if !self.knows_stat(e, s) {
+                    errs.push(ScenarioError::ChallengeStatUndeclared {
+                        challenge: cid.clone(),
+                        entity: e.clone(),
+                        stat: s.clone(),
+                    });
+                }
+            }
+            // at_most/at_least は threshold が必須かつ 1..=sides の範囲内であること
+            // (欠落=無制限、範囲外=常時発火/絶対不発火の幻値。load 時に弾く)。min/max は threshold 不要。
+            for (tname, tier) in &def.tiers {
+                if matches!(tier.natural, Natural::AtMost | Natural::AtLeast) {
+                    // 欠落は 0 として報告 (1..=sides 外なので同じ経路で弾かれる)。
+                    let n = tier.threshold.unwrap_or(0);
+                    if n < 1 || n > def.sides {
+                        errs.push(ScenarioError::TierThresholdOutOfRange {
+                            challenge: cid.clone(),
+                            tier: tname.clone(),
+                            threshold: n,
+                            sides: def.sides,
+                        });
+                    }
                 }
             }
             // 帰結の直接効果 (effects): attempt_challenge の入れ子は無限再帰の芽なので弾く。
@@ -816,6 +905,9 @@ impl Scenario {
             }
         }
         // 知識フラグのヒントも許可フラグのキーにしか付けられない (幻フラグへのヒントを弾く)。
+        // 専権フラグへの死んだヒントは**プレイを壊さない**ので validate (fatal) でなく
+        // [`Self::lints`] (警告・表示のみ) が報せる — fatal にすると配布済み content を
+        // 受領側で殺す (受領者は直せない)。
         for flag in self.flag_hints.keys() {
             if !self.allowed_flags.contains(flag) {
                 errs.push(ScenarioError::FlagHintUndeclared { flag: flag.clone() });

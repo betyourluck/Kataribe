@@ -11,6 +11,7 @@
 
 pub mod engine;
 pub mod reason;
+pub mod lint;
 pub mod spine;
 pub mod state;
 
@@ -18,6 +19,7 @@ pub use engine::{
     adjudicate, apply, is_goal, ApplyOutcome, CheckOutcome, FiredTrigger, RollOutcome, Verdict,
 };
 pub use reason::{Lang, RejectReason};
+pub use lint::unknown_key_lints;
 pub use spine::{
     ChallengeDef, CharacterDef, Exit, Gate, GoalDef, ImageMode, Location, LocationItem, Natural,
     Protagonist, RoleAssignment, Scenario, ScenarioError, StatDecl, TakeMode, TierDef, Trigger,

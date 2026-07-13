@@ -85,6 +85,8 @@ pub struct LoadedPackage {
     pub manifest: PackageManifest,
     /// entry シナリオ。`inject_cast` + [`inject_package`] + `validate` 済。
     pub scenario: Scenario,
+    /// 非 fatal な作者向け警告 (未知フィールド lint 等)。提示層が開幕 ⚠ で出す。
+    pub warnings: Vec<String>,
 }
 
 /// package の `player`/`globals` を1つのモジュール (scenario) へ注入する。
@@ -173,7 +175,12 @@ pub fn load_package(dir: &Path) -> Result<LoadedPackage, HarnessError> {
             detail: format!("scenario 整合性エラー: {errs:?}"),
         });
     }
-    Ok(LoadedPackage { manifest, scenario })
+    // 未知フィールド lint (非 fatal)。serde が黙って無視した typo/入れ子ミスを作者に報せる。
+    let warnings = gm_core::unknown_key_lints(&entry_text)
+        .into_iter()
+        .map(|w| format!("{}: {w}", manifest.entry))
+        .collect();
+    Ok(LoadedPackage { manifest, scenario, warnings })
 }
 
 /// entry が campaign 型 (複数モジュールを束ねる) か。エントリ名に `campaign` を含むかで判定。

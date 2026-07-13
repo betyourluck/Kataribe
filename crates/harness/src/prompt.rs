@@ -257,9 +257,13 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
         s.push_str("\n## 挑戦 (不確実な行動の判定。attempt_challenge で id を選んで挑む)\n");
         for (id, c) in &scenario.challenges {
             let label = if c.description.trim().is_empty() { id.as_str() } else { c.description.trim() };
-            let basis = match &c.stat {
-                Some(stat) => format!("{stat} 判定"),
-                None => "運 (能力に依らない)".to_string(),
+            // 判定主体が authored 固定なら誰の判定かを明示 (entity は engine が上書きするので
+            // GM は指定不要 — 誤って player を指定しても正しい主体で振られる)。
+            let basis = match (&c.entity, &c.stat) {
+                (Some(e), Some(stat)) => format!("{e} の {stat} 判定 (主体は固定済み・entity 指定不要)"),
+                (Some(e), None) => format!("{e} の運試し (能力に依らない)"),
+                (None, Some(stat)) => format!("{stat} 判定"),
+                (None, None) => "運 (能力に依らない)".to_string(),
             };
             // 前提条件 (requires) があれば明示 — 満たすまでこの挑戦は選べない。
             let req = match &c.requires {
