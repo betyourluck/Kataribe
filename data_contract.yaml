@@ -493,6 +493,16 @@ Epilogue:                           # spec 11 (2026-07-14 rev3 査読確定): go
   grounding: "既定規律 =「起きたことは記録のとおりに・これから起きること (後日談) は自由に」。終幕ゆえ以後のターンを汚染しない (#47 経路なし) が、プレイヤーが読む確定文なので記録との矛盾は禁止。後日談の方向づけは authored 指示。目安 600 字・機械カットなし (narration と同じ非検証チャネル)"
   presentation: "表示順 = 結末ナレーション → 到達バナー (🎉) → 「―― エピローグ ――」→ 本文 (**エピローグで幕が下りる** — バナーが余韻をぶった切らない)。会話ログ (frontend LogEntry = テキスト保存対象) にのみ積む。chronicle (TurnLog 正史) と SessionSave には積まない。生成は autosave の**後** (失敗がセーブを巻き込まない。SessionSave に epilogue フィールドは無い = 保存経路に分岐なし)。生成中は epilogue-writing イベント"
 
+UnifiedToolLayer:                   # spec 12 Phase A (2026-07-15): llm_client の canonical + adapter seam (Claude/GPT/Gemini/Grok)
+  provider: "Provider = openai_compat | anthropic | gemini(Phase C)。判定 = LLM_PROVIDER 明示 > base_url 自動 (api.anthropic.com → anthropic / generativelanguage.googleapis.com かつ /openai を含まない → gemini / それ以外 → openai_compat)。プロキシ等の判定不能ホストは openai_compat に落ちる (安全側。明示指定を .env.example で誘導)"
+  chat_request: "canonical ChatRequest { model, messages: [ChatMessage{role,content}], tools: [ToolSpec{name, description, parameters(JSON Schema, schemars 機械生成の単一真実源)}], tool_choice, temperature: Option (明示時のみ送る), max_tokens } — Driver 相当 (generate/generate_structured) はこれしか組まない。wire への変換は adapter の encode 純関数"
+  tool_choice: "ToolChoice = none | auto | required | specific(name)。Kataribe v1 の利用は none (generate) と specific (emit_delta 強制) のみ。写像: OpenAI {type:function,function:{name}} / Claude {type:tool,name} / Gemini functionCallingConfig {mode:ANY, allowedFunctionNames:[name]} (Phase C)"
+  chat_response: "canonical ChatResponse { text: Option, tool_calls: [ToolCall{id, name, args: JSON object}], finish: stop|tool_use|length|other, usage: Usage{prompt, completion, cache_read} }。args は必ずオブジェクト (写経元 D2) — OpenAI 系の「arguments は JSON 文字列」は adapter の decode 境界で 1 回だけ parse。finish は empty-response 防御 (Phase D) の判定材料。抽出 (parse::extract) は canonical に対する単一経路"
+  adapters: "encode/decode は純関数 (PoC で固める)、HTTP/リトライ/認証は client 核、経路選択は complete() の provider match 一箇所: openai_compat (GPT/Grok/さくら/ローカル互換。no-tools JSON モード #29 と x-grok-conv-id #45 を内包) / anthropic (ネイティブ /messages。cache_control #44 を内包) / gemini (Phase C, generateContent + x-goog-api-key ヘッダ認証)。プロバイダ防御は adapter の外に漏らさない (写経元 D5)"
+  env: "LLM_PROVIDER 語彙 = anthropic|native / openai|openai_compat|compat / gemini(Phase C)。LLM_EFFORT (Phase B, 未設定なら送らない=現行動作。Grok 対象モデルのみ既定送出の例外 = API 既定回避)。既存キー (LLM_BASE_URL/LLM_API_KEY/LLM_MODEL/LLM_TEMPERATURE/LLM_MAX_TOKENS/LLM_USE_TOOLS/LLM_REQUEST_TIMEOUT_SECS/LLM_MAX_RETRIES) 不変"
+  invariants: "資産保全 (回帰不変条件): Anthropic cache_control の system 末尾配置 / xAI conv_id ヘッダ / CacheStat 一元記録 (complete() で成功 1 回=記録 1 回) / Parse エラーの raw 保持 #34 / CoT 除去 #30 / ops-as-string 救済 #40 / inline_schema_defs + filter_authored_only_ops / temperature None 既定 / 指数 backoff"
+  mistral_vision_note: "(スコープ外の凍結, 2026-07-15 査読確定) Mistral vision の正形は {type: image_url, image_url: {url}} の**オブジェクト形**。bare-string は上流 repo 実装の stale — 将来 Mistral 対応時に混同しない"
+
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
   memoria_neural: "LoreStore の bigram TF-IDF cosine を**神経 embedding** に格上げ (同 Memoria trait 裏で差し替え)。usage-over-extension: TF-IDF cosine が不足と接地できてから。語彙の表層に依らない真の意味近傍が要る時のみ。recall→prompt 注入・bigram cosine は ✅実装済"

@@ -5,8 +5,8 @@
 
 use serde::de::DeserializeOwned;
 
+use crate::canonical::ChatResponse;
 use crate::error::LlmError;
-use crate::wire::ResponseMessage;
 
 /// ASCII の needle を大小無視で探し、haystack 内の **バイト位置**を返す。
 /// needle が ASCII なので一致位置は必ず char 境界 (UTF-8 継続バイトは >= 0x80)。
@@ -120,23 +120,23 @@ pub fn sanitize_narration(s: &str) -> String {
     t[..cut].trim().to_string()
 }
 
-/// 応答 message から `T` を取り出す。
+/// canonical 応答から `T` を取り出す (**抽出の単一経路** — 全 adapter がここへ合流する)。
 ///
-/// 1. `tool_calls` があれば最初の関数の `arguments` (JSON 文字列) を `T` にパース。
-/// 2. 無ければ `content` をフェンス除去して `T` にパース (フォールバック)。
+/// 1. `tool_calls` があれば最初の呼び出しの `args` (JSON オブジェクト、decode 境界で
+///    パース済み = 写経元 D2) を `T` に解決。
+/// 2. 無ければ `text` をフェンス除去して `T` にパース (フォールバック)。
 /// 3. どちらも無ければ [`LlmError::NoStructuredOutput`]。
 ///
-/// パース失敗時は **raw を保持した** [`LlmError::Parse`] を返す ── 再生成プロンプトに添えるため。
-pub fn extract<T: DeserializeOwned>(message: &ResponseMessage) -> Result<T, LlmError> {
-    if let Some(call) = message.tool_calls.first() {
-        let raw = &call.function.arguments;
-        return from_str_lenient::<T>(raw).map_err(|source| LlmError::Parse {
+/// 解決失敗時は **raw を保持した** [`LlmError::Parse`] を返す ── 再生成プロンプトに添えるため。
+pub(crate) fn extract<T: DeserializeOwned>(resp: &ChatResponse) -> Result<T, LlmError> {
+    if let Some(call) = resp.tool_calls.first() {
+        return from_value_lenient::<T>(call.args.clone()).map_err(|source| LlmError::Parse {
             source,
-            raw: raw.clone(),
+            raw: call.args.to_string(),
         });
     }
 
-    if let Some(content) = message.content.as_deref() {
+    if let Some(content) = resp.text.as_deref() {
         // 推論モデルの CoT ブロックを先に落とす (no-tools モードの堅牢化)。
         let content = strip_reasoning_blocks(content);
         if !content.trim().is_empty() {
@@ -158,12 +158,45 @@ pub fn extract<T: DeserializeOwned>(message: &ResponseMessage) -> Result<T, LlmE
     Err(LlmError::NoStructuredOutput)
 }
 
-/// JSON テキストを `T` へ。素直な from_str が失敗したら、実 LLM で観測した崩れ形を
-/// **決定論的に**直してから再試行する (#28/#30 と同族のソース後処理、#40):
-/// - `"ops"` が**文字列** (Gemini が `"ops": "\n"` や JSON 配列を二重エンコードした文字列を
-///   出す) → 空白のみなら `[]`、JSON 配列としてパースできればその配列に差し替える。
-///
+/// `"ops"` が**文字列**に化けた崩れ (#40: Gemini が `"ops": "\n"` や JSON 配列を
+/// 二重エンコードした文字列を出す) を**決定論的に**直す。空白のみなら `[]`、
+/// JSON 配列としてパースできればその配列に差し替え、直せたら true。
+fn fix_ops_as_string(value: &mut serde_json::Value) -> bool {
+    let Some(obj) = value.as_object_mut() else {
+        return false;
+    };
+    let Some(ops_str) = obj.get("ops").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let fixed = if ops_str.trim().is_empty() {
+        serde_json::Value::Array(Vec::new())
+    } else {
+        match serde_json::from_str::<serde_json::Value>(ops_str.trim()) {
+            Ok(arr @ serde_json::Value::Array(_)) => arr,
+            _ => return false,
+        }
+    };
+    obj.insert("ops".to_string(), fixed);
+    true
+}
+
+/// JSON オブジェクト (tool 経路 — decode 境界でパース済み) を `T` へ。素直な from_value が
+/// 失敗したら [`fix_ops_as_string`] (#40) を当てて再試行する。
 /// 失敗時は**最初の** serde エラーを返す (崩れの一次症状を診断に残す)。
+fn from_value_lenient<T: DeserializeOwned>(value: serde_json::Value) -> Result<T, serde_json::Error> {
+    let first = match serde_json::from_value::<T>(value.clone()) {
+        Ok(v) => return Ok(v),
+        Err(e) => e,
+    };
+    let mut value = value;
+    if !fix_ops_as_string(&mut value) {
+        return Err(first);
+    }
+    serde_json::from_value::<T>(value).map_err(|_| first)
+}
+
+/// JSON テキスト (content フォールバック経路) を `T` へ。素直な from_str が失敗したら
+/// [`fix_ops_as_string`] (#40) を当てて再試行する (#28/#30 と同族のソース後処理)。
 fn from_str_lenient<T: DeserializeOwned>(raw: &str) -> Result<T, serde_json::Error> {
     let first = match serde_json::from_str::<T>(raw) {
         Ok(v) => return Ok(v),
@@ -172,20 +205,8 @@ fn from_str_lenient<T: DeserializeOwned>(raw: &str) -> Result<T, serde_json::Err
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Err(first);
     };
-    let Some(obj) = value.as_object_mut() else {
+    if !fix_ops_as_string(&mut value) {
         return Err(first);
-    };
-    let Some(ops_str) = obj.get("ops").and_then(|v| v.as_str()) else {
-        return Err(first);
-    };
-    let fixed = if ops_str.trim().is_empty() {
-        serde_json::Value::Array(Vec::new())
-    } else {
-        match serde_json::from_str::<serde_json::Value>(ops_str.trim()) {
-            Ok(arr @ serde_json::Value::Array(_)) => arr,
-            _ => return Err(first),
-        }
-    };
-    obj.insert("ops".to_string(), fixed);
+    }
     serde_json::from_value::<T>(value).map_err(|_| first)
 }

@@ -14,7 +14,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::wire::{ChatMessage, FunctionCallResponse, ResponseMessage, Role, ToolCallResponse};
+use crate::canonical;
+use crate::wire::{ChatMessage, Role};
 
 /// 必須ヘッダ `anthropic-version` の値。
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -152,6 +153,9 @@ pub(crate) struct MessagesResponse {
     pub content: Vec<ContentBlock>,
     #[serde(default)]
     pub usage: Option<Usage>,
+    /// 終了理由 (`end_turn`/`tool_use`/`max_tokens`/...)。canonical `Finish` の材料。
+    #[serde(default)]
+    pub stop_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -164,6 +168,10 @@ pub(crate) enum ContentBlock {
         /// tool の引数 (OpenAI 形と違い **JSON オブジェクト**。文字列ではない)。
         #[serde(default)]
         input: Value,
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
     },
     /// 未知ブロック (thinking 等) は無視する (前方互換)。
     #[serde(other)]
@@ -184,30 +192,44 @@ pub(crate) struct Usage {
     pub cache_read_input_tokens: u64,
 }
 
-impl MessagesResponse {
-    /// OpenAI 形の [`ResponseMessage`] へ写す — 既存 [`crate::parse::extract`] に合流させ、
-    /// tool_use 主経路 + content フォールバック (救済含む) の単一抽出経路を保つ。
-    pub(crate) fn into_response_message(self) -> ResponseMessage {
-        let mut texts: Vec<String> = Vec::new();
-        let mut tool_calls: Vec<ToolCallResponse> = Vec::new();
-        for block in self.content {
-            match block {
-                ContentBlock::Text { text } => texts.push(text),
-                ContentBlock::ToolUse { input } => tool_calls.push(ToolCallResponse {
-                    function: FunctionCallResponse {
-                        arguments: input.to_string(),
-                    },
-                }),
-                ContentBlock::Other => {}
-            }
+/// ネイティブ応答 → canonical (spec 12 Phase A)。
+///
+/// tool_use の `input` は最初から JSON オブジェクトなので写像は恒等 (写経元 D2 —
+/// 従来の「文字列化 → OpenAI 形 → 再パース」の往復を廃止)。抽出 (`parse::extract`) は
+/// canonical に対する単一経路に合流する。
+pub(crate) fn decode(resp: MessagesResponse) -> canonical::ChatResponse {
+    let usage = resp
+        .usage
+        .as_ref()
+        .map(|u| canonical::Usage {
+            prompt: u.input_tokens,
+            completion: u.output_tokens,
+            cache_read: u.cache_read_input_tokens,
+        })
+        .unwrap_or_default();
+    let finish = match resp.stop_reason.as_deref() {
+        Some("end_turn") => canonical::Finish::Stop,
+        Some("tool_use") => canonical::Finish::ToolUse,
+        Some("max_tokens") => canonical::Finish::Length,
+        _ => canonical::Finish::Other,
+    };
+    let mut texts: Vec<String> = Vec::new();
+    let mut tool_calls: Vec<canonical::ToolCall> = Vec::new();
+    for block in resp.content {
+        match block {
+            ContentBlock::Text { text } => texts.push(text),
+            ContentBlock::ToolUse { input, id, name } => tool_calls.push(canonical::ToolCall {
+                id: id.unwrap_or_default(),
+                name: name.unwrap_or_default(),
+                args: input,
+            }),
+            ContentBlock::Other => {}
         }
-        ResponseMessage {
-            content: if texts.is_empty() {
-                None
-            } else {
-                Some(texts.join("\n"))
-            },
-            tool_calls,
-        }
+    }
+    canonical::ChatResponse {
+        text: if texts.is_empty() { None } else { Some(texts.join("\n")) },
+        tool_calls,
+        finish,
+        usage,
     }
 }

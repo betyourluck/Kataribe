@@ -13,9 +13,11 @@
 //! - `_strip_code_fence` / フェンス除去 → [`parse::strip_code_fence`]
 
 mod anthropic;
+mod canonical;
 mod client;
 mod config;
 mod error;
+mod openai_compat;
 mod parse;
 mod wire;
 
@@ -176,6 +178,12 @@ mod tests {
         vec![ChatMessage::system("あなたはGM"), ChatMessage::user("引き出しを開ける")]
     }
 
+    /// OpenAI 互換 wire 応答 → canonical (Phase A seam)。テストも本番と同じ decode を通す
+    /// (= 新経路そのものが回帰テストされる)。
+    fn canon(resp: ChatResponse) -> canonical::ChatResponse {
+        openai_compat::decode(resp).expect("decode 成功前提のテスト")
+    }
+
     /// 【spec 10: 要約モデルの別指定】SUMMARY_LLM_* の解決 — model か base_url が指定されて
     /// いれば Some (未指定フィールドは GM 本体設定から継承)、どちらも無ければ None
     /// (= GM の client 共用)。provider は明示 > **実効 base_url** からの自動判定
@@ -329,9 +337,23 @@ mod tests {
                     tool_calls: vec![ToolCallResponse {
                         function: FunctionCallResponse {
                             arguments: args.into(),
+                            name: None,
                         },
+                        id: None,
                     }],
                 },
+                finish_reason: None,
+            }],
+        }
+    }
+
+    /// content だけの互換応答 (tool_calls 無し) を作るテストヘルパ。
+    fn response_with_content(content: &str) -> ChatResponse {
+        ChatResponse {
+            usage: None,
+            choices: vec![Choice {
+                message: ResponseMessage { content: Some(content.into()), tool_calls: vec![] },
+                finish_reason: None,
             }],
         }
     }
@@ -342,7 +364,7 @@ mod tests {
         let resp = response_with_tool_args(
             r#"{"narration":"古い引き出しが軋む","ops":[{"op":"set_flag","key":"drawer_opened","value":true}]}"#,
         );
-        let delta: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        let delta: StateDelta = parse::extract(&canon(resp)).unwrap();
         assert_eq!(delta.narration, "古い引き出しが軋む");
         assert_eq!(delta.ops.len(), 1);
         assert!(matches!(
@@ -355,18 +377,8 @@ mod tests {
     /// (tool_choice を尊重しないサーバ/モデルへの保険、Python generate_json 同型)。
     #[test]
     fn falls_back_to_fenced_json_in_content() {
-        let resp = ChatResponse {
-            usage: None,
-            choices: vec![Choice {
-                message: ResponseMessage {
-                    content: Some(
-                        "```json\n{\"narration\":\"扉を調べる\",\"ops\":[]}\n```".into(),
-                    ),
-                    tool_calls: vec![],
-                },
-            }],
-        };
-        let delta: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        let resp = response_with_content("```json\n{\"narration\":\"扉を調べる\",\"ops\":[]}\n```");
+        let delta: StateDelta = parse::extract(&canon(resp)).unwrap();
         assert_eq!(delta.narration, "扉を調べる");
         assert!(delta.ops.is_empty());
     }
@@ -376,30 +388,14 @@ mod tests {
     #[test]
     fn parses_state_delta_from_plain_and_prose_content() {
         // 素の JSON (コードフェンス無し)。さくら gpt-oss-120b の実観測形。
-        let raw = ChatResponse {
-            usage: None,
-            choices: vec![Choice {
-                message: ResponseMessage {
-                    content: Some(r#"{"narration":"教室に入る","ops":[]}"#.into()),
-                    tool_calls: vec![],
-                },
-            }],
-        };
-        let d: StateDelta = parse::extract(raw.first_message().unwrap()).unwrap();
+        let raw = response_with_content(r#"{"narration":"教室に入る","ops":[]}"#);
+        let d: StateDelta = parse::extract(&canon(raw)).unwrap();
         assert_eq!(d.narration, "教室に入る");
         assert!(d.ops.is_empty());
 
-        // prose に前後を包まれても first '{'..last '}' で救済。
-        let prose = ChatResponse {
-            usage: None,
-            choices: vec![Choice {
-                message: ResponseMessage {
-                    content: Some("はい:\n{\"narration\":\"了解\",\"ops\":[]} 以上".into()),
-                    tool_calls: vec![],
-                },
-            }],
-        };
-        let d2: StateDelta = parse::extract(prose.first_message().unwrap()).unwrap();
+        // prose に前後を包まれても balanced な `{...}` で救済。
+        let prose = response_with_content("はい:\n{\"narration\":\"了解\",\"ops\":[]} 以上");
+        let d2: StateDelta = parse::extract(&canon(prose)).unwrap();
         assert_eq!(d2.narration, "了解");
     }
 
@@ -414,13 +410,8 @@ mod tests {
                    </thought>```json\n\
                    { \"narration\": \"モカは教材棚を顎で指した。\", \"ops\": [ { \"op\": \"adjust_stat\", \"entity\": \"moka\", \"key\": \"好感度\", \"delta\": 1 } ] }\n\
                    ```";
-        let resp = ChatResponse {
-            usage: None,
-            choices: vec![Choice {
-                message: ResponseMessage { content: Some(raw.into()), tool_calls: vec![] },
-            }],
-        };
-        let d: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        let resp = response_with_content(raw);
+        let d: StateDelta = parse::extract(&canon(resp)).unwrap();
         assert_eq!(d.narration, "モカは教材棚を顎で指した。");
         assert_eq!(d.ops.len(), 1, "thought 内の断片でなく本体の ops を拾う");
     }
@@ -431,20 +422,15 @@ mod tests {
     #[test]
     fn last_balanced_json_object_wins() {
         let raw = "consider {\"op\":\"x\"} then answer:\n{\"narration\":\"本体\",\"ops\":[]}";
-        let resp = ChatResponse {
-            usage: None,
-            choices: vec![Choice {
-                message: ResponseMessage { content: Some(raw.into()), tool_calls: vec![] },
-            }],
-        };
-        let d: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        let resp = response_with_content(raw);
+        let d: StateDelta = parse::extract(&canon(resp)).unwrap();
         assert_eq!(d.narration, "本体", "前置き断片でなく最後の object を採る");
     }
 
     /// 【JSON モード指示】json_instruction は schema (narration/ops) と「JSON だけ出せ」旨を含む。
     #[test]
     fn json_instruction_carries_schema_and_directive() {
-        let s = crate::client::json_instruction(&state_delta_schema());
+        let s = crate::openai_compat::json_instruction(&state_delta_schema());
         assert!(s.contains("JSON"), "JSON 出力指示を含む");
         assert!(s.contains("narration") && s.contains("ops"), "schema (narration/ops) を含む");
     }
@@ -461,23 +447,24 @@ mod tests {
     #[test]
     fn ops_as_string_is_rescued() {
         let resp = response_with_tool_args(r#"{"narration":"夜が更ける","ops":"\n"}"#);
-        let d: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        let d: StateDelta = parse::extract(&canon(resp)).unwrap();
         assert_eq!(d.narration, "夜が更ける");
         assert!(d.ops.is_empty(), "空白のみの ops 文字列は空配列として救済");
 
         let resp = response_with_tool_args(
             r#"{"narration":"n","ops":"[{\"op\":\"set_flag\",\"key\":\"k\",\"value\":true}]"}"#,
         );
-        let d: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        let d: StateDelta = parse::extract(&canon(resp)).unwrap();
         assert_eq!(d.ops.len(), 1, "二重エンコードされた ops は配列として救済");
     }
 
-    /// 【再生成の燃料】壊れた JSON は raw を保持した Parse エラーになる
-    /// (却下→再生成ループが raw を LLM に戻せること = self_repair 同型の前提)。
+    /// 【再生成の燃料】壊れた JSON は **decode 境界で** raw を保持した Parse エラーになる
+    /// (却下→再生成ループが raw を LLM に戻せること = self_repair 同型の前提。
+    /// Phase A で「arguments 文字列の 1 回だけの parse」が adapter decode へ移った)。
     #[test]
     fn malformed_json_keeps_raw_for_repair() {
         let resp = response_with_tool_args(r#"{"narration":"壊れた,"ops":["#);
-        let err = parse::extract::<StateDelta>(resp.first_message().unwrap()).unwrap_err();
+        let err = openai_compat::decode(resp).unwrap_err();
         match err {
             LlmError::Parse { raw, .. } => assert!(raw.contains("壊れた"), "raw を再生成用に保持すべき"),
             other => panic!("Parse エラーであるべき: {other:?}"),
@@ -522,7 +509,7 @@ mod tests {
     fn extract_passes_leaked_tags_sanitize_cleans_them() {
         let args = r#"{"narration":"語り。</narration><parameter name=\"ops\">[]","ops":[{"op":"set_flag","key":"f","value":true}]}"#;
         let resp = response_with_tool_args(args);
-        let delta: StateDelta = parse::extract(resp.first_message().unwrap()).unwrap();
+        let delta: StateDelta = parse::extract(&canon(resp)).unwrap();
         assert!(delta.narration.contains("</narration>"), "extract 単体ではタグが残る (症状)");
         assert_eq!(delta.ops.len(), 1, "ops は valid な別フィールドで正常");
         assert_eq!(parse::sanitize_narration(&delta.narration), "語り。", "sanitize で掃除");
@@ -535,9 +522,10 @@ mod tests {
             usage: None,
             choices: vec![Choice {
                 message: ResponseMessage { content: None, tool_calls: vec![] },
+                finish_reason: None,
             }],
         };
-        let err = parse::extract::<StateDelta>(resp.first_message().unwrap()).unwrap_err();
+        let err = parse::extract::<StateDelta>(&canon(resp)).unwrap_err();
         assert!(matches!(err, LlmError::NoStructuredOutput));
     }
 
@@ -616,9 +604,10 @@ mod tests {
         assert_eq!(body["max_tokens"], 4096);
     }
 
-    /// 【ネイティブ応答の解決】tool_use ブロックの input (JSON オブジェクト) を OpenAI 形へ
-    /// 写して既存 parse::extract に合流 → StateDelta。usage のキャッシュ計数もパースされる
-    /// (検証は usage.cache_read_input_tokens > 0 = 本修正の Green 判定)。
+    /// 【ネイティブ応答の解決】tool_use ブロックの input (JSON オブジェクト) を canonical へ
+    /// **恒等写像**し (D2 — 文字列化→再パースの往復を廃止)、単一抽出経路 parse::extract →
+    /// StateDelta。usage は canonical Usage に正規化される
+    /// (検証は cache_read > 0 = #44 の Green 判定)。
     #[test]
     fn anthropic_response_resolves_tool_use_and_usage() {
         let body = r#"{
@@ -636,10 +625,73 @@ mod tests {
         assert_eq!(usage.cache_read_input_tokens, 8021, "キャッシュ読取が計上される");
         assert_eq!(usage.input_tokens, 321);
 
-        let message = resp.into_response_message();
-        let delta: StateDelta = parse::extract(&message).unwrap();
+        let canonical_resp = anthropic::decode(resp);
+        assert_eq!(canonical_resp.usage.cache_read, 8021, "canonical Usage に正規化");
+        assert_eq!(canonical_resp.finish, canonical::Finish::ToolUse);
+        assert_eq!(canonical_resp.tool_calls[0].id, "tu_1");
+        assert_eq!(canonical_resp.tool_calls[0].name, "emit_delta");
+        let delta: StateDelta = parse::extract(&canonical_resp).unwrap();
         assert_eq!(delta.narration, "扉が軋む");
         assert_eq!(delta.ops.len(), 1);
+    }
+
+    // --- spec 12 Phase A: canonical + adapter seam --------------------------------
+
+    /// 【Phase A encode】canonical → OpenAI 互換 wire。tool-use なら tools + tool_choice 強制、
+    /// no-tools (#29) なら tools を送らず json_instruction を messages **末尾の system** に積む
+    /// (従来 generate_structured 内の分岐の移設 = 挙動不変)。
+    #[test]
+    fn canonical_encode_openai_tool_use_and_no_tools() {
+        let req = canonical::ChatRequest {
+            model: "m".into(),
+            messages: user_msgs(),
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 256,
+        };
+
+        let with_tools = openai_compat::encode(&req, true);
+        let body = serde_json::to_value(&with_tools).unwrap();
+        assert_eq!(body["tools"][0]["function"]["name"], EMIT_DELTA_TOOL);
+        assert_eq!(body["tool_choice"]["function"]["name"], EMIT_DELTA_TOOL);
+        assert_eq!(with_tools.messages.len(), 2, "tool-use では指示メッセージを足さない");
+
+        let no_tools = openai_compat::encode(&req, false);
+        let nbody = serde_json::to_value(&no_tools).unwrap();
+        assert!(nbody.get("tools").is_none(), "no-tools では tools を送らない");
+        assert!(nbody.get("tool_choice").is_none());
+        let last = no_tools.messages.last().unwrap();
+        assert_eq!(last.role, Role::System, "json_instruction は末尾の system");
+        assert!(last.content.contains("JSON Schema"), "schema を載せた指示を積む");
+    }
+
+    /// 【Phase A decode】OpenAI 互換 wire → canonical。finish_reason/usage を正規化し、
+    /// arguments (JSON 文字列) を **decode 境界で 1 回だけ**オブジェクト化する (写経元 D2)。
+    /// finish=length は empty-response 防御 (Phase D) の判定材料。
+    #[test]
+    fn canonical_decode_openai_maps_finish_usage_and_args() {
+        let body = r#"{
+            "choices": [{"finish_reason": "length",
+                         "message": {"tool_calls": [{"id": "c1",
+                             "function": {"name": "emit_delta",
+                                          "arguments": "{\"narration\":\"n\",\"ops\":[]}"}}]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2,
+                      "prompt_tokens_details": {"cached_tokens": 7}}
+        }"#;
+        let wire_resp = client::decode_chat_body(body.to_string()).unwrap();
+        let resp = openai_compat::decode(wire_resp).unwrap();
+        assert_eq!(resp.finish, canonical::Finish::Length);
+        assert_eq!(resp.usage.cache_read, 7, "cached_tokens → canonical cache_read");
+        assert_eq!(resp.usage.prompt, 10);
+        let call = &resp.tool_calls[0];
+        assert_eq!(call.id, "c1");
+        assert_eq!(call.name, "emit_delta");
+        assert!(call.args.is_object(), "args は decode 境界でオブジェクト化 (D2)");
     }
 
     /// 【壊れた応答は raw を保持 (#34 同型)】2xx なのに形が合わない Messages 応答も
@@ -675,7 +727,7 @@ mod tests {
         )
         .unwrap();
         assert!(plain.usage.is_none());
-        assert_eq!(plain.first_message().unwrap().content.as_deref(), Some("ok"));
+        assert_eq!(plain.choices[0].message.content.as_deref(), Some("ok"));
     }
 
     /// 【会話 ID】クライアント毎に一意な conv_id を持つ (xAI のキャッシュはサーバ単位 →

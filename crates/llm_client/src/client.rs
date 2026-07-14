@@ -10,12 +10,12 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 use crate::anthropic;
+use crate::canonical;
 use crate::config::{LlmConfig, Provider};
 use crate::error::LlmError;
+use crate::openai_compat;
 use crate::parse;
-use crate::wire::{
-    ChatMessage, ChatRequest, ChatResponse, FunctionDef, Tool, ToolChoice, ToolKind,
-};
+use crate::wire::{ChatMessage, ChatRequest, ChatResponse};
 
 /// プロンプトキャッシュの健全性の計測値。`cache_read`>0 = 安定プレフィックスがキャッシュから
 /// 読まれた (入力コスト減)。GUI が**連続 miss** を検知して「キャッシュ経路が壊れているかも」を
@@ -89,32 +89,16 @@ impl LlmClient {
 
     /// プレーンなテキスト生成 (`generate`)。ツール無し。
     pub async fn generate(&self, messages: Vec<ChatMessage>) -> Result<String, LlmError> {
-        if self.config.provider == Provider::Anthropic {
-            let req = anthropic::build_request(
-                &self.config.model,
-                self.config.max_tokens,
-                self.config.temperature,
-                messages,
-                None,
-            );
-            let resp = self.messages_with_retry(&req).await?;
-            return resp
-                .into_response_message()
-                .content
-                .filter(|c| !c.trim().is_empty())
-                .ok_or(LlmError::EmptyResponse);
-        }
-        let req = ChatRequest {
+        let req = canonical::ChatRequest {
             model: self.config.model.clone(),
             messages,
+            tools: Vec::new(),
+            tool_choice: canonical::ToolChoice::None,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
-            tools: Vec::new(),
-            tool_choice: None,
         };
-        let resp = self.chat_with_retry(&req).await?;
-        resp.first_message()
-            .and_then(|m| m.content.clone())
+        let resp = self.complete(req).await?;
+        resp.text
             .filter(|c| !c.trim().is_empty())
             .ok_or(LlmError::EmptyResponse)
     }
@@ -122,7 +106,8 @@ impl LlmClient {
     /// 構造化出力 (`generate_json` の Rust 版)。
     ///
     /// 単一ツール `tool_name` を `tool_choice` で強制し、`parameters` schema に沿わせる。
-    /// 応答は tool_calls もしくはフェンス JSON から `T` に解決する。
+    /// 応答は tool_calls もしくはフェンス JSON から `T` に解決する (抽出は canonical に
+    /// 対する単一経路 [`parse::extract`])。
     pub async fn generate_structured<T: DeserializeOwned>(
         &self,
         messages: Vec<ChatMessage>,
@@ -130,50 +115,62 @@ impl LlmClient {
         tool_description: &str,
         parameters: serde_json::Value,
     ) -> Result<T, LlmError> {
-        // Anthropic ネイティブ経路 (#44): 安定プレフィックス末尾の cache_control で
-        // schema+system がキャッシュされる。tool_choice を確実に尊重するので常に tool-use。
-        if self.config.provider == Provider::Anthropic {
-            let req = anthropic::build_request(
-                &self.config.model,
-                self.config.max_tokens,
-                self.config.temperature,
-                messages,
-                Some((tool_name.to_string(), tool_description.to_string(), parameters)),
-            );
-            let resp = self.messages_with_retry(&req).await?;
-            let message = resp.into_response_message();
-            return parse::extract::<T>(&message);
-        }
-        // tool-use 対応サーバ (OpenAI 互換) は tool_choice 強制で構造を保証。
-        // 非対応サーバ (さくら AI Engine / ローカル互換) は tools を送らず、prompt で JSON 出力を
-        // 指示して content から拾う (extract のフォールバック)。
-        let mut messages = messages;
-        let (tools, tool_choice) = if self.config.use_tools {
-            let tool = Tool {
-                kind: ToolKind::Function,
-                function: FunctionDef {
-                    name: tool_name.to_string(),
-                    description: tool_description.to_string(),
-                    parameters,
-                },
-            };
-            (vec![tool], Some(ToolChoice::force(tool_name)))
-        } else {
-            messages.push(ChatMessage::system(json_instruction(&parameters)));
-            (Vec::new(), None)
-        };
-        let req = ChatRequest {
+        let req = canonical::ChatRequest {
             model: self.config.model.clone(),
+            messages,
+            tools: vec![canonical::ToolSpec {
+                name: tool_name.to_string(),
+                description: tool_description.to_string(),
+                parameters,
+            }],
+            tool_choice: canonical::ToolChoice::Specific(tool_name.to_string()),
             // temperature は config 任せ (未設定なら送らない)。
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
-            messages,
-            tools,
-            tool_choice,
         };
-        let resp = self.chat_with_retry(&req).await?;
-        let message = resp.first_message().ok_or(LlmError::EmptyResponse)?;
-        parse::extract::<T>(message)
+        let resp = self.complete(req).await?;
+        parse::extract::<T>(&resp)
+    }
+
+    /// canonical リクエストを 1 回完了させる — **adapter seam の単一入口** (spec 12 Phase A)。
+    ///
+    /// 経路選択 (provider match) はここだけ。各経路は encode 純関数 → HTTP (リトライ込み) →
+    /// decode 純関数で canonical に戻る。キャッシュ計測 ([`CacheStat`]) も canonical usage から
+    /// **一元記録**する (成功 1 回 = 記録 1 回。リトライの失敗試行は usage を持たないので
+    /// 従来の per-成功記録と同値)。
+    async fn complete(
+        &self,
+        req: canonical::ChatRequest,
+    ) -> Result<canonical::ChatResponse, LlmError> {
+        let resp = match self.config.provider {
+            // Anthropic ネイティブ経路 (#44): 安定プレフィックス末尾の cache_control で
+            // schema+system がキャッシュされる。tool_choice を確実に尊重するので常に tool-use
+            // (use_tools は無視 = 従来動作)。
+            Provider::Anthropic => {
+                let tool = req
+                    .tools
+                    .into_iter()
+                    .next()
+                    .map(|t| (t.name, t.description, t.parameters));
+                let native = anthropic::build_request(
+                    &req.model,
+                    req.max_tokens,
+                    req.temperature,
+                    req.messages,
+                    tool,
+                );
+                let raw = self.messages_with_retry(&native).await?;
+                anthropic::decode(raw)
+            }
+            // OpenAI 互換経路: tool-use / no-tools (#29) の分岐は encode が担う。
+            Provider::OpenAiCompat => {
+                let wire_req = openai_compat::encode(&req, self.config.use_tools);
+                let raw = self.chat_with_retry(&wire_req).await?;
+                openai_compat::decode(raw)?
+            }
+        };
+        self.record_cache(resp.usage.cache_read);
+        Ok(resp)
     }
 
     /// chat/completions を 1 回叩く (リトライ無し)。
@@ -213,17 +210,15 @@ impl LlmClient {
             eprintln!("[LLM_DEBUG] response <- {body}");
         }
         let decoded = decode_chat_body(body)?;
-        // キャッシュ計測。OpenAI/xAI/Gemini 互換の cached_tokens > 0 = プレフィックスがキャッシュから読まれた。
-        let cached = decoded
-            .usage
-            .as_ref()
-            .and_then(|u| u.prompt_tokens_details.as_ref())
-            .map(|d| d.cached_tokens)
-            .unwrap_or(0);
-        self.record_cache(cached); // GUI 警告用 (常時記録)
-        // surface (ネイティブ経路の [LLM_CACHE] と同形)。
+        // surface (ネイティブ経路の [LLM_CACHE] と同形)。CacheStat への記録は canonical usage
+        // から complete() が一元で行う (成功 1 回 = 記録 1 回で従来と同値)。
         if debug || std::env::var("LLM_CACHE_DEBUG").is_ok() {
             if let Some(u) = &decoded.usage {
+                let cached = u
+                    .prompt_tokens_details
+                    .as_ref()
+                    .map(|d| d.cached_tokens)
+                    .unwrap_or(0);
                 eprintln!(
                     "[LLM_CACHE] cached={} prompt={} completion={}",
                     cached, u.prompt_tokens, u.completion_tokens
@@ -286,10 +281,8 @@ impl LlmClient {
             eprintln!("[LLM_DEBUG] response <- {body}");
         }
         let decoded = decode_messages_body(body)?;
-        // キャッシュ計測。cache_read_input_tokens > 0 = 安定プレフィックスがキャッシュから読まれた。
-        let cache_read = decoded.usage.as_ref().map(|u| u.cache_read_input_tokens).unwrap_or(0);
-        self.record_cache(cache_read); // GUI 警告用 (常時記録)
-        // surface: LLM_CACHE_DEBUG=1 (または LLM_DEBUG) で stderr に 1 行。
+        // surface: LLM_CACHE_DEBUG=1 (または LLM_DEBUG) で stderr に 1 行。CacheStat への
+        // 記録は canonical usage から complete() が一元で行う。
         if debug || std::env::var("LLM_CACHE_DEBUG").is_ok() {
             if let Some(u) = &decoded.usage {
                 eprintln!(
@@ -353,14 +346,3 @@ fn new_conv_id() -> String {
     format!("kataribe-{}-{}-{}", std::process::id(), nanos, n)
 }
 
-/// no-tools モードで「schema に従う JSON だけを出力せよ」と指示する system メッセージ本文。
-/// tool_choice 非対応サーバ (さくら AI Engine / ローカル OpenAI 互換) 向け。schema は単一真実源。
-pub(crate) fn json_instruction(schema: &serde_json::Value) -> String {
-    format!(
-        "重要: このサーバはツール呼び出し (function calling) に対応していません。\
-        応答は次の JSON Schema に厳密に従う JSON オブジェクトを **1つだけ** 出力し、\
-        前置き・説明・コードフェンスのラベル等、余計なテキストを一切含めないでください。\n\
-        JSON Schema:\n{}",
-        serde_json::to_string(schema).unwrap_or_default()
-    )
-}

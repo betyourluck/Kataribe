@@ -127,6 +127,10 @@ pub struct PromptTokensDetails {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Choice {
     pub message: ResponseMessage,
+    /// 終了理由 (`stop`/`tool_calls`/`length`/...)。canonical `Finish` の材料
+    /// (empty-response 防御 spec 12 Phase D)。返さないサーバでも壊れない。
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -140,19 +144,19 @@ pub struct ResponseMessage {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolCallResponse {
     pub function: FunctionCallResponse,
+    /// 呼び出し ID。canonical `ToolCall.id` に運ぶ (返さないサーバは空扱い)。
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FunctionCallResponse {
-    /// **JSON 文字列** (オブジェクトではない)。これを再パースして StateDelta にする。
-    /// (`name` は `tool_choice` で単一ツールを強制しているため分岐に使わず、受信しても無視する。)
+    /// **JSON 文字列** (オブジェクトではない)。canonical への decode 境界で 1 回だけ parse する
+    /// (写経元 D2)。
     #[serde(default)]
     pub arguments: String,
+    /// 関数名。単一ツール強制 (emit_delta) では分岐に使わないが canonical へ運ぶ。
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
-impl ChatResponse {
-    /// 最初の choice の message を取り出す。
-    pub fn first_message(&self) -> Option<&ResponseMessage> {
-        self.choices.first().map(|c| &c.message)
-    }
-}
