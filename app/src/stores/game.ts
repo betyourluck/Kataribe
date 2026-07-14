@@ -274,6 +274,8 @@ interface GameState {
   recentLog: LogLineView[];
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;
+  // backend がエピローグ生成中 (epilogue-writing イベント、spec 11)。同じくローディング文言用。
+  writingEpilogue: boolean;
 }
 
 export const useGameStore = defineStore("game", {
@@ -313,6 +315,7 @@ export const useGameStore = defineStore("game", {
       synopsis: [],
       recentLog: [],
       compacting: false,
+      writingEpilogue: false,
     };
   },
 
@@ -792,6 +795,13 @@ export const useGameStore = defineStore("game", {
               this.log.push({ kind: "system", text: label });
             }
           }
+          // エピローグ (spec 11)。表示順 = 結末文 → バナー → エピローグで幕
+          // (バナーが余韻をぶった切らない)。narration と同じ本文スタイルで積む
+          // = 会話ログのテキスト保存にも自然に含まれる。
+          if (turn.epilogue) {
+            this.log.push({ kind: "system", text: "―― エピローグ ――" });
+            this.log.push({ kind: "narration", text: turn.epilogue });
+          }
         } else {
           this.log.push({ kind: "reject", reasons: turn.reasons, attempts: turn.attempts });
         }
@@ -837,6 +847,7 @@ export const useGameStore = defineStore("game", {
       } finally {
         this.loading = false;
         this.compacting = false; // 圧縮インジケータはターン完了で必ず解除
+        this.writingEpilogue = false; // エピローグも同様
       }
     },
   },

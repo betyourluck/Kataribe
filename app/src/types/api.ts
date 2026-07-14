@@ -193,6 +193,9 @@ export interface TurnView {
   new_synopsis: SynopsisView[];
   /** このターンで chronicle に積まれた行の差分 (「最近の出来事」用。却下ターンは空)。 */
   new_log: LogLineView[];
+  /** エピローグ本文 (spec 11)。到達 goal に epilogue_prompt があり終端のときだけ非 null。
+   *  生成失敗時は null (結末文 + バナーの従来表示へフォールバック)。 */
+  epilogue: string | null;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

@@ -95,7 +95,13 @@ const game = useGameStore();
     </template>
 
     <p v-if="game.loading" class="text-parchment/40 text-sm animate-pulse">
-      {{ game.compacting ? "あらすじをまとめています……" : "GM が思案している……" }}
+      {{
+        game.writingEpilogue
+          ? "エピローグを紡いでいます……"
+          : game.compacting
+            ? "あらすじをまとめています……"
+            : "GM が思案している……"
+      }}
     </p>
   </div>
 </template>

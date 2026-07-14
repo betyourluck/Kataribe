@@ -270,6 +270,9 @@ struct TurnView {
     /// このターンで chronicle に積まれた行の差分 (「最近の出来事」用。通常 1 件、遷移ターンは
     /// 章替わりマーカー込みで 2 件、却下ターンは 0 件)。
     new_log: Vec<LogLineView>,
+    /// エピローグ本文 (spec 11)。到達 goal に epilogue_prompt があり終端 (遷移しない) の
+    /// 受理ターンだけ Some。生成失敗時は None (結末文 + バナーの従来表示 = フォールバック)。
+    epilogue: Option<String>,
 }
 
 /// campaign のモジュール遷移 (前モジュールの goal 到達 → 次モジュールへ state を糸通しして差し替え)。
@@ -1491,6 +1494,7 @@ async fn play_turn(
                 cache: sess.client.cache_stat(),
                 new_synopsis: Vec::new(), // 圧縮ジョブの後に差分で埋める
                 new_log: Vec::new(),
+                epilogue: None, // 終端判定の後に埋める (spec 11)
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -1516,6 +1520,7 @@ async fn play_turn(
             cache: sess.client.cache_stat(),
             new_synopsis: Vec::new(),
             new_log: Vec::new(),
+            epilogue: None,
         },
     };
 
@@ -1619,6 +1624,30 @@ async fn play_turn(
             }
             if let Err(e) = save_session(&path, &save) {
                 eprintln!("[警告] オートセーブ失敗: {e}");
+            }
+        }
+    }
+
+    // --- エピローグ (spec 11): 到達 + 終端 + 指示あり ---
+    // 「いつ」は engine (reached_goal)、「何を」は LLM。終端 = campaign なら advance 辺なし
+    // (遷移していれば上の campaign 前進が goal_reached=false にしている)。**autosave の後**に
+    // 生成する = 生成の失敗・クラッシュがセーブを巻き込まない (SessionSave に epilogue は無い)。
+    // 失敗は skip — 結末文 + バナーの従来表示へフォールバック (narration が土台、非致命)。
+    if view.accepted && view.goal_reached {
+        if let Some(goal) = sess.scenario.reached_goal(&sess.state) {
+            if goal.epilogue_prompt.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                let req = harness::build_epilogue_request(
+                    &sess.scenario,
+                    goal,
+                    &sess.synopsis.entries,
+                    &sess.history,
+                    &sess.last_narration,
+                );
+                let _ = app.emit("epilogue-writing", ());
+                match harness::generate_epilogue(&sess.client, &req).await {
+                    Ok(text) => view.epilogue = Some(normalize(&text)),
+                    Err(e) => eprintln!("[警告] エピローグ生成に失敗 (結末文で幕): {e}"),
+                }
             }
         }
     }

@@ -99,6 +99,30 @@ async fn run_synopsis_job(
     }
 }
 
+/// エピローグ (spec 11)。到達 goal に epilogue_prompt があれば GM の client で 1 回生成して
+/// 表示する (終端の呼び出し側 = ここが発火可否の最終判定)。失敗は skip — 結末文 + バナーの
+/// 従来表示へフォールバック (非致命)。
+async fn print_epilogue(
+    client: &LlmClient,
+    scenario: &Scenario,
+    state: &gm_core::GameState,
+    synopsis: &harness::Synopsis,
+    history: &[harness::TurnLog],
+    last_narration: &str,
+) {
+    let Some(goal) = scenario.reached_goal(state) else { return };
+    if !goal.epilogue_prompt.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+        return;
+    }
+    println!("  （エピローグを紡いでいます…）");
+    let req =
+        harness::build_epilogue_request(scenario, goal, &synopsis.entries, history, last_narration);
+    match harness::generate_epilogue(client, &req).await {
+        Ok(text) => println!("\n―― エピローグ ――\n{}", text.replace("\\n", "\n")),
+        Err(e) => eprintln!("[警告] エピローグ生成に失敗 (結末文で幕): {e}"),
+    }
+}
+
 /// `parent/parent` を repo root とみなす (scenarios/ campaigns/ characters/ memoria/ の親)。
 fn root_of(path: &str) -> PathBuf {
     Path::new(path)
@@ -500,18 +524,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     }
                                     continue;
                                 }
-                                // 辺が無い = 終端エンディング。
+                                // 辺が無い = 終端エンディング。バナー → エピローグで幕 (spec 11)。
                                 None => {
                                     println!(
                                         "\n🎉 キャンペーン完了。エンディング『{reached}』(turn {}).",
                                         state.turn
                                     );
+                                    print_epilogue(
+                                        &client, &scenario, &state, &synopsis, &history,
+                                        &last_narration,
+                                    )
+                                    .await;
                                     break;
                                 }
                             }
                         }
                         None => {
+                            // 単発シナリオのクリア。バナー → エピローグで幕 (spec 11)。
                             println!("\n🎉 クリア。goal 到達 (turn {}).", state.turn);
+                            print_epilogue(
+                                &client, &scenario, &state, &synopsis, &history, &last_narration,
+                            )
+                            .await;
                             break;
                         }
                     }

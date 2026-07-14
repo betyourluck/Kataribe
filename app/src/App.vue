@@ -97,6 +97,10 @@ onMounted(() => {
   listen("synopsis-compacting", () => {
     game.compacting = true;
   });
+  // エピローグ生成の開始合図 (spec 11)。同じ仕組みで文言を切り替える。
+  listen("epilogue-writing", () => {
+    game.writingEpilogue = true;
+  });
 });
 </script>
 
