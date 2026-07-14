@@ -300,6 +300,7 @@ mod tests {
                 },
             }],
             tool_choice: Some(wire::ToolChoice::force(EMIT_DELTA_TOOL)),
+            reasoning_effort: None,
         };
         let body = serde_json::to_value(&req).unwrap();
         assert_eq!(body["tool_choice"]["type"], "function");
@@ -318,6 +319,7 @@ mod tests {
             max_tokens: 256,
             tools: vec![],
             tool_choice: None,
+            reasoning_effort: None,
         };
         let pbody = serde_json::to_value(&plain).unwrap();
         assert!(pbody.get("tools").is_none(), "ツール無しなら tools は出さない");
@@ -550,13 +552,15 @@ mod tests {
         assert_eq!(cfg.chat_endpoint(), "https://api.example.com/v1/chat/completions");
     }
 
-    /// 【一過性判定】5xx/429 はリトライ対象、4xx (除 429) はしない。
+    /// 【一過性判定】5xx/429 はリトライ対象、4xx (除 429) はしない。EmptyResponse は
+    /// Phase D で一過性へ昇格 (推論モデルの空応答 = 思考の再抽選で回復しうる)。
     #[test]
     fn transient_classification() {
         assert!(LlmError::Api { status: 503, body: String::new() }.is_transient());
         assert!(LlmError::Api { status: 429, body: String::new() }.is_transient());
         assert!(!LlmError::Api { status: 400, body: String::new() }.is_transient());
         assert!(!LlmError::NoStructuredOutput.is_transient());
+        assert!(LlmError::EmptyResponse.is_transient(), "空応答は再抽選に乗る (Phase D)");
     }
 
     // --- Anthropic ネイティブ経路 (prompt caching, #44) --------------------------
@@ -776,6 +780,79 @@ mod tests {
             LlmError::Parse { raw, .. } => assert!(raw.contains("not-an-array")),
             other => panic!("Parse エラーであるべき: {other:?}"),
         }
+    }
+
+    // --- Grok 方言 + empty-response 防御 (spec 12 Phase D) ----------------------------
+
+    /// 【Phase D Grok】reasoning_effort は対象モデル (grok-4.3/4.5) に**既定で送る** (opt-out) —
+    /// 未送出だと xAI 既定 (4.3=常時思考/4.5=high) が適用され、思考が max_tokens (合算上限) を
+    /// 食い潰して空デルタ/タイムアウトになる (grok-4.3 実測の真因仮説、上流 repo と同判断)。
+    /// 既定 4.3→none / 4.5→low。LLM_EFFORT 明示は尊重 (xhigh/max は Grok 未対応で high へ丸め)。
+    /// 非対象 (fast 系/他モデル) には送らない。
+    #[test]
+    fn grok_reasoning_effort_defaults_and_clamps() {
+        use openai_compat::grok_reasoning_effort as f;
+        // 既定 (LLM_EFFORT なし): 対象モデルにだけ明示送出。
+        assert_eq!(f("grok-4.3", None), Some("none"), "4.3 は none (常時思考を切る)");
+        assert_eq!(f("grok-4.5", None), Some("low"), "4.5 は low (none 不可)");
+        assert_eq!(f("grok-4-1-fast-non-reasoning", None), None, "fast 系には送らない");
+        assert_eq!(f("gpt-4o-mini", None), None, "他モデルには送らない");
+        // LLM_EFFORT 明示は尊重、Grok の語彙 (low/medium/high) へ丸める。
+        assert_eq!(f("grok-4.3", Some(Effort::Medium)), Some("medium"));
+        assert_eq!(f("grok-4.5", Some(Effort::XHigh)), Some("high"), "xhigh は high へ丸め");
+        assert_eq!(f("grok-4.5", Some(Effort::Max)), Some("high"));
+
+        // encode 経由でも wire に載る (対象モデルのみ)。
+        let mut req = canonical::ChatRequest {
+            model: "grok-4.3".into(),
+            messages: user_msgs(),
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort: None,
+        };
+        let body = serde_json::to_value(openai_compat::encode(&req, true)).unwrap();
+        assert_eq!(body["reasoning_effort"], "none");
+        req.model = "gpt-4o-mini".into();
+        let body = serde_json::to_value(openai_compat::encode(&req, true)).unwrap();
+        assert!(body.get("reasoning_effort").is_none(), "非対象にはキーごと送らない");
+    }
+
+    /// 【Phase D empty-response 防御】text 空 ∧ tool_calls 空 ∧ finish==length (= 推論モデルが
+    /// budget を全部思考に使い切った) だけを EmptyResponse (一過性) として再抽選に乗せる。
+    /// length 以外の空応答は従来どおり素通し (generate/extract が非リトライで surface)。
+    #[test]
+    fn empty_reasoning_response_is_rejected_for_retry() {
+        let length_empty = client::decode_chat_body(
+            r#"{"choices":[{"finish_reason":"length","message":{"content":""}}]}"#.to_string(),
+        )
+        .unwrap();
+        let resp = openai_compat::decode(length_empty).unwrap();
+        let err = openai_compat::reject_empty_reasoning(resp).unwrap_err();
+        assert!(matches!(err, LlmError::EmptyResponse));
+        assert!(err.is_transient(), "リトライループで再抽選に乗る");
+
+        // finish が length でない空応答は弾かない (従来の経路のまま)。
+        let stop_empty = client::decode_chat_body(
+            r#"{"choices":[{"finish_reason":"stop","message":{"content":""}}]}"#.to_string(),
+        )
+        .unwrap();
+        let resp = openai_compat::decode(stop_empty).unwrap();
+        assert!(openai_compat::reject_empty_reasoning(resp).is_ok());
+
+        // 本文か tool_calls があれば length でも正常 (途中切れは呼び出し側の解釈に任せる)。
+        let with_text = client::decode_chat_body(
+            r#"{"choices":[{"finish_reason":"length","message":{"content":"途中まで"}}]}"#
+                .to_string(),
+        )
+        .unwrap();
+        let resp = openai_compat::decode(with_text).unwrap();
+        assert!(openai_compat::reject_empty_reasoning(resp).is_ok());
     }
 
     // --- Gemini ネイティブ経路 (spec 12 Phase C) --------------------------------------

@@ -23,7 +23,10 @@ pub enum LlmError {
     #[error("API エラー (status={status}): {body}")]
     Api { status: u16, body: String },
 
-    /// 応答に choices が無い / message が空。
+    /// 応答が空。二つの発生源がある:
+    /// - 推論モデルが budget を全部思考に使い切った空応答 (finish=length、spec 12 Phase D) —
+    ///   リトライループの中で発生し、一過性として再抽選に乗る
+    /// - 通常の空応答 (`generate` の text 空) — ループの外で発生し、そのまま呼び出し側へ
     #[error("LLM が空の応答を返した")]
     EmptyResponse,
 
@@ -55,13 +58,15 @@ impl From<reqwest::Error> for LlmError {
 }
 
 impl LlmError {
-    /// 一過性 (リトライで回復しうる) か。HTTP 障害と 5xx / 429 を対象とする。
+    /// 一過性 (リトライで回復しうる) か。HTTP 障害と 5xx / 429、および推論モデルの
+    /// 空応答 (spec 12 Phase D — 思考の再抽選で回復しうる) を対象とする。
     pub fn is_transient(&self) -> bool {
         match self {
             LlmError::Http { source, .. } => {
                 source.is_timeout() || source.is_connect() || source.is_request()
             }
             LlmError::Api { status, .. } => *status == 429 || (500..600).contains(status),
+            LlmError::EmptyResponse => true,
             _ => false,
         }
     }

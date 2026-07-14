@@ -1,6 +1,7 @@
 # 12. 統一ツール層 — LLM プロバイダアダプタ (Claude / GPT / Gemini / Grok)
 
-Status: **Phase A+B+C Done（2026-07-15 rev4 査読確定 → 同日実装）**
+Status: **Phase A〜D Done（2026-07-15 rev4 査読確定 → 同日実装）。残 = Phase E（実 4
+プロバイダ live 検証）+ Phase F（grok-4.3 の A/B 検証と通しプレイ、実キー必要）**
 - Phase A: canonical + seam + OpenAICompatAdapter（llm_client 30→32 PoC、挙動変更ゼロ）
 - Phase B: ClaudeAdapter 正式化（`anthropic::encode(&canonical)` — build_request を統合）+
   `LLM_EFFORT` opt-in（`thinking: adaptive` + `output_config.effort`、未設定なら送らない）+
@@ -13,8 +14,15 @@ Status: **Phase A+B+C Done（2026-07-15 rev4 査読確定 → 同日実装）**
   語彙 gemini|google、パースは parse_env に共通化）。llm_client 35→38 PoC。
   **留意**: state_delta_schema の oneOf を Gemini の schema サブセットが受理するかは
   未確証 — Phase E の live 検証項目（拒否されたら schema 変換の Phase C.5 を起票）。
-- workspace 245/245 green + clippy clean + app backend cargo check 通過。
-  次 = Phase D（Grok reasoning_effort 方言 + 台帳追従）。effort/Gemini の実プレイ計測は Phase E。
+- Phase D: Grok `reasoning_effort` を対象モデル（grok-4.3/4.5、prefix 判定）に**既定送出
+  （opt-out）** — 4.3→`none` / 4.5→`low`、`LLM_EFFORT` 明示は尊重（xhigh/max は high へ丸め）、
+  fast 系/他モデルには送らない。empty-response 防御（text 空 ∧ tool_calls 空 ∧
+  finish==length → EmptyResponse を一過性昇格、compat リトライで再抽選）。台帳追従
+  （data_contract effort_dialects/empty_response_defense・.env.example）。
+  **未決 2 解決**: app は `LLM_PROVIDER`/`LLM_EFFORT` を書いていない → env 手書きのまま。
+  llm_client 38→40 PoC。
+- workspace 247/247 green + clippy clean + app backend cargo check 通過。
+  次 = Phase E/F（実キーでの live 検証 — Grok A/B・Gemini schema 受理・Claude cache 維持）。
 rev 履歴: rev1 起草 → rev2 上流知識の導管 + streaming → rev3 主目的 = Grok tool-use 実用化
 → rev4 査読反映（Must 1/3/4 + Should a〜e 受諾、Must 2 の additive 説は claude-api
 リファレンスで非確認のため combined 維持・headroom 推奨のみ受諾 — 本文に根拠）

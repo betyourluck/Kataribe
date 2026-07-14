@@ -49,6 +49,12 @@ pub struct ChatRequest {
     pub tools: Vec<Tool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// xAI Grok の推論制御 (spec 12 Phase D)。**対象モデル (grok-4.3/4.5) には既定で送る**
+    /// (opt-out) — 未送出だと xAI 側の既定 (4.3=low 常時思考 / 4.5=high) が適用され、
+    /// 思考が max_tokens を食い潰して空デルタ/タイムアウトになる (grok-4.3 実測の真因仮説)。
+    /// 他モデル/他サーバには送らない (None = キーごと省略)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<&'static str>,
 }
 
 /// 関数ツール定義。`parameters` は schemars 生成の JSON Schema (gm_core が単一真実源)。

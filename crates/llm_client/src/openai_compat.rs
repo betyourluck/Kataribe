@@ -5,6 +5,7 @@
 //! (壊れるのは ser/de なので PoC で固める)。
 
 use crate::canonical::{ChatRequest, ChatResponse, Finish, ToolCall, ToolChoice, Usage};
+use crate::config::Effort;
 use crate::error::LlmError;
 use crate::wire;
 
@@ -49,7 +50,51 @@ pub(crate) fn encode(req: &ChatRequest, use_tools: bool) -> wire::ChatRequest {
         max_tokens: req.max_tokens,
         tools,
         tool_choice,
+        reasoning_effort: grok_reasoning_effort(&req.model, req.effort),
     }
+}
+
+/// Grok の `reasoning_effort` を決める (spec 12 Phase D、純粋)。
+///
+/// 対象は grok-4.3 / grok-4.5 のみ (それ以外 = grok-4-1-fast 系や他プロバイダには送らない)。
+/// **対象モデルには既定で送る (opt-out)** — 未送出だと xAI 側の既定
+/// (4.3 = reasoning-first 常時思考・既定 low / 4.5 = 既定 high・無効化不可) が適用され、
+/// GM 用途 (毎ターン 1 往復・思考+本文は max_tokens の合算) では空デルタ/タイムアウトの
+/// 真因になる (grok-4.3 実測、上流 repo も同じ理由で明示上書きしている)。
+/// - 未設定 (LLM_EFFORT なし): grok-4.3 → `none` / grok-4.5 → `low` (`none` は 4.3 のみ許可)
+/// - LLM_EFFORT 明示: low/medium/high はそのまま、xhigh/max は Grok 未対応ゆえ `high` へ丸める
+pub(crate) fn grok_reasoning_effort(model: &str, effort: Option<Effort>) -> Option<&'static str> {
+    let is_43 = model.starts_with("grok-4.3");
+    let is_45 = model.starts_with("grok-4.5");
+    if !is_43 && !is_45 {
+        return None;
+    }
+    Some(match effort {
+        None => {
+            if is_43 {
+                "none"
+            } else {
+                "low"
+            }
+        }
+        Some(Effort::Low) => "low",
+        Some(Effort::Medium) => "medium",
+        Some(Effort::High) | Some(Effort::XHigh) | Some(Effort::Max) => "high",
+    })
+}
+
+/// empty-response 防御 (spec 12 Phase D・rev4 Should c で凍結した判定条件)。
+///
+/// **text 空 かつ tool_calls 空 かつ finish == Length** = 推論モデルが budget を全部思考に
+/// 使い切った空応答 (OpenRouter パターン) → [`LlmError::EmptyResponse`] を返し、呼び出し側の
+/// リトライループ (一過性扱い) で再抽選に乗せる。length 以外の空 (通常の空応答) はここでは
+/// 弾かない — 従来どおり generate / extract が非リトライで surface する。
+pub(crate) fn reject_empty_reasoning(resp: ChatResponse) -> Result<ChatResponse, LlmError> {
+    let text_empty = resp.text.as_deref().map_or(true, |t| t.trim().is_empty());
+    if text_empty && resp.tool_calls.is_empty() && resp.finish == Finish::Length {
+        return Err(LlmError::EmptyResponse);
+    }
+    Ok(resp)
 }
 
 /// OpenAI 互換 wire → canonical。

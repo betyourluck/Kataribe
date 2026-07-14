@@ -164,10 +164,10 @@ impl LlmClient {
                 anthropic::decode(raw)
             }
             // OpenAI 互換経路: tool-use / no-tools (#29) の分岐は encode が担う。
+            // decode + empty-response 防御 (Phase D) は試行毎に掛かる = 再抽選に乗る。
             Provider::OpenAiCompat => {
                 let wire_req = openai_compat::encode(&req, self.config.use_tools);
-                let raw = self.chat_with_retry(&wire_req).await?;
-                openai_compat::decode(raw)?
+                self.compat_with_retry(&wire_req).await?
             }
             // Gemini ネイティブ経路 (Phase C): x-goog-api-key ヘッダ認証 (キーを URL に
             // 載せない K5)。id 合成のカウンタは client 単位で単調 (rev4 Must 4)。
@@ -237,12 +237,24 @@ impl LlmClient {
         Ok(decoded)
     }
 
-    /// 指数 backoff 付きで chat を叩く。一過性エラーのみリトライ (tenacity 同型)。
-    async fn chat_with_retry(&self, req: &ChatRequest) -> Result<ChatResponse, LlmError> {
+    /// 指数 backoff 付きで chat を叩き canonical まで解決する。一過性エラーのみリトライ
+    /// (tenacity 同型)。decode と empty-response 防御 (spec 12 Phase D — 推論モデルが
+    /// budget を思考に使い切った finish=length の空応答) を**試行の中**に含めることで、
+    /// 空応答が思考の再抽選に乗る (Parse エラーは非一過性のまま = 従来どおり即失敗)。
+    async fn compat_with_retry(
+        &self,
+        req: &ChatRequest,
+    ) -> Result<canonical::ChatResponse, LlmError> {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            match self.chat_once(req).await {
+            let result = match self.chat_once(req).await {
+                Ok(raw) => {
+                    openai_compat::decode(raw).and_then(openai_compat::reject_empty_reasoning)
+                }
+                Err(e) => Err(e),
+            };
+            match result {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
                     if attempt >= self.config.max_retries || !e.is_transient() {
