@@ -3887,6 +3887,50 @@ locations:
         );
     }
 
+    /// 【spec 11 Phase A】`GoalDef.epilogue_prompt` が parse され (省略時 None = 既存 YAML
+    /// 無改修)、「指示あり + 結末文なし」の goal だけを lint が警告する。空の定義は
+    /// `trim().is_empty()` — narration が空文字/空白のみでも「無い」、epilogue_prompt が
+    /// 空白のみなら「書いていない」扱いで沈黙 (フォールバック不能の組み合わせだけを名指し)。
+    #[test]
+    fn epilogue_prompt_parses_and_lint_requires_narration() {
+        let yaml = r#"
+title: t
+start: room
+goals:
+  - { id: ok, when: { kind: always }, narration: 幕が下りた, epilogue_prompt: 生存者のその後を一人ずつ }
+  - { id: bare, when: { kind: always }, epilogue_prompt: 余韻を語れ }
+  - { id: blank_narr, when: { kind: always }, narration: "   ", epilogue_prompt: 余韻を語れ }
+  - { id: blank_prompt, when: { kind: always }, epilogue_prompt: "   " }
+  - { id: plain, when: { kind: always }, narration: 終わり }
+locations:
+  room: { description: d, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert_eq!(
+            sc.goals[0].epilogue_prompt.as_deref(),
+            Some("生存者のその後を一人ずつ"),
+            "指示が parse される"
+        );
+        assert_eq!(sc.goals[4].epilogue_prompt, None, "省略時は None (既存 YAML 無改修)");
+        assert!(sc.validate().is_empty(), "lint であって load 拒否ではない: {:?}", sc.validate());
+
+        let lints = sc.lints();
+        let warns: Vec<&str> = lints
+            .iter()
+            .filter_map(|e| match e {
+                crate::spine::ScenarioError::EpilogueWithoutNarration { goal } => {
+                    Some(goal.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(warns.contains(&"bare"), "結末文なし + 指示ありを警告: {warns:?}");
+        assert!(warns.contains(&"blank_narr"), "空白のみの結末文も「無い」扱い: {warns:?}");
+        assert!(!warns.contains(&"ok"), "結末文があれば沈黙");
+        assert!(!warns.contains(&"blank_prompt"), "空白のみの指示は「書いていない」扱いで沈黙");
+        assert!(!warns.contains(&"plain"), "指示なしは対象外");
+    }
+
     /// 【アセット passthrough】Location.image/present・CharacterDef.icon が serde で読まれる
     /// (engine は使わない不透明データ。提示層が背景/顔アイコン/presence に使う)。
     #[test]

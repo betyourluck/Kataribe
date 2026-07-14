@@ -528,11 +528,32 @@ challenges:
     tiers:
       crit_fail: { natural: at_most, threshold: 10, flag: g, narration: n }
 goals:
-  - { id: g1, when: { kind: stat_at_most, entity: alice, key: 好感度, value: 0 }, title: 表示, hint: h, narration: n, visible: false }
+  - { id: g1, when: { kind: stat_at_most, entity: alice, key: 好感度, value: 0 }, title: 表示, hint: h, narration: n, visible: false, epilogue_prompt: 余韻を }
 goal: { kind: always }
 ";
         let warns = unknown_key_lints(yaml);
         assert!(warns.is_empty(), "健全な盤面に偽陽性を出さない: {warns:?}");
+    }
+
+    /// 【spec 11: 旧形式への epilogue_prompt】旧 `goal:` は素の Gate なので epilogue_prompt の
+    /// 置き場が無い — serde は黙って無視する (deny_unknown_fields ではない) が、生 YAML 走査の
+    /// この lint が未知キーとして名指しする、という防衛線の前提を回帰固定する。
+    /// named goals (GoalDef) 側は既知キーが型から自動導出されるので警告しない
+    /// (上の kitchen_sink に epilogue_prompt 入りの goal がある = 同時に担保)。
+    #[test]
+    fn lints_epilogue_prompt_on_old_form_goal_gate() {
+        let yaml = "
+start: room
+goal: { kind: always, epilogue_prompt: 生存者のその後を語れ }
+locations:
+  room: { description: d }
+";
+        let warns = unknown_key_lints(yaml);
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert!(
+            warns[0].contains("epilogue_prompt"),
+            "旧形式 goal (Gate) への epilogue_prompt を未知キーとして名指し: {warns:?}"
+        );
     }
 
     /// 【壊れた YAML は沈黙】parse 不能なら空 (エラーは from_yaml 側の責務 — 二重報告しない)。

@@ -462,6 +462,11 @@ pub enum ScenarioError {
     /// **lint** ([`Scenario::lints`]) — プレイは壊れないので load は拒否しない (警告表示のみ。
     /// fatal にすると配布済み content が受領側で死ぬ)。
     FlagHintOnAuthoredOnly { flag: FlagKey },
+    /// `epilogue_prompt` を書いた goal に結末文 (`narration`) が無い (None/空文字/空白のみ =
+    /// `trim().is_empty()` 基準)。narration はエピローグ生成失敗時のフォールバックであり、
+    /// 「封印か討伐か死か」という結末の意味を生成に伝える接地素材 — 無いと生成失敗時に
+    /// バナーだけの幕になる。**lint** (プレイは壊れない = load 拒否しない。spec 11)。
+    EpilogueWithoutNarration { goal: GoalId },
     /// `flag_titles` のキーが `allowed_flags` に宣言されていない (幻フラグへの表示名)。
     FlagTitleUndeclared { flag: FlagKey },
     /// `hidden_flags` のキーが `allowed_flags` に宣言されていない (幻フラグの秘匿)。
@@ -571,6 +576,15 @@ pub struct GoalDef {
     /// 複数 goal のどれに達したかを提示層が出すための文面。空なら結末の語りなし。
     #[serde(default)]
     pub narration: String,
+    /// エピローグの**生成指示** (authored、非検証の語り素材。spec 11)。engine は解釈しない。
+    /// 到達がセッションの終端 (単発 goal / campaign の辺なし = 判定は呼び出し側) のとき、
+    /// harness/app がこの指示 + 旅路の記録 (synopsis/chronicle) で GM にエピローグを 1 回
+    /// 書かせる。**本文ではない** (生成本文は提示層の TurnView.epilogue)。
+    /// None / 空白のみ = エピローグなし (従来どおり即結末)。`narration` はエピローグの土台
+    /// (生成失敗時のフォールバック + 結末の意味の接地素材) なので廃止しない —
+    /// 指示だけ書いて結末文が無いと [`ScenarioError::EpilogueWithoutNarration`] が lint 警告する。
+    #[serde(default)]
+    pub epilogue_prompt: Option<String>,
 }
 
 /// 主人公(プレイヤー)の設定。**語りの素材** (非検証) — NPC がプレイヤーを認識・反応する材料。
@@ -798,6 +812,15 @@ impl Scenario {
         for flag in self.flag_hints.keys() {
             if self.allowed_flags.contains(flag) && authored_only.contains(flag) {
                 warns.push(ScenarioError::FlagHintOnAuthoredOnly { flag: flag.clone() });
+            }
+        }
+        // spec 11: エピローグ指示があるのに結末文が無い goal — 生成失敗時のフォールバックが
+        // 存在せず「バナーだけの幕」になる。空の定義は trim().is_empty()
+        // (空白だけの指示は「書いていない」扱いで沈黙)。
+        for g in &self.goals {
+            let has_prompt = g.epilogue_prompt.as_deref().is_some_and(|p| !p.trim().is_empty());
+            if has_prompt && g.narration.trim().is_empty() {
+                warns.push(ScenarioError::EpilogueWithoutNarration { goal: g.id.clone() });
             }
         }
         warns
