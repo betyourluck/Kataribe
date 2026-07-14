@@ -9,6 +9,7 @@
 
 mod asset;
 mod campaign;
+mod epilogue;
 mod error;
 mod loader;
 mod memoria;
@@ -27,6 +28,10 @@ pub use campaign::{
 pub use package::{
     inject_package, is_campaign_entry, load_campaign_package, load_package, read_manifest, Globals,
     LoadedCampaignPackage, LoadedPackage, PackageManifest, PlayerDef,
+};
+pub use epilogue::{
+    build_epilogue_request, epilogue_messages, generate_epilogue, EpilogueRequest,
+    EPILOGUE_TIMEOUT_SECS,
 };
 pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};
