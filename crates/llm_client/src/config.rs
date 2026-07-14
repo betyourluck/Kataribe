@@ -13,21 +13,45 @@ use crate::error::LlmError;
 /// (schema + GM_SYSTEM + scenario_brief) がキャッシュ読取 (0.1×) になる (#44)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
-    /// `POST {base_url}/chat/completions` + Bearer (OpenAI / さくら / ローカル互換サーバ)。
+    /// `POST {base_url}/chat/completions` + Bearer (OpenAI / Grok / さくら / ローカル互換サーバ)。
     OpenAiCompat,
     /// `POST {base_url}/messages` + x-api-key + anthropic-version (キャッシュの効く経路)。
     /// tool-use を常に使う (`use_tools=false` は無視 — Anthropic は tool_choice を確実に尊重する)。
     Anthropic,
+    /// `POST {base}/v1beta/models/{model}:generateContent` + x-goog-api-key (spec 12 Phase C)。
+    /// tool-use を常に使う (tool_choice = functionCallingConfig を確実に尊重する)。
+    Gemini,
 }
 
 impl Provider {
     /// base_url からの自動判定。`LLM_PROVIDER` 未設定時の既定 —
-    /// 配布受領者が Anthropic キーを入れただけでキャッシュが効くように。
+    /// 配布受領者がキーを入れただけで正しいワイヤを話すように。
+    ///
+    /// **Gemini の罠 (spec 12 rev4)**: OpenAI 互換エンドポイント (`.../v1beta/openai/`) の
+    /// base_url にも generativelanguage.googleapis.com が含まれる — 既存の互換利用者を
+    /// 壊さないよう `/openai` を含む URL は互換のまま。判定不能なプロキシホストは
+    /// OpenAiCompat に落ちる (安全側。明示 `LLM_PROVIDER` を .env.example で誘導)。
     pub fn detect(base_url: &str) -> Self {
         if base_url.contains("api.anthropic.com") {
             Provider::Anthropic
+        } else if base_url.contains("generativelanguage.googleapis.com")
+            && !base_url.contains("/openai")
+        {
+            Provider::Gemini
         } else {
             Provider::OpenAiCompat
+        }
+    }
+
+    /// `LLM_PROVIDER` / `SUMMARY_LLM_PROVIDER` の値をパースする (純粋・両経路で共用)。
+    fn parse_env(raw: &str, var: &str) -> Result<Self, LlmError> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "anthropic" | "native" => Ok(Provider::Anthropic),
+            "openai" | "openai_compat" | "compat" => Ok(Provider::OpenAiCompat),
+            "gemini" | "google" => Ok(Provider::Gemini),
+            other => Err(LlmError::Config(format!(
+                "環境変数 {var} の値 '{other}' を解釈できません (anthropic / openai / gemini)"
+            ))),
         }
     }
 }
@@ -133,15 +157,7 @@ impl LlmConfig {
         // 明示 (LLM_PROVIDER) > 自動判定 (base_url)。誤値は起動時に弾く (ネットワーク前)。
         let provider = match env_opt("LLM_PROVIDER") {
             None => Provider::detect(&base_url),
-            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "anthropic" | "native" => Provider::Anthropic,
-                "openai" | "openai_compat" | "compat" => Provider::OpenAiCompat,
-                other => {
-                    return Err(LlmError::Config(format!(
-                        "環境変数 LLM_PROVIDER の値 '{other}' を解釈できません (anthropic / openai)"
-                    )))
-                }
-            },
+            Some(raw) => Provider::parse_env(&raw, "LLM_PROVIDER")?,
         };
 
         let effort = match env_opt("LLM_EFFORT") {
@@ -226,15 +242,7 @@ impl LlmConfig {
         let effective_url = base_url.unwrap_or_else(|| base.base_url.clone());
         let provider = match provider {
             None => Provider::detect(&effective_url),
-            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "anthropic" | "native" => Provider::Anthropic,
-                "openai" | "openai_compat" | "compat" => Provider::OpenAiCompat,
-                other => {
-                    return Err(LlmError::Config(format!(
-                        "環境変数 SUMMARY_LLM_PROVIDER の値 '{other}' を解釈できません (anthropic / openai)"
-                    )))
-                }
-            },
+            Some(raw) => Provider::parse_env(&raw, "SUMMARY_LLM_PROVIDER")?,
         };
         Ok(Some(Self {
             base_url: effective_url,
@@ -277,6 +285,18 @@ impl LlmConfig {
     /// `{base_url}/messages` (Anthropic ネイティブ) を組み立てる (末尾スラッシュを正規化)。
     pub fn messages_endpoint(&self) -> String {
         format!("{}/messages", self.base_url.trim_end_matches('/'))
+    }
+
+    /// Gemini ネイティブ `generateContent` エンドポイントを組み立てる (spec 12 Phase C)。
+    /// base_url はホスト直 (`https://generativelanguage.googleapis.com`) と `/v1beta` 込みの
+    /// 両方を受ける — 受領者ゼロ設定 (ホストだけ書けば動く) と明示派の両対応。
+    pub fn gemini_endpoint(&self) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        if base.ends_with("/v1beta") {
+            format!("{base}/models/{}:generateContent", self.model)
+        } else {
+            format!("{base}/v1beta/models/{}:generateContent", self.model)
+        }
     }
 }
 

@@ -17,6 +17,7 @@ mod canonical;
 mod client;
 mod config;
 mod error;
+mod gemini;
 mod openai_compat;
 mod parse;
 mod wire;
@@ -775,6 +776,135 @@ mod tests {
             LlmError::Parse { raw, .. } => assert!(raw.contains("not-an-array")),
             other => panic!("Parse エラーであるべき: {other:?}"),
         }
+    }
+
+    // --- Gemini ネイティブ経路 (spec 12 Phase C) --------------------------------------
+
+    /// 【Phase C 判定】Provider 三値化の境界。Gemini ネイティブは
+    /// generativelanguage.googleapis.com を含み **`/openai` を含まない**時のみ —
+    /// OpenAI 互換エンドポイント (`.../v1beta/openai/`) の既存利用者を壊さない (rev4 の罠)。
+    /// 判定不能なプロキシホストは OpenAiCompat に落ちる (安全側)。
+    #[test]
+    fn provider_detects_gemini_native_but_not_compat_endpoint() {
+        assert_eq!(
+            Provider::detect("https://generativelanguage.googleapis.com"),
+            Provider::Gemini
+        );
+        assert_eq!(
+            Provider::detect("https://generativelanguage.googleapis.com/v1beta"),
+            Provider::Gemini
+        );
+        assert_eq!(
+            Provider::detect("https://generativelanguage.googleapis.com/v1beta/openai/"),
+            Provider::OpenAiCompat,
+            "互換エンドポイント利用者を壊さない"
+        );
+        assert_eq!(
+            Provider::detect("https://my-gemini-proxy.example.com/v1"),
+            Provider::OpenAiCompat,
+            "判定不能ホストは安全側 (明示 LLM_PROVIDER=gemini を誘導)"
+        );
+
+        // endpoint はホスト直 / /v1beta 込みの両方の base_url を受ける (受領者ゼロ設定)。
+        let mut cfg = LlmConfig::new(
+            "https://generativelanguage.googleapis.com",
+            "sk",
+            "gemini-2.5-flash",
+        );
+        assert_eq!(cfg.provider, Provider::Gemini);
+        assert_eq!(
+            cfg.gemini_endpoint(),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        );
+        cfg.base_url = "https://generativelanguage.googleapis.com/v1beta/".into();
+        assert_eq!(
+            cfg.gemini_endpoint(),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            "/v1beta を二重に付けない"
+        );
+    }
+
+    /// 【Phase C encode】canonical → generateContent。system は systemInstruction (D3)、
+    /// assistant は role "model"、単一ツール強制は mode ANY + allowedFunctionNames (K2)、
+    /// キーは camelCase。temperature None なら送らない。
+    #[test]
+    fn gemini_encode_maps_system_tools_and_roles() {
+        let mut msgs = user_msgs();
+        msgs.push(ChatMessage::assistant("以前の語り"));
+        msgs.push(ChatMessage::user("続き"));
+        let req = canonical::ChatRequest {
+            model: "gemini-2.5-flash".into(),
+            messages: msgs,
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort: None,
+        };
+        let body = serde_json::to_value(gemini::encode(&req)).unwrap();
+
+        // system は systemInstruction へ (model ターンに畳まない = D3)。
+        assert_eq!(body["systemInstruction"]["parts"][0]["text"], "あなたはGM");
+        let contents = body["contents"].as_array().unwrap();
+        let roles: Vec<&str> = contents.iter().map(|c| c["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, vec!["user", "model", "user"], "assistant は model ロール");
+
+        // 単一ツール強制 = ANY + allowedFunctionNames (K2 の写像)。
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["name"],
+            EMIT_DELTA_TOOL
+        );
+        assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
+        assert_eq!(
+            body["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"][0],
+            EMIT_DELTA_TOOL
+        );
+
+        // camelCase + temperature None は送らない。
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 4096);
+        assert!(body["generationConfig"].get("temperature").is_none());
+    }
+
+    /// 【Phase C decode】functionCall.args (最初からオブジェクト = D2 恒等) を canonical へ、
+    /// id は **client 単位の単調 seq** から `call_{seq}_{index}` を合成 (rev4 Must 4 —
+    /// リクエスト毎リセットの call_0 は却下→再生成で衝突する)。usage の
+    /// cachedContentTokenCount → cache_read、MAX_TOKENS → Finish::Length。
+    #[test]
+    fn gemini_decode_synthesizes_ids_and_maps_usage() {
+        let body = r#"{
+            "candidates": [{
+                "content": {"parts": [
+                    {"functionCall": {"name": "emit_delta",
+                                      "args": {"narration": "霧が晴れる", "ops": []}}}
+                ], "role": "model"},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 900, "candidatesTokenCount": 40,
+                              "cachedContentTokenCount": 700}
+        }"#;
+        let resp = client::decode_gemini_body(body.to_string()).unwrap();
+        let a = gemini::decode(resp.clone(), 5);
+        assert_eq!(a.tool_calls[0].id, "call_5_0", "seq + index で合成");
+        assert_eq!(a.tool_calls[0].name, "emit_delta");
+        assert_eq!(a.finish, canonical::Finish::ToolUse, "functionCall があれば tool_use 扱い");
+        assert_eq!(a.usage.cache_read, 700, "暗黙キャッシュの計数を正規化");
+        let delta: StateDelta = parse::extract(&a).unwrap();
+        assert_eq!(delta.narration, "霧が晴れる");
+
+        // 別リクエスト (seq 進行) では id が衝突しない。
+        let b = gemini::decode(resp, 6);
+        assert_ne!(a.tool_calls[0].id, b.tool_calls[0].id);
+
+        // MAX_TOKENS → Length (empty-response 防御 Phase D の判定材料)。
+        let cut = client::decode_gemini_body(
+            r#"{"candidates":[{"finishReason":"MAX_TOKENS"}]}"#.to_string(),
+        )
+        .unwrap();
+        assert_eq!(gemini::decode(cut, 0).finish, canonical::Finish::Length);
     }
 
     // --- OpenAI 互換経路のキャッシュ計測 + xAI sticky routing (#45) ------------------

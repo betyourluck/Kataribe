@@ -1,13 +1,20 @@
 # 12. 統一ツール層 — LLM プロバイダアダプタ (Claude / GPT / Gemini / Grok)
 
-Status: **Phase A+B Done（2026-07-15 rev4 査読確定 → 同日実装）**
+Status: **Phase A+B+C Done（2026-07-15 rev4 査読確定 → 同日実装）**
 - Phase A: canonical + seam + OpenAICompatAdapter（llm_client 30→32 PoC、挙動変更ゼロ）
 - Phase B: ClaudeAdapter 正式化（`anthropic::encode(&canonical)` — build_request を統合）+
   `LLM_EFFORT` opt-in（`thinking: adaptive` + `output_config.effort`、未設定なら送らない）+
   非 fatal config 警告（headroom 16000/64000・temperature 併用、純関数 `warnings()`）。
   llm_client 32→35 PoC。summary 用 client は effort を継がない（要約に深い思考は不要）。
-- workspace 242/242 green + clippy clean + app backend cargo check 通過。
-  次 = Phase C（GeminiAdapter）。effort の実プレイ計測（レイテンシ/コスト/語りの質）は Phase E。
+- Phase C: GeminiAdapter 新規（`gemini.rs` — generateContent の encode/decode 純関数、
+  systemInstruction D3・ANY+allowedFunctionNames K2・`x-goog-api-key` ヘッダ K5・
+  id 合成 `call_{seq}_{index}` は client 単位の AtomicU64 で Must 4 準拠）。
+  `Provider` 三値化（`/openai` 除外規則で互換エンドポイント利用者を保護、
+  語彙 gemini|google、パースは parse_env に共通化）。llm_client 35→38 PoC。
+  **留意**: state_delta_schema の oneOf を Gemini の schema サブセットが受理するかは
+  未確証 — Phase E の live 検証項目（拒否されたら schema 変換の Phase C.5 を起票）。
+- workspace 245/245 green + clippy clean + app backend cargo check 通過。
+  次 = Phase D（Grok reasoning_effort 方言 + 台帳追従）。effort/Gemini の実プレイ計測は Phase E。
 rev 履歴: rev1 起草 → rev2 上流知識の導管 + streaming → rev3 主目的 = Grok tool-use 実用化
 → rev4 査読反映（Must 1/3/4 + Should a〜e 受諾、Must 2 の additive 説は claude-api
 リファレンスで非確認のため combined 維持・headroom 推奨のみ受諾 — 本文に根拠）

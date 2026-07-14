@@ -13,6 +13,7 @@ use crate::anthropic;
 use crate::canonical;
 use crate::config::{LlmConfig, Provider};
 use crate::error::LlmError;
+use crate::gemini;
 use crate::openai_compat;
 use crate::parse;
 use crate::wire::{ChatMessage, ChatRequest, ChatResponse};
@@ -56,6 +57,9 @@ pub struct LlmClient {
     /// キャッシュ健全性の計測 (interior mutability — propose は `&self`)。両経路のリクエストで
     /// cache read を記録し、GUI が連続 miss を警告に出す。
     cache_stat: Mutex<CacheStat>,
+    /// Gemini の呼び出し id 合成用の単調カウンタ (spec 12 rev4 Must 4)。リクエスト毎に
+    /// リセットしない — 却下→再生成の同一ターン内で `call_0` が重複しないため。
+    call_seq: std::sync::atomic::AtomicU64,
 }
 
 impl LlmClient {
@@ -63,7 +67,13 @@ impl LlmClient {
         let http = reqwest::Client::builder()
             .timeout(config.request_timeout)
             .build()?;
-        Ok(Self { http, config, conv_id: new_conv_id(), cache_stat: Mutex::new(CacheStat::default()) })
+        Ok(Self {
+            http,
+            config,
+            conv_id: new_conv_id(),
+            cache_stat: Mutex::new(CacheStat::default()),
+            call_seq: std::sync::atomic::AtomicU64::new(0),
+        })
     }
 
     pub fn config(&self) -> &LlmConfig {
@@ -158,6 +168,14 @@ impl LlmClient {
                 let wire_req = openai_compat::encode(&req, self.config.use_tools);
                 let raw = self.chat_with_retry(&wire_req).await?;
                 openai_compat::decode(raw)?
+            }
+            // Gemini ネイティブ経路 (Phase C): x-goog-api-key ヘッダ認証 (キーを URL に
+            // 載せない K5)。id 合成のカウンタは client 単位で単調 (rev4 Must 4)。
+            Provider::Gemini => {
+                let native = gemini::encode(&req);
+                let raw = self.gemini_with_retry(&native).await?;
+                let seq = self.call_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                gemini::decode(raw, seq)
             }
         };
         self.record_cache(resp.usage.cache_read);
@@ -308,6 +326,74 @@ impl LlmClient {
             }
         }
     }
+
+    // --- Gemini ネイティブ generateContent (spec 12 Phase C) ------------------------
+
+    /// `POST {base}/v1beta/models/{model}:generateContent` を 1 回叩く (リトライ無し)。
+    /// 認証は **`x-goog-api-key` ヘッダ** — キーを URL クエリに載せない (K5。ログ/プロキシ
+    /// へのキー露出を避ける。live 確証は Phase E、通らなければ query key へ改訂)。
+    async fn gemini_once(
+        &self,
+        req: &gemini::GenerateContentRequest,
+    ) -> Result<gemini::GenerateContentResponse, LlmError> {
+        let debug = std::env::var("LLM_DEBUG").is_ok();
+        if debug {
+            eprintln!(
+                "[LLM_DEBUG] request -> {}",
+                serde_json::to_string(req).unwrap_or_default()
+            );
+        }
+        let resp = self
+            .http
+            .post(self.config.gemini_endpoint())
+            .header("x-goog-api-key", &self.config.api_key)
+            .json(req)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api { status: status.as_u16(), body });
+        }
+        let body = resp.text().await?;
+        if debug {
+            eprintln!("[LLM_DEBUG] response <- {body}");
+        }
+        let decoded = decode_gemini_body(body)?;
+        // surface (#44/#45 と同形)。Gemini 2.5 系は暗黙キャッシュが自動 —
+        // cachedContentTokenCount > 0 = プレフィックスがキャッシュから読まれた。
+        if debug || std::env::var("LLM_CACHE_DEBUG").is_ok() {
+            if let Some(u) = &decoded.usage_metadata {
+                eprintln!(
+                    "[LLM_CACHE] cached={} prompt={} completion={}",
+                    u.cached_content_token_count, u.prompt_token_count, u.candidates_token_count
+                );
+            }
+        }
+        Ok(decoded)
+    }
+
+    /// 指数 backoff 付きで generateContent を叩く ([`Self::chat_with_retry`] の Gemini 版)。
+    async fn gemini_with_retry(
+        &self,
+        req: &gemini::GenerateContentRequest,
+    ) -> Result<gemini::GenerateContentResponse, LlmError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.gemini_once(req).await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt >= self.config.max_retries || !e.is_transient() {
+                        return Err(e);
+                    }
+                    let secs = (1u64 << (attempt - 1)).min(10);
+                    tokio::time::sleep(Duration::from_secs(secs)).await;
+                }
+            }
+        }
+    }
 }
 
 /// 2xx 応答の本文を [`ChatResponse`] へ。形が合わなければ [`LlmError::Parse`] で
@@ -321,6 +407,12 @@ pub(crate) fn decode_chat_body(body: String) -> Result<ChatResponse, LlmError> {
 /// Messages API 版の [`decode_chat_body`]。同じく **raw を保持** (#34 同型)。
 pub(crate) fn decode_messages_body(body: String) -> Result<anthropic::MessagesResponse, LlmError> {
     serde_json::from_str::<anthropic::MessagesResponse>(&body)
+        .map_err(|source| LlmError::Parse { source, raw: body })
+}
+
+/// generateContent 版の [`decode_chat_body`]。同じく **raw を保持** (#34 同型)。
+pub(crate) fn decode_gemini_body(body: String) -> Result<gemini::GenerateContentResponse, LlmError> {
+    serde_json::from_str::<gemini::GenerateContentResponse>(&body)
         .map_err(|source| LlmError::Parse { source, raw: body })
 }
 
