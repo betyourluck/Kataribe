@@ -1565,6 +1565,51 @@ goal: { kind: always }
         }
     }
 
+    /// 【#51: challenge の effects 内 set_flag も専権 (2026-07-14 ユーザー報告)】
+    /// `authored_only_flags` の走査が challenge 帰結の `.flag` 欄しか見ておらず、
+    /// **`on_success`/`on_failure`/`tiers` の `effects` に書いた `set_flag` が漏れていた** —
+    /// そのフラグは GM の usable 語彙に出て (先取りを誘う)、#50 の engine バックストップも
+    /// 素通りする (二層とも開く)。effects は 2026-07-03 に足した「フラグ+トリガーの 2 点セット
+    /// 無しで直接動かす」経路で、そちらで書いた作者だけが穴に落ちる非対称だった。
+    #[test]
+    fn challenge_effects_setflags_are_authored_only() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [今日は働いた, 大失態を演じた, 挨拶した]
+challenges:
+  work:
+    sides: 6
+    dc: 4
+    on_success: { effects: [{ op: set_flag, key: 今日は働いた, value: true }] }
+    on_failure: { effects: [{ op: set_flag, key: 今日は働いた, value: true }] }
+    tiers:
+      fumble: { natural: min, effects: [{ op: set_flag, key: 大失態を演じた, value: true }] }
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let authored = sc.authored_only_flags();
+        assert!(authored.contains("今日は働いた"), "outcome.effects の set_flag も専権");
+        assert!(authored.contains("大失態を演じた"), "tier.effects の set_flag も専権");
+        let usable = sc.usable_flags();
+        assert_eq!(usable.len(), 1, "usable に漏れない: {usable:?}");
+        assert!(usable.contains("挨拶した"));
+
+        // #50 のバックストップも effects 経路のフラグに効く (見せない + 通さないの二層)。
+        let s = sc.initial_state(1);
+        let preempt = d(vec![StateOp::SetFlag { key: "今日は働いた".into(), value: true }]);
+        match adjudicate(&s, &sc, &preempt) {
+            Verdict::Reject { reasons } => assert!(
+                reasons.iter().any(|r| matches!(r, RejectReason::FlagNotAllowed { key, .. } if key == "今日は働いた")),
+                "effects 経路の専権フラグへの LLM set_flag を却下: {reasons:?}"
+            ),
+            Verdict::Accept => panic!("effects 経路の専権フラグは却下されるべき (#51)"),
+        }
+    }
+
     /// 【フラグの真化ターン記録】op / トリガー効果のどちらで立っても、`flag_turns` に
     /// 「true になったターン」が刻まれる (apply 末尾の差分で一括捕捉)。提示層が chronicle の
     /// 該当ターン要約と join して「何をして立ったフラグか」を思い出せる素。

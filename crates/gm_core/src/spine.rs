@@ -763,28 +763,37 @@ impl Scenario {
         self.challenges.get(id)
     }
 
-    /// **authored 専権フラグ** — トリガー効果・challenge 帰結 (on_success/on_failure/tier) が
-    /// engine 経由で書くフラグ。LLM が set_flag すべきでない (立てても筋書きの先取り＝ノイズ)。
-    /// 宣言の走査だけで機械的に判別できる。`filter_authored_only_ops` (op の構造的遮断) のフラグ版。
+    /// **authored 専権フラグ** — トリガー効果・challenge 帰結 (on_success/on_failure/tier の
+    /// `.flag` 欄 **と `effects` 内の `set_flag`**) が engine 経由で書くフラグ。LLM が set_flag
+    /// すべきでない (立てても筋書きの先取り＝ノイズ)。宣言の走査だけで機械的に判別できる。
+    /// `filter_authored_only_ops` (op の構造的遮断) のフラグ版。
+    /// (#51: 当初 challenge 側は `.flag` 欄しか走査しておらず、effects 経由の set_flag が
+    /// usable 語彙にも #50 バックストップにも漏れていた — 書くフラグの全経路を舐めること。)
     pub fn authored_only_flags(&self) -> BTreeSet<FlagKey> {
         let mut set = BTreeSet::new();
-        for t in &self.triggers {
-            for op in &t.effects {
+        // StateOp 列から set_flag の書き先を拾う (trigger/challenge の effects 共通)。
+        fn collect_setflags(ops: &[StateOp], set: &mut BTreeSet<FlagKey>) {
+            for op in ops {
                 if let StateOp::SetFlag { key, .. } = op {
                     set.insert(key.clone());
                 }
             }
+        }
+        for t in &self.triggers {
+            collect_setflags(&t.effects, &mut set);
         }
         for c in self.challenges.values() {
             for outcome in [&c.on_success, &c.on_failure].into_iter().flatten() {
                 if let Some(flag) = &outcome.flag {
                     set.insert(flag.clone());
                 }
+                collect_setflags(&outcome.effects, &mut set);
             }
             for tier in c.tiers.values() {
                 if let Some(flag) = &tier.flag {
                     set.insert(flag.clone());
                 }
+                collect_setflags(&tier.effects, &mut set);
             }
         }
         set
