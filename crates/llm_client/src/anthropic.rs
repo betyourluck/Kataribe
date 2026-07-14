@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::canonical;
-use crate::wire::{ChatMessage, Role};
+use crate::wire::Role;
 
 /// 必須ヘッダ `anthropic-version` の値。
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -38,6 +38,24 @@ pub(crate) struct MessagesRequest {
     pub tools: Vec<ToolDef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// adaptive thinking (spec 12 Phase B)。effort 設定時のみ `{"type":"adaptive"}` を送る
+    /// (未設定なら**キーごと送らない** = 現行動作。budget_tokens は送らない — Opus 4.8 で 400)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Thinking>,
+    /// `output_config.effort` (effort は output_config の**中** — トップレベルでない)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct Thinking {
+    #[serde(rename = "type")]
+    pub kind: &'static str, // 常に "adaptive"
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OutputConfig {
+    pub effort: &'static str, // low | medium | high | xhigh | max
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,35 +102,31 @@ pub(crate) struct ToolChoice {
     pub name: String,
 }
 
-/// [`ChatMessage`] 列からネイティブリクエストを組み立てる。
+/// canonical → ネイティブ Messages リクエスト (spec 12 Phase A/B の encode 純関数)。
 ///
 /// - 先頭の連続 system → `system` ブロック配列 (末尾に cache_control)。
 /// - 先頭以外の system (万一混じった場合) → user に降格 (ネイティブは先頭 system のみ)。
-/// - `tool` = `Some((name, description, schema))` なら tools + tool_choice 強制。
-pub(crate) fn build_request(
-    model: &str,
-    max_tokens: u32,
-    temperature: Option<f32>,
-    messages: Vec<ChatMessage>,
-    tool: Option<(String, String, Value)>,
-) -> MessagesRequest {
+/// - tools があれば ToolDef + `{type: tool, name}` で強制 (ネイティブは tool_choice を確実に
+///   尊重するので use_tools は関係ない = 常に tool-use)。
+/// - effort 設定時のみ `thinking: adaptive` + `output_config.effort` (Phase B、opt-in)。
+pub(crate) fn encode(req: &canonical::ChatRequest) -> MessagesRequest {
     let mut system: Vec<SystemBlock> = Vec::new();
     let mut turns: Vec<TurnMessage> = Vec::new();
-    for m in messages {
+    for m in &req.messages {
         match m.role {
             Role::System if turns.is_empty() => system.push(SystemBlock {
                 kind: "text",
-                text: m.content,
+                text: m.content.clone(),
                 cache_control: None,
             }),
             // 先頭以外の system は user へ降格 (壊さない)。Role::Tool は現状未使用だが同様に降格。
             Role::System | Role::Tool | Role::User => turns.push(TurnMessage {
                 role: "user",
-                content: m.content,
+                content: m.content.clone(),
             }),
             Role::Assistant => turns.push(TurnMessage {
                 role: "assistant",
-                content: m.content,
+                content: m.content.clone(),
             }),
         }
     }
@@ -122,26 +136,38 @@ pub(crate) fn build_request(
         last.cache_control = Some(CacheControl::ephemeral());
     }
 
-    let (tools, tool_choice) = match tool {
-        Some((name, description, schema)) => (
+    let (tools, tool_choice) = match req.tools.first() {
+        Some(t) => (
             vec![ToolDef {
-                name: name.clone(),
-                description,
-                input_schema: schema,
+                name: t.name.clone(),
+                description: t.description.clone(),
+                input_schema: t.parameters.clone(),
             }],
-            Some(ToolChoice { kind: "tool", name }),
+            Some(ToolChoice { kind: "tool", name: t.name.clone() }),
         ),
         None => (Vec::new(), None),
     };
 
+    // effort は opt-in (None なら thinking/output_config ともキーごと送らない = 現行動作)。
+    // 形は公式例に固定: thinking {type: adaptive} + output_config {effort} (spec 12 rev4)。
+    let (thinking, output_config) = match req.effort {
+        Some(e) => (
+            Some(Thinking { kind: "adaptive" }),
+            Some(OutputConfig { effort: e.as_str() }),
+        ),
+        None => (None, None),
+    };
+
     MessagesRequest {
-        model: model.to_string(),
-        max_tokens,
-        temperature,
+        model: req.model.clone(),
+        max_tokens: req.max_tokens,
+        temperature: req.temperature,
         system,
         messages: turns,
         tools,
         tool_choice,
+        thinking,
+        output_config,
     }
 }
 

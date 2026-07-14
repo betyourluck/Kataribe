@@ -22,7 +22,7 @@ mod parse;
 mod wire;
 
 pub use client::{CacheStat, LlmClient};
-pub use config::{LlmConfig, Provider};
+pub use config::{Effort, LlmConfig, Provider};
 pub use error::LlmError;
 pub use parse::strip_reasoning_blocks;
 pub use wire::{ChatMessage, Role};
@@ -577,13 +577,19 @@ mod tests {
     /// メッセージには置かない (毎ターン別内容 → 読まれないキャッシュ書込 1.25× の無駄)。
     #[test]
     fn anthropic_request_places_cache_control_on_system_tail() {
-        let req = anthropic::build_request(
-            "claude-opus-4-8",
-            4096,
-            None,
-            user_msgs(),
-            Some((EMIT_DELTA_TOOL.into(), "d".into(), state_delta_schema())),
-        );
+        let req = anthropic::encode(&canonical::ChatRequest {
+            model: "claude-opus-4-8".into(),
+            messages: user_msgs(),
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort: None,
+        });
         let body = serde_json::to_value(&req).unwrap();
 
         // system は配列で、末尾ブロックに cache_control: ephemeral。
@@ -602,6 +608,9 @@ mod tests {
         // temperature 未設定なら送らない (claude-opus-4-8 は temperature 非対応)。
         assert!(body.get("temperature").is_none());
         assert_eq!(body["max_tokens"], 4096);
+        // effort 未設定 (opt-in) なら thinking/output_config もキーごと送らない = 現行動作。
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("output_config").is_none());
     }
 
     /// 【ネイティブ応答の解決】tool_use ブロックの input (JSON オブジェクト) を canonical へ
@@ -653,6 +662,7 @@ mod tests {
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
             max_tokens: 256,
+            effort: None,
         };
 
         let with_tools = openai_compat::encode(&req, true);
@@ -668,6 +678,68 @@ mod tests {
         let last = no_tools.messages.last().unwrap();
         assert_eq!(last.role, Role::System, "json_instruction は末尾の system");
         assert!(last.content.contains("JSON Schema"), "schema を載せた指示を積む");
+    }
+
+    /// 【Phase B effort】LLM_EFFORT 設定時のみ `thinking: adaptive` + `output_config.effort` を
+    /// 送る (形は公式例に固定 — effort は output_config の**中**。budget_tokens は送らない =
+    /// Opus 4.8/Sonnet 5 で 400)。未設定なら**キーごと送らない** = 現行動作 (opt-in)。
+    #[test]
+    fn anthropic_encode_effort_is_opt_in() {
+        let mut req = canonical::ChatRequest {
+            model: "claude-opus-4-8".into(),
+            messages: user_msgs(),
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 64000,
+            effort: Some(Effort::XHigh),
+        };
+        let body = serde_json::to_value(anthropic::encode(&req)).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "xhigh");
+        assert!(body["thinking"].get("budget_tokens").is_none(), "budget_tokens は送らない");
+        assert!(body.get("effort").is_none(), "effort はトップレベルに置かない");
+
+        req.effort = None;
+        let body = serde_json::to_value(anthropic::encode(&req)).unwrap();
+        assert!(body.get("thinking").is_none(), "未設定なら送らない = 現行動作");
+        assert!(body.get("output_config").is_none());
+    }
+
+    /// 【Phase B config】LLM_EFFORT の語彙パース (純粋)。5 段階 + 表記ゆれ、不正値は
+    /// **黙って無視せず** Config エラー (「効いているつもり」の静かな漏出を防ぐ #44 の教訓)。
+    #[test]
+    fn effort_parses_vocabulary_and_rejects_unknown() {
+        assert_eq!(Effort::parse("high").unwrap(), Effort::High);
+        assert_eq!(Effort::parse(" XHIGH ").unwrap(), Effort::XHigh);
+        assert_eq!(Effort::parse("x-high").unwrap(), Effort::XHigh);
+        assert_eq!(Effort::parse("max").unwrap(), Effort::Max);
+        assert!(matches!(Effort::parse("banana"), Err(LlmError::Config(_))));
+    }
+
+    /// 【Phase B 警告】effort 設定時の headroom 不足 (max_tokens は thinking+output の合算上限
+    /// = combined、claude-api リファレンス接地) と temperature 併用 (対象モデルは 400) を
+    /// **非 fatal** で surface する (純粋・テスト可。from_env が stderr へ出す)。
+    #[test]
+    fn config_warnings_surface_headroom_and_temperature_conflicts() {
+        let mut cfg = LlmConfig::new("https://api.anthropic.com/v1", "sk", "claude-opus-4-8");
+        assert!(cfg.warnings().is_empty(), "effort 未設定なら警告なし (現行構成は無音)");
+
+        cfg.effort = Some(Effort::High);
+        let w = cfg.warnings(); // max_tokens は既定 4096 のまま
+        assert_eq!(w.len(), 1, "headroom 警告: {w:?}");
+        assert!(w[0].contains("16000"), "推奨値を名指しする: {w:?}");
+
+        cfg.temperature = Some(0.7);
+        assert_eq!(cfg.warnings().len(), 2, "temperature 併用も警告");
+
+        cfg.max_tokens = 64000;
+        cfg.temperature = None;
+        assert!(cfg.warnings().is_empty(), "headroom 確保 + temperature 撤去で無音");
     }
 
     /// 【Phase A decode】OpenAI 互換 wire → canonical。finish_reason/usage を正規化し、
@@ -791,7 +863,15 @@ mod tests {
             ChatMessage::user("行動"),
             ChatMessage::system("後付け指示"),
         ];
-        let req = anthropic::build_request("m", 256, None, msgs, None);
+        let req = anthropic::encode(&canonical::ChatRequest {
+            model: "m".into(),
+            messages: msgs,
+            tools: Vec::new(),
+            tool_choice: canonical::ToolChoice::None,
+            temperature: None,
+            max_tokens: 256,
+            effort: None,
+        });
         let body = serde_json::to_value(&req).unwrap();
         assert_eq!(body["system"].as_array().unwrap().len(), 2, "先頭連続 system は system ブロックへ");
         let roles: Vec<&str> = body["messages"]

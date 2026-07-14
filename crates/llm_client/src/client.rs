@@ -96,6 +96,7 @@ impl LlmClient {
             tool_choice: canonical::ToolChoice::None,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
+            effort: self.config.effort,
         };
         let resp = self.complete(req).await?;
         resp.text
@@ -127,6 +128,7 @@ impl LlmClient {
             // temperature は config 任せ (未設定なら送らない)。
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
+            effort: self.config.effort,
         };
         let resp = self.complete(req).await?;
         parse::extract::<T>(&resp)
@@ -145,20 +147,9 @@ impl LlmClient {
         let resp = match self.config.provider {
             // Anthropic ネイティブ経路 (#44): 安定プレフィックス末尾の cache_control で
             // schema+system がキャッシュされる。tool_choice を確実に尊重するので常に tool-use
-            // (use_tools は無視 = 従来動作)。
+            // (use_tools は無視 = 従来動作)。effort 方言 (Phase B) も encode が持つ。
             Provider::Anthropic => {
-                let tool = req
-                    .tools
-                    .into_iter()
-                    .next()
-                    .map(|t| (t.name, t.description, t.parameters));
-                let native = anthropic::build_request(
-                    &req.model,
-                    req.max_tokens,
-                    req.temperature,
-                    req.messages,
-                    tool,
-                );
+                let native = anthropic::encode(&req);
                 let raw = self.messages_with_retry(&native).await?;
                 anthropic::decode(raw)
             }

@@ -32,6 +32,48 @@ impl Provider {
     }
 }
 
+/// 推論の深さ (spec 12 Phase B)。Claude は `thinking: adaptive` + `output_config.effort`、
+/// Grok (Phase D) は `reasoning_effort` へ写す — canonical の語彙は一つ、方言は adapter が持つ。
+///
+/// **未設定 (None) なら何も送らない** = 現行動作 (opt-in)。値語彙は Claude の 5 段階を正とし、
+/// 対応しないプロバイダへの丸めは各 adapter の責務。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl Effort {
+    /// `LLM_EFFORT` の値をパースする (純粋・テスト可)。不正値は None でなく Err —
+    /// 黙って無視すると「効いているつもり」の静かな漏出になる (#44 の教訓)。
+    pub(crate) fn parse(raw: &str) -> Result<Self, LlmError> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "low" => Ok(Effort::Low),
+            "medium" => Ok(Effort::Medium),
+            "high" => Ok(Effort::High),
+            "xhigh" | "x-high" | "x_high" => Ok(Effort::XHigh),
+            "max" => Ok(Effort::Max),
+            other => Err(LlmError::Config(format!(
+                "環境変数 LLM_EFFORT の値 '{other}' を解釈できません (low / medium / high / xhigh / max)"
+            ))),
+        }
+    }
+
+    /// wire に載せる文字列 (Claude `output_config.effort` / Grok `reasoning_effort` 共通の語彙)。
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::XHigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+}
+
 /// LLM 接続設定。`base_url` + `api_key` 抽象でベンダーロックインを避ける。
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
@@ -52,6 +94,9 @@ pub struct LlmConfig {
     pub use_tools: bool,
     /// ワイヤプロトコル。`LLM_PROVIDER` (anthropic|openai) 明示、未設定なら base_url から自動判定。
     pub provider: Provider,
+    /// 推論の深さ (`LLM_EFFORT`、spec 12 Phase B)。**None なら送らない** (opt-in・現行動作)。
+    /// Claude: `thinking: adaptive` + `output_config.effort` / Grok (Phase D): `reasoning_effort`。
+    pub effort: Option<Effort>,
 }
 
 impl LlmConfig {
@@ -99,7 +144,12 @@ impl LlmConfig {
             },
         };
 
-        Ok(Self {
+        let effort = match env_opt("LLM_EFFORT") {
+            None => None,
+            Some(raw) => Some(Effort::parse(&raw)?),
+        };
+
+        let config = Self {
             base_url,
             api_key,
             model: env_opt("LLM_MODEL").unwrap_or_else(|| "gpt-4o-mini".into()),
@@ -112,7 +162,38 @@ impl LlmConfig {
                 .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
                 .unwrap_or(true),
             provider,
-        })
+            effort,
+        };
+        // 非 fatal の設定警告 (headroom / temperature 併用) を起動時に 1 回 surface する。
+        for w in config.warnings() {
+            eprintln!("[LLM_CONFIG] 警告: {w}");
+        }
+        Ok(config)
+    }
+
+    /// 非 fatal の設定警告 (純粋・テスト可)。プレイを止めないが「効いているつもり」を防ぐ:
+    /// - effort 設定時の max_tokens 不足 — Claude 系の max_tokens は **thinking+output の合算上限**
+    ///   (combined)。既定 4096 のままだと思考が本文を食い潰し空応答/切断の芽 (spec 12 rev4、
+    ///   claude-api リファレンス接地: effort 時 ≥16000 推奨・xhigh/max は 64000 目安)。
+    /// - effort + temperature の併用 — effort が効く世代 (Opus 4.7/4.8・Sonnet 5) は
+    ///   temperature 自体をモデルレベルで 400 にする。送る前に気づけるように。
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.effort.is_some() {
+            if self.max_tokens < 16000 {
+                out.push(format!(
+                    "LLM_EFFORT 設定時は LLM_MAX_TOKENS を 16000 以上に推奨 (現在 {} — Claude 系は思考+本文の合算上限のため、思考が本文を食い潰す恐れ。xhigh/max は 64000 目安)",
+                    self.max_tokens
+                ));
+            }
+            if self.temperature.is_some() {
+                out.push(
+                    "LLM_EFFORT と LLM_TEMPERATURE の併用 — effort が効くモデル (Opus 4.7/4.8・Sonnet 5) は temperature を受け付けず 400 を返します (LLM_TEMPERATURE の削除を推奨)"
+                        .into(),
+                );
+            }
+        }
+        out
     }
 
     /// あらすじ要約用の設定 (spec 10)。`SUMMARY_LLM_MODEL` か `SUMMARY_LLM_BASE_URL` が
@@ -165,6 +246,8 @@ impl LlmConfig {
             max_retries: base.max_retries,
             use_tools: base.use_tools,
             provider,
+            // 要約は安い/速い設定が目的 — GM の effort は継がない (深い思考は要約に不要)。
+            effort: None,
         }))
     }
 
@@ -182,6 +265,7 @@ impl LlmConfig {
             max_retries: 3,
             use_tools: true,
             provider,
+            effort: None,
         }
     }
 

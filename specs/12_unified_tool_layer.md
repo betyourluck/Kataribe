@@ -1,9 +1,13 @@
 # 12. 統一ツール層 — LLM プロバイダアダプタ (Claude / GPT / Gemini / Grok)
 
-Status: **Phase A Done（2026-07-15 rev4 査読確定 → 同日実装）— canonical + seam +
-OpenAICompatAdapter。llm_client 30→32 PoC（encode/decode 新 seam の 2 本追加）、
-workspace 239/239 green + clippy clean + app backend cargo check 通過（挙動変更ゼロの
-回帰証明）。次 = Phase B（ClaudeAdapter 正式化 + LLM_EFFORT）**
+Status: **Phase A+B Done（2026-07-15 rev4 査読確定 → 同日実装）**
+- Phase A: canonical + seam + OpenAICompatAdapter（llm_client 30→32 PoC、挙動変更ゼロ）
+- Phase B: ClaudeAdapter 正式化（`anthropic::encode(&canonical)` — build_request を統合）+
+  `LLM_EFFORT` opt-in（`thinking: adaptive` + `output_config.effort`、未設定なら送らない）+
+  非 fatal config 警告（headroom 16000/64000・temperature 併用、純関数 `warnings()`）。
+  llm_client 32→35 PoC。summary 用 client は effort を継がない（要約に深い思考は不要）。
+- workspace 242/242 green + clippy clean + app backend cargo check 通過。
+  次 = Phase C（GeminiAdapter）。effort の実プレイ計測（レイテンシ/コスト/語りの質）は Phase E。
 rev 履歴: rev1 起草 → rev2 上流知識の導管 + streaming → rev3 主目的 = Grok tool-use 実用化
 → rev4 査読反映（Must 1/3/4 + Should a〜e 受諾、Must 2 の additive 説は claude-api
 リファレンスで非確認のため combined 維持・headroom 推奨のみ受諾 — 本文に根拠）

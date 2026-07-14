@@ -7,6 +7,7 @@
 
 use serde_json::Value;
 
+use crate::config::Effort;
 use crate::wire::ChatMessage;
 
 /// プロバイダ中立のリクエスト。
@@ -19,6 +20,9 @@ pub(crate) struct ChatRequest {
     /// 明示設定時のみ送る (None なら provider 既定。新しめモデルは送ると 400)。
     pub temperature: Option<f32>,
     pub max_tokens: u32,
+    /// 推論の深さ (spec 12 Phase B)。**None なら送らない** (opt-in)。方言への写像は adapter:
+    /// Claude = `thinking: adaptive` + `output_config.effort` / Grok (Phase D) = `reasoning_effort`。
+    pub effort: Option<Effort>,
 }
 
 /// ツール定義。`parameters` は JSON Schema (schemars 機械生成の単一真実源)。
