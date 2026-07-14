@@ -944,6 +944,13 @@ mod tests {
         // camelCase + temperature None は送らない。
         assert_eq!(body["generationConfig"]["maxOutputTokens"], 4096);
         assert!(body["generationConfig"].get("temperature").is_none());
+
+        // 【Phase C.5a (#52)】schema は Gemini サブセットへ適応 — oneOf は黙って落とされ
+        // 制約が消える (実測: ops:[1,2,3] 捏造) ため anyOf へ付け替え、バリアント制約を保つ。
+        let params = serde_json::to_string(&body["tools"][0]["functionDeclarations"][0]["parameters"]).unwrap();
+        assert!(!params.contains("oneOf"), "oneOf は Gemini に送らない: {params}");
+        assert!(params.contains("anyOf"), "anyOf へ付け替えてバリアント制約を保つ");
+        assert!(params.contains("set_flag"), "op バリアントの実体は保たれる");
     }
 
     /// 【Phase C decode】functionCall.args (最初からオブジェクト = D2 恒等) を canonical へ、

@@ -1,7 +1,18 @@
 # 12. 統一ツール層 — LLM プロバイダアダプタ (Claude / GPT / Gemini / Grok)
 
-Status: **Phase A〜D Done（2026-07-15 rev4 査読確定 → 同日実装）。残 = Phase E（実 4
-プロバイダ live 検証）+ Phase F（grok-4.3 の A/B 検証と通しプレイ、実キー必要）**
+Status: **Phase A〜D Done + Phase E 一部実測（2026-07-15）。**
+Phase E 実測結果:
+- **Anthropic ✓** — cache_read=13607（ターン 2 以降、#44 資産の回帰なし）
+- **Grok（grok-4.3 + tool-use）主目的 Green** — reasoning_effort=none の既定送出で
+  空デルタ/タイムアウトが解消し応答が返る（completion 257/185 tokens 実測）。
+  ただし **cached=128 で頭打ち**（prompt 6199→6688 でも不変）— #45 の 89% 実測
+  （2026-07-11、別モデル）と乖離。モデル差（reasoning 系のキャッシュ挙動）か要診断
+  （残項目: 数ターン継続で cached が伸びるか / grok-4-1-fast との A/B）
+- **Gemini ✗→C.5a 適用** — schema は受理されたが `oneOf` が**黙って落ち**、
+  `ops:[1,2,3]` 捏造で提案者エラー（failures.md #52）。`gemini::adapt_schema` で
+  oneOf→anyOf 付け替え（バリアント制約保持）。live 再検証待ち。
+  効かなければ C.5b = 全バリアント統合の単一 object 化（op enum + 全フィールド optional）。
+残 = Grok キャッシュ診断 / Gemini C.5a 再検証 / narration 量計測（tool-use ≥ no-tools×1.5 目安）。
 - Phase A: canonical + seam + OpenAICompatAdapter（llm_client 30→32 PoC、挙動変更ゼロ）
 - Phase B: ClaudeAdapter 正式化（`anthropic::encode(&canonical)` — build_request を統合）+
   `LLM_EFFORT` opt-in（`thinking: adaptive` + `output_config.effort`、未設定なら送らない）+

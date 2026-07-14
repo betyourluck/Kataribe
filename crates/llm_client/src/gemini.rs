@@ -121,7 +121,7 @@ pub(crate) fn encode(req: &canonical::ChatRequest) -> GenerateContentRequest {
             .map(|t| FunctionDecl {
                 name: t.name.clone(),
                 description: t.description.clone(),
-                parameters: t.parameters.clone(),
+                parameters: adapt_schema(&t.parameters),
             })
             .collect();
         // 単一ツール強制 (Specific) は mode ANY + allowedFunctionNames (K2 の写像)。
@@ -152,6 +152,30 @@ pub(crate) fn encode(req: &canonical::ChatRequest) -> GenerateContentRequest {
             max_output_tokens: req.max_tokens,
             temperature: req.temperature,
         },
+    }
+}
+
+/// JSON Schema を Gemini の Schema サブセット (OpenAPI 3.0 系) へ適応させる (Phase C.5a)。
+///
+/// **実測の罠 (2026-07-15, failures.md #52)**: Gemini の functionDeclarations は `oneOf` を
+/// **400 にせず黙って落とす** — schemars が StateOp に出す `ops.items.oneOf` の制約が消え、
+/// モデルが `"ops": [1, 2, 3]` (整数列!) を捏造した。Grok の $ref 非解決 (#①) と同族の
+/// 「grammar コンパイラが schema を部分適用する」系だが、こちらは**エラーすら出ない**分
+/// 静かに悪い。Gemini の Schema は `anyOf` を対応する (2.0 系〜) ので付け替える —
+/// バリアント毎の required/properties 制約を保ったまま Gemini の grammar に乗る。
+/// (それでも制約が効かない場合の次段 = 全バリアント統合の単一 object 化 C.5b、live で判断。)
+pub(crate) fn adapt_schema(schema: &Value) -> Value {
+    match schema {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                let key = if k == "oneOf" { "anyOf" } else { k.as_str() };
+                out.insert(key.to_string(), adapt_schema(v));
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(adapt_schema).collect()),
+        other => other.clone(),
     }
 }
 
