@@ -88,6 +88,7 @@ watch(
 onMounted(() => {
   game.refreshPackages();
   game.refreshLlmModel(); // TitleBar のモデル名バッジ + OS ウィンドウタイトル
+  game.checkAppUpdate(); // 配布サイトに新しいアプリがあれば TitleBar に「最新版があります」
   const px = Number(localStorage.getItem("kataribe.fontScale")) || 18; // 既定 = 標準 18px
   document.documentElement.style.fontSize = `${px}px`;
   window.addEventListener("pointerdown", ensureBgmPlaying);
@@ -110,8 +111,11 @@ onMounted(() => {
     <TitleBar
       :title="game.title"
       :model="game.llmModel"
+      :update-available="game.updateAvailable"
+      :latest-version="game.latestVersion"
       @open-settings="showSettings = true"
       @open-packages="showPackages = true"
+      @open-update="game.openUpdateSite()"
       @save-log="game.saveLog()"
     />
 

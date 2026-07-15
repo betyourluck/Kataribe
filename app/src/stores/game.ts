@@ -264,6 +264,10 @@ interface GameState {
   logToast: string;
   // 使用中の AI モデル名 (TitleBar バッジ + OS ウィンドウタイトル)。get_llm_config から取得。
   llmModel: string;
+  // 配布サイトに現在版より新しいアプリがあるか (TitleBar の「最新版があります」表示)。
+  updateAvailable: boolean;
+  // 配布サイトの最新版タグ (表示用。例 "v0.3.3")。
+  latestVersion: string;
   // 開発者モード (KATARIBE_DEV_MODE)。ON で GM に「テストプレイ・<meta:> 質問可」を刷り込む。
   devMode: boolean;
   // キャッシュ連続 miss の警告を出したか (エッジトリガー latch。ヒット復帰で再武装)。
@@ -310,6 +314,8 @@ export const useGameStore = defineStore("game", {
       logDir: loadLogDir(),
       logToast: "",
       llmModel: "",
+      updateAvailable: false,
+      latestVersion: "",
       devMode: false,
       cacheWarned: false,
       synopsis: [],
@@ -391,6 +397,32 @@ export const useGameStore = defineStore("game", {
         );
       } catch {
         /* ウィンドウ API が無い環境ではバッジ表示のみ */
+      }
+    },
+
+    // 配布サイトに新しいアプリがあるか確認する (起動時)。現在版 = ビルド時に埋めた git タグ
+    // (__APP_VERSION__)。判定は backend (fetch_app_update) の純関数に委ね、結果だけ受け取る。
+    // 自動更新はしない — 通知だけ (クリックでサイトを既定ブラウザで開く)。
+    async checkAppUpdate() {
+      try {
+        const status = await invoke<{ update_available: boolean; latest_version: string }>(
+          "fetch_app_update",
+          { siteUrl: this.siteUrl, currentVersion: __APP_VERSION__ || "" },
+        );
+        this.updateAvailable = status.update_available;
+        this.latestVersion = status.latest_version;
+      } catch {
+        // オフライン / 配布サイト未設定 / Tauri 外は静かに諦める (更新通知は非必須)。
+        this.updateAvailable = false;
+      }
+    },
+
+    // 「最新版があります」クリック: 配布サイトを既定ブラウザで開く (アプリ更新は手動)。
+    async openUpdateSite() {
+      try {
+        await invoke("open_external_url", { url: this.siteUrl });
+      } catch (e) {
+        this.logToast = `サイトを開けませんでした: ${e}`;
       }
     },
 

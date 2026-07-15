@@ -17,6 +17,10 @@ defineProps<{
   title?: string;
   /** 使用中の AI モデル名 (パッケージ一覧アイコンの右にバッジ表示。空なら出さない)。 */
   model?: string;
+  /** 配布サイトに現在版より新しいアプリがある時 true (「最新版があります」を出す)。 */
+  updateAvailable?: boolean;
+  /** 配布サイトの最新版タグ (hover 表示用。例 "v0.3.3")。 */
+  latestVersion?: string;
 }>();
 
 /**
@@ -42,6 +46,7 @@ function badgeStyle(model: string): Record<string, string> {
 const emit = defineEmits<{
   (e: "open-settings"): void;
   (e: "open-packages"): void;
+  (e: "open-update"): void;
   (e: "save-log"): void;
 }>();
 
@@ -101,6 +106,17 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
       </svg>
     </button>
+    <!-- 更新通知: 現在版より新しい配布版がある時だけ (設定とパッケージ一覧の間)。
+         クリックで配布サイトを既定ブラウザで開く (自動更新はしない)。 -->
+    <button
+      v-if="updateAvailable"
+      class="tb-update"
+      :title="latestVersion ? `最新版 ${latestVersion} を配布サイトで開く` : '配布サイトを開く'"
+      @click="emit('open-update')"
+    >
+      最新版があります
+    </button>
+
     <button class="tb-btn" title="パッケージ一覧" aria-label="パッケージ一覧" @click="emit('open-packages')">
       <!-- List -->
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
@@ -163,5 +179,25 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
 .tb-close:hover {
   background: #e53935;
   color: #fff;
+}
+/* 「最新版があります」= ember アクセントの控えめなリンク (設定とパッケージ一覧の間)。 */
+.tb-update {
+  height: 20px;
+  display: flex;
+  align-items: center;
+  margin: 0 6px;
+  padding: 0 8px;
+  border: 1px solid rgb(var(--ember) / 0.5);
+  border-radius: 9999px;
+  background: rgb(var(--ember) / 0.14);
+  color: rgb(var(--ember));
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.tb-update:hover {
+  background: rgb(var(--ember) / 0.28);
 }
 </style>

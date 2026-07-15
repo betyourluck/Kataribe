@@ -511,20 +511,38 @@ fn open_log_folder(app: tauri::AppHandle, folder: String) -> Result<(), String> 
 }
 
 /// フォルダを OS 標準のファイルマネージャで開く (プラットフォーム別)。
-/// tauri-plugin-shell を足さず std::process で完結させる (custom command ゆえ追加権限不要)。
 fn open_in_file_manager(dir: &Path) -> Result<(), String> {
+    os_open(&dir.to_string_lossy()).map_err(|e| format!("フォルダを開けません: {e}"))
+}
+
+/// フォルダ or URL を OS 標準ハンドラ (ファイルマネージャ / 既定ブラウザ) で開く。
+/// tauri-plugin-shell を足さず std::process で完結させる (custom command ゆえ追加権限不要)。
+/// Windows の `explorer <url>` / macOS の `open <url>` / Linux の `xdg-open <url>` は
+/// いずれも URL を既定ブラウザへ委譲する。explorer は成功時も非0を返すので spawn の成否だけ見る。
+fn os_open(target: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let program = "explorer";
     #[cfg(target_os = "macos")]
     let program = "open";
     #[cfg(all(unix, not(target_os = "macos")))]
     let program = "xdg-open";
-    // explorer は成功時も非0を返すことがあるので、起動 (spawn) の成否だけを見る。
     std::process::Command::new(program)
-        .arg(dir)
+        .arg(target)
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("フォルダを開けません: {e}"))
+        .map_err(|e| format!("開けません: {e}"))
+}
+
+/// URL を既定ブラウザで開く (更新通知のクリック等)。http/https のみ受理。
+/// URL は呼び出し側 (フロント) が持つ設定値 = 配布サイト。API 応答由来の URL は開かない
+/// (攻撃者が誘導する外部 URL を踏まない — 開くのは常にユーザーが登録した siteUrl)。
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let u = url.trim();
+    if !(u.starts_with("http://") || u.starts_with("https://")) {
+        return Err("http:// または https:// の URL のみ開けます".to_string());
+    }
+    os_open(u)
 }
 
 /// パッケージ別オートセーブの置き場 (spec 07 Phase C): `app_data_dir/saves/<パスのFNVハッシュ>.yaml`。
@@ -1028,6 +1046,82 @@ async fn fetch_site_packages(
     res.json::<RemoteList>()
         .await
         .map_err(|e| format!("一覧の形式が読めません (配布サイトではない URL の可能性): {e}"))
+}
+
+/// アプリ更新情報 API (`GET /api/app`) の応答。必要なフィールドだけ拾い残りは無視。
+#[derive(Deserialize)]
+struct AppInfo {
+    /// 配布が有効か (サーバがリリースを取り下げていれば false → 通知しない)。
+    #[serde(default)]
+    available: bool,
+    /// 配布サイトの最新版タグ。例 "v0.3.3"。
+    #[serde(default)]
+    version: String,
+}
+
+/// フロントへ返す更新判定 (表示は提示層が決める)。
+#[derive(Serialize)]
+struct AppUpdateStatus {
+    /// 現在版が配布版より古く、かつ配布が有効なら true (= 「最新版があります」を出す)。
+    update_available: bool,
+    /// 配布サイトの最新版 (表示用)。例 "v0.3.3"。
+    latest_version: String,
+}
+
+/// "v0.3.3" / "0.3.3" 等を数値成分列 `[0, 3, 3]` へ。`v`/`V` 前置は剥がし、各成分は
+/// 先頭の連続する数字だけを採る (`3-rc1` → 3)。非数値・欠損は 0 扱いで比較を壊さない。
+fn parse_version(v: &str) -> Vec<u64> {
+    v.trim()
+        .trim_start_matches(['v', 'V'])
+        .split('.')
+        .map(|p| {
+            let digits: String = p.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u64>().unwrap_or(0)
+        })
+        .collect()
+}
+
+/// `latest` が `current` より新しいか。成分ごとに数値比較し、長さ違いは 0 埋め
+/// (`0.3` と `0.3.0` は同値)。純関数 = PoC でテストする更新判定の核。
+fn is_newer(latest: &str, current: &str) -> bool {
+    let (a, b) = (parse_version(latest), parse_version(current));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+/// 配布サイトの最新版を問い合わせ、現在版 (git タグ = フロントの `__APP_VERSION__`) と比較する。
+/// `current_version` が空 (タグ無しの開発ビルド) の時は判定不能 = 通知しない。
+/// オフライン/未設定サイトはエラーを返すのでフロントが静かに握り潰す (更新通知は非必須)。
+#[tauri::command]
+async fn fetch_app_update(
+    site_url: String,
+    current_version: String,
+) -> Result<AppUpdateStatus, String> {
+    let base = normalize_site_url(&site_url)?;
+    let res = site_client()?
+        .get(format!("{base}/api/app"))
+        .send()
+        .await
+        .map_err(|e| format!("配布サイトに接続できません: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("配布サイトがエラーを返しました: {}", res.status()));
+    }
+    let info = res
+        .json::<AppInfo>()
+        .await
+        .map_err(|e| format!("更新情報の形式が読めません: {e}"))?;
+    let update_available = info.available
+        && !current_version.trim().is_empty()
+        && is_newer(&info.version, &current_version);
+    Ok(AppUpdateStatus {
+        update_available,
+        latest_version: info.version,
+    })
 }
 
 /// 取得結果 (packagePaths へ登録する絶対パス + 表示用 title)。
@@ -1711,6 +1805,8 @@ pub fn run() {
             set_dev_mode,
             fetch_site_packages,
             install_site_package,
+            fetch_app_update,
+            open_external_url,
             get_default_log_dir,
             save_log_file,
             open_log_folder,
@@ -1755,6 +1851,24 @@ mod tests {
         );
         assert_eq!(view.location, "v", "id は機械用のまま");
         assert_eq!(view.location_title, "宿屋の広間", "表示名が DTO に出る");
+    }
+
+    /// 【更新判定 PoC (2026-07-15)】`/api/app` の version と現在版 (git タグ) の比較。
+    /// `v` 前置・成分長の違い・非数値サフィックスに寛容で、真に新しい時だけ true。
+    #[test]
+    fn is_newer_detects_available_update_across_formats() {
+        use super::is_newer;
+        // 配布版が新しい → 更新あり (v 前置の有無混在も比較できる)。
+        assert!(is_newer("v0.3.3", "v0.3.2"), "patch 上がり");
+        assert!(is_newer("0.4.0", "v0.3.9"), "minor 上がり (v 前置混在)");
+        assert!(is_newer("v1.0.0", "v0.9.9"), "major 上がり");
+        // 同値・古い → 更新なし。
+        assert!(!is_newer("v0.3.3", "v0.3.3"), "同一版は通知しない");
+        assert!(!is_newer("v0.3", "v0.3.0"), "0.3 と 0.3.0 は同値 (0 埋め)");
+        assert!(!is_newer("v0.3.2", "v0.3.3"), "現在版の方が新しければ通知しない");
+        // 非数値サフィックスは数字先頭だけ採る (0-rc1 → 0)。プレリリース序列は扱わない割り切り。
+        assert!(is_newer("v0.4.1", "v0.4.0-rc1"), "0-rc1 は patch 0 扱い → 0.4.1 が新しい");
+        assert!(!is_newer("v0.4.0-rc2", "v0.4.0"), "0-rc2 も patch 0 扱い → 同値で通知しない");
     }
 
     /// 【統合・opt-in】実書庫の一覧 API が RemoteList へ deserialize できる (DTO の契約確認)。
