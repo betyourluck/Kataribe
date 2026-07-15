@@ -164,12 +164,9 @@ onMounted(() => {
 
     <!-- 本体 -->
     <div class="flex flex-1 overflow-hidden">
-      <!-- 背景画像がある時は暗幕の上ゆえテーマに関わらず dark 配色で描く (ライトで濃色文字が
-           暗幕に埋もれるのを防ぐ)。背景なしはグローバルテーマに従う (ライトはクリーム地に濃色)。 -->
       <main
         class="flex-1 flex flex-col min-w-0 bg-cover bg-center transition-[background-image] duration-700"
         :style="game.backgroundStyle"
-        :data-theme="game.background ? 'dark' : null"
       >
         <div
           v-if="!game.started"
@@ -177,7 +174,10 @@ onMounted(() => {
         >
           パッケージを選んで「新しいゲーム」を押すと、忘れない・矛盾しない GM が物語を始めます。
         </div>
-        <ConversationLog v-else />
+        <!-- メッセージは背景画像 (暗幕) の上の物語コンテンツ = 背景がある時はテーマに関わらず
+             dark 配色で描く (濃色文字が暗幕に埋もれない)。入力欄 (ActionInput) は UI クロームゆえ
+             グローバルテーマに従う (ライトでは明るい入力欄)。 -->
+        <ConversationLog v-else :data-theme="game.background ? 'dark' : null" />
         <ActionInput />
       </main>
 
