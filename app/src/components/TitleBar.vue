@@ -10,6 +10,9 @@
  */
 import { theme, toggleTheme } from "../theme";
 
+// git の最新タグ (ビルド時に vite.config が注入)。例 "v0.3.2"。タグ無しは空 = 非表示。
+const version = __APP_VERSION__;
+
 defineProps<{
   title?: string;
   /** 使用中の AI モデル名 (パッケージ一覧アイコンの右にバッジ表示。空なら出さない)。 */
@@ -58,7 +61,7 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
     class="flex items-center h-8 shrink-0 bg-ink border-b border-ash select-none"
   >
     <div data-tauri-drag-region class="px-3 text-xs font-bold tracking-widest text-glow pointer-events-none">
-      語り部<span v-if="title" class="text-parchment/40 font-normal"> — {{ title }}</span>
+      語り部<span v-if="version" class="ml-1.5 text-[10px] font-normal tracking-normal text-parchment/40">{{ version }}</span><span v-if="title" class="text-parchment/40 font-normal"> — {{ title }}</span>
     </div>
 
     <div data-tauri-drag-region class="flex-1 h-full"></div>
