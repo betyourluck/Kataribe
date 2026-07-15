@@ -31,6 +31,10 @@ pub(crate) struct GenerateContentRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_config: Option<ToolConfig>,
     pub generation_config: GenerationConfig,
+    /// spec 13: 明示キャッシュ (cachedContent) 参照。`Some(name)` のとき systemInstruction/tools は
+    /// **送らず** cache が前置する (二重送信を避ける)。`None` は従来どおり inline (skip される = 回帰ゼロ)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +98,18 @@ pub(crate) struct GenerationConfig {
 /// - no-tools モード (`use_tools=false`) は Gemini では無視 (functionCallingConfig を
 ///   確実に尊重するため不要 — Anthropic と同じ扱い、spec 12 K4)。
 pub(crate) fn encode(req: &canonical::ChatRequest) -> GenerateContentRequest {
+    encode_with_cache(req, None)
+}
+
+/// [`encode`] の明示キャッシュ版 (spec 13 Phase A)。`cached` が `Some(name)` のとき
+/// **systemInstruction と tools を送らず** `cachedContent: name` を参照する (静的プレフィックスは
+/// cache が前置 = 暗黙キャッシュの ~8000 崖 (failures #54) を迂回)。`None` なら従来 body と完全一致
+/// (`cached_content` は skip される = 回帰ゼロ)。tool_config (mode ANY の**強制指定**) は request 側に
+/// 残す — cache が持つのはツール宣言、「どれを強制するか」は per-request の指定 (D1)。
+pub(crate) fn encode_with_cache(
+    req: &canonical::ChatRequest,
+    cached: Option<String>,
+) -> GenerateContentRequest {
     let mut system_parts: Vec<Part> = Vec::new();
     let mut contents: Vec<Content> = Vec::new();
     for m in &req.messages {
@@ -112,7 +128,7 @@ pub(crate) fn encode(req: &canonical::ChatRequest) -> GenerateContentRequest {
         }
     }
 
-    let (tools, tool_config) = if req.tools.is_empty() {
+    let (tool_decls, tool_config) = if req.tools.is_empty() {
         (None, None)
     } else {
         let decls = req
@@ -139,20 +155,63 @@ pub(crate) fn encode(req: &canonical::ChatRequest) -> GenerateContentRequest {
         )
     };
 
+    // cache が静的プレフィックス (systemInstruction + tools) を持つ時は二重送信しない。
+    let use_cache = cached.is_some();
     GenerateContentRequest {
         contents,
-        system_instruction: if system_parts.is_empty() {
+        system_instruction: if use_cache || system_parts.is_empty() {
             None
         } else {
             Some(SystemInstruction { parts: system_parts })
         },
-        tools,
+        tools: if use_cache { None } else { tool_decls },
         tool_config,
         generation_config: GenerationConfig {
             max_output_tokens: req.max_tokens,
             temperature: req.temperature,
         },
+        cached_content: cached,
     }
+}
+
+/// FNV-1a 64bit の 1 ステップ (決定論・stable、CLAUDE.md の save パス命名と同族)。
+/// `#[allow(dead_code)]`: Phase A では [`fingerprint`] (テスト検証済) の部品どまり — Phase B の
+/// cache lifecycle (client の reuse/再作成判定) で wire する。
+#[allow(dead_code)]
+fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// 静的プレフィックス (model + 先頭 system + tools) の安定 fingerprint (spec 13 Phase A)。
+/// 明示キャッシュの reuse/再作成判定に使う: 同じプレフィックス→同 key、scenario/model/tools 変化→別 key。
+/// **可変な user/assistant メッセージは含めない** (cache の対象外)。session-local で使い (永続しない)、
+/// プロセス内の決定論で足りる。
+/// `#[allow(dead_code)]`: Phase A では PoC で決定論を固定するのみ — Phase B で client の
+/// `gemini_cache` 照合に wire する (同 key → reuse / 別 key → 再作成)。
+#[allow(dead_code)]
+pub(crate) fn fingerprint(req: &canonical::ChatRequest) -> u64 {
+    let mut h = fnv1a(0xcbf2_9ce4_8422_2325, req.model.as_bytes());
+    // 先頭の連続 system 群 (= systemInstruction になる部分) だけが静的プレフィックス。
+    for m in &req.messages {
+        match m.role {
+            Role::System => {
+                h = fnv1a(h, b"\x00sys\x00");
+                h = fnv1a(h, m.content.as_bytes());
+            }
+            _ => break,
+        }
+    }
+    for t in &req.tools {
+        h = fnv1a(h, b"\x00tool\x00");
+        h = fnv1a(h, t.name.as_bytes());
+        h = fnv1a(h, t.description.as_bytes());
+        h = fnv1a(h, t.parameters.to_string().as_bytes());
+    }
+    h
 }
 
 /// JSON Schema を Gemini の Schema サブセット (OpenAPI 3.0 系) へ適応させる (Phase C.5a)。

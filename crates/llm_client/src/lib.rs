@@ -953,6 +953,90 @@ mod tests {
         assert!(params.contains("set_flag"), "op バリアントの実体は保たれる");
     }
 
+    /// 【spec 13 Phase A】静的プレフィックス fingerprint: 同プレフィックス→同 key (可変 user は
+    /// 無関係)、system/model/tools のどれが変わっても別 key (campaign 遷移や別 package で明示
+    /// キャッシュを作り直すため)。
+    #[test]
+    fn gemini_fingerprint_keys_static_prefix_only() {
+        let mk = |sys: &str, model: &str, tool_desc: &str, action: &str| canonical::ChatRequest {
+            model: model.into(),
+            messages: vec![ChatMessage::system(sys), ChatMessage::user(action)],
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: tool_desc.into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort: None,
+        };
+        let base = mk("GM_A", "gemini-3.5-flash", "d", "行動X");
+        // 可変 user が違っても fingerprint は不変 (cache は静的プレフィックスだけを含む)。
+        assert_eq!(
+            gemini::fingerprint(&base),
+            gemini::fingerprint(&mk("GM_A", "gemini-3.5-flash", "d", "全然ちがう行動Y")),
+            "user メッセージは fingerprint に影響しない"
+        );
+        // system / model / tools のどれが変わっても別 key。
+        assert_ne!(
+            gemini::fingerprint(&base),
+            gemini::fingerprint(&mk("GM_B", "gemini-3.5-flash", "d", "行動X")),
+            "system 変化 = 別シナリオ → 別 key"
+        );
+        assert_ne!(
+            gemini::fingerprint(&base),
+            gemini::fingerprint(&mk("GM_A", "gemini-2.5-flash", "d", "行動X")),
+            "model 変化 → 別 key (cache は model 固有)"
+        );
+        assert_ne!(
+            gemini::fingerprint(&base),
+            gemini::fingerprint(&mk("GM_A", "gemini-3.5-flash", "d2", "行動X")),
+            "tools 変化 → 別 key"
+        );
+    }
+
+    /// 【spec 13 Phase A】`cached=None` は従来 encode と完全一致 (回帰ゼロ)。`Some(name)` は
+    /// systemInstruction/tools を送らず cachedContent を参照し、可変 contents と mode ANY (強制
+    /// 指定) は request 側に残す。
+    #[test]
+    fn gemini_encode_with_cache_omits_prefix_and_references_cache() {
+        let req = canonical::ChatRequest {
+            model: "gemini-3.5-flash".into(),
+            messages: user_msgs(),
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort: None,
+        };
+        // None = 従来 body と同一 (cached_content は skip される)。
+        assert_eq!(
+            serde_json::to_value(gemini::encode(&req)).unwrap(),
+            serde_json::to_value(gemini::encode_with_cache(&req, None)).unwrap(),
+            "cached None は従来 encode と完全一致"
+        );
+        // Some = プレフィックス省略 + cache 参照。
+        let body =
+            serde_json::to_value(gemini::encode_with_cache(&req, Some("cachedContents/xyz".into())))
+                .unwrap();
+        assert_eq!(body["cachedContent"], "cachedContents/xyz");
+        assert!(body.get("systemInstruction").is_none(), "system は cache 側 (二重送信しない)");
+        assert!(body.get("tools").is_none(), "tool 宣言も cache 側");
+        assert!(
+            !body["contents"].as_array().unwrap().is_empty(),
+            "可変 contents は request に残る"
+        );
+        assert_eq!(
+            body["toolConfig"]["functionCallingConfig"]["mode"], "ANY",
+            "強制指定 (mode ANY) は per-request"
+        );
+    }
+
     /// 【Phase C decode】functionCall.args (最初からオブジェクト = D2 恒等) を canonical へ、
     /// id は **client 単位の単調 seq** から `call_{seq}_{index}` を合成 (rev4 Must 4 —
     /// リクエスト毎リセットの call_0 は却下→再生成で衝突する)。usage の
