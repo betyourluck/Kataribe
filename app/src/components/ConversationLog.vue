@@ -38,6 +38,7 @@ const game = useGameStore();
         v-else-if="entry.kind === 'beat'"
         class="border-l-2 border-ember/60 pl-3 space-y-1 rounded-r py-1.5 pr-3"
         :style="game.beatBgStyle"
+        :data-theme="game.beatBgOpacity > 0 ? 'dark' : null"
       >
         <p v-if="entry.narration.trim()" class="text-ember" :style="{ textShadow: game.narrationStyle.textShadow ?? '' }">✦ {{ entry.narration }}</p>
         <!-- 想起された伏線 (memoria) — 既定で畳む。次ターンに GM が語りへ織り込むので、生表示はメタ/ネタバレ気味 -->
