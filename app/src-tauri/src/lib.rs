@@ -1130,13 +1130,17 @@ async fn install_from_site(
     }
 }
 
+/// [`open_package`] の戻り値: (package root, 開始 scenario, campaign(単発は None), 現在 module,
+/// manifest, 警告)。clippy type_complexity 回避の別名 (呼び出し側のタプル分解は透過で無改修)。
+type OpenedPackage = (PathBuf, Scenario, Option<Campaign>, ModuleId, PackageManifest, Vec<String>);
+
 /// パッケージを開く共通部 (new_game / resume_game): scope 許可 + entry 分岐ロード + 注入。
 /// `module` 指定で campaign のそのモジュールを開く (再開用。単発パッケージでは無視)。
 fn open_package(
     app: &tauri::AppHandle,
     rel: &str,
     module: Option<&ModuleId>,
-) -> Result<(PathBuf, Scenario, Option<Campaign>, ModuleId, PackageManifest, Vec<String>), String> {
+) -> Result<OpenedPackage, String> {
     let root = repo_root();
     let pkg_dir = if Path::new(rel).is_absolute() {
         PathBuf::from(rel)
