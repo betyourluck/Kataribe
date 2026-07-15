@@ -568,18 +568,31 @@ fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> St
         .into_iter()
         .map(|id| EntityView {
             id: id.clone(),
-            stats: state
-                .entities
-                .get(id)
-                .map(|stats| {
-                    stats
-                        .iter()
-                        // 内部用の帳簿 stat (hidden_stats) は状態パネルに出さない。
-                        .filter(|(k, _)| !scenario.hidden_stats.contains(*k))
-                        .map(|(k, v)| StatView { key: k.clone(), value: *v })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            stats: {
+                // authored 宣言順 (YAML の記述順) で並べる。実行時 GameState は BTreeMap で
+                // 順序を持たないので、Scenario::stat_order (initial_stats/CharacterDef.stats の
+                // 記述順) を参照する。hidden_stats (帳簿) は状態パネルに出さない。
+                let m = state.entities.get(id);
+                let order = scenario.stat_order(id);
+                let mut out: Vec<StatView> = Vec::new();
+                for k in &order {
+                    if scenario.hidden_stats.contains(k) {
+                        continue;
+                    }
+                    if let Some(v) = m.and_then(|m| m.get(k)) {
+                        out.push(StatView { key: k.clone(), value: *v });
+                    }
+                }
+                // 宣言に無い runtime stat (role_assignment の帳簿等) は末尾に (BTreeMap 順で安定)。
+                if let Some(m) = m {
+                    for (k, v) in m {
+                        if !order.contains(k) && !scenario.hidden_stats.contains(k) {
+                            out.push(StatView { key: k.clone(), value: *v });
+                        }
+                    }
+                }
+                out
+            },
             skills: state
                 .skills
                 .get(id)
@@ -590,23 +603,35 @@ fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> St
                 .get(id)
                 .map(|s| s.iter().cloned().collect())
                 .unwrap_or_default(),
-            attributes: state
-                .attributes
-                .get(id)
-                .map(|a| {
-                    a.iter()
-                        // secret 属性 (役職等, spec 06) はプレイヤー UI では本人分のみ。
-                        // NPC 分は DTO 段階で落とす (隠しゴールと同じネタバレ衛生)。
-                        // hidden 属性 (本人未知) は**本人分も含め全員分**落とす — 当人すら
-                        // 知らない正体・呪いを UI が漏らさない (GM prompt だけが見る)。
-                        .filter(|(k, _)| {
-                            !scenario.hidden_attributes.contains(*k)
-                                && (id == PLAYER || !scenario.secret_attributes.contains(*k))
-                        })
-                        .map(|(k, v)| StatStrView { key: k.clone(), value: v.clone() })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            attributes: {
+                // stats と同じく authored 宣言順 (Scenario::attribute_order)。
+                // secret 属性 (役職等, spec 06) はプレイヤー UI では本人分のみ (NPC 分は DTO 段階で
+                // 落とす)。hidden 属性 (本人未知) は本人分も含め全員分落とす (当人すら知らない正体・
+                // 呪いを UI が漏らさない — GM prompt だけが見る)。
+                let m = state.attributes.get(id);
+                let order = scenario.attribute_order(id);
+                let visible = |k: &String| {
+                    !scenario.hidden_attributes.contains(k)
+                        && (id == PLAYER || !scenario.secret_attributes.contains(k))
+                };
+                let mut out: Vec<StatStrView> = Vec::new();
+                for k in &order {
+                    if !visible(k) {
+                        continue;
+                    }
+                    if let Some(v) = m.and_then(|m| m.get(k)) {
+                        out.push(StatStrView { key: k.clone(), value: v.clone() });
+                    }
+                }
+                if let Some(m) = m {
+                    for (k, v) in m {
+                        if !order.contains(k) && visible(k) {
+                            out.push(StatStrView { key: k.clone(), value: v.clone() });
+                        }
+                    }
+                }
+                out
+            },
             profile: if id == PLAYER {
                 scenario.protagonist.profile.clone()
             } else {

@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use indexmap::IndexMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::state::{
@@ -240,8 +242,9 @@ pub struct CharacterDef {
     #[serde(default)]
     pub profile: String,
     /// このキャラが持つ stat の宣言。`initial` が [`Scenario::initial_state`] の初期値。
+    /// IndexMap で YAML の記述順を保持する (表示順を「書いた順」にする)。
     #[serde(default)]
-    pub stats: BTreeMap<StatKey, StatDecl>,
+    pub stats: IndexMap<StatKey, StatDecl>,
     /// 宣言された閉じた能力集合 (催眠/予知 等)。初期スキル。未宣言の能力は存在しない
     /// (メアリー・スー遮断)。開花は authored トリガーの grant_skill 効果のみ。
     #[serde(default)]
@@ -255,7 +258,7 @@ pub struct CharacterDef {
     /// 初期の文字列属性 (クラス/種族 等)。宣言したキーが閉世界の許可集合になり、トリガーの
     /// set_attribute はこのキーにしか書けない (未宣言キーは load 時 validate で弾く)。
     #[serde(default)]
-    pub attributes: BTreeMap<AttrKey, String>,
+    pub attributes: IndexMap<AttrKey, String>,
     /// 硬い禁忌: これが true になる delta を却下する (Phase B でエンジン強制)。
     #[serde(default)]
     pub taboos: Vec<Gate>,
@@ -671,7 +674,7 @@ pub struct Scenario {
     pub vote_rules: Vec<VoteRule>,
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
-    pub initial_stats: BTreeMap<StatKey, i64>,
+    pub initial_stats: IndexMap<StatKey, i64>,
     /// **表示から隠す stat キー** (内部用の帳簿 stat。spec 04 追補)。タイマー (`record_turn` の刻み) や
     /// repeatable カウンタのような engine 内部値を、提示層 (UI の状態パネル / prompt の state_brief / CLI) が
     /// この集合のキーで skip する。**engine は使わない提示ヒント** (キーの正本性には影響しない・非検証)。
@@ -688,7 +691,7 @@ pub struct Scenario {
     /// `"player"` の初期文字列属性 (クラス/職業/種族 等)。宣言キーが player の閉世界許可集合になり、
     /// トリガーの set_attribute はこのキーにしか書けない。NPC は [`CharacterDef::attributes`]。
     #[serde(default)]
-    pub initial_attributes: BTreeMap<AttrKey, String>,
+    pub initial_attributes: IndexMap<AttrKey, String>,
     /// このシナリオに登場する外部キャラの宣言 (`characters/{id}.yaml` から注入する entity)。
     /// **空なら外部注入しない** — シナリオが宣言した登場人物だけが現れる (全シナリオ共有の混入を防ぐ)。
     /// inline `characters` に在る entity はそちらが優先。
@@ -730,6 +733,33 @@ impl Scenario {
     /// 指定 entity がこのシナリオに存在するか (主人公 or 登場人物)。譲渡先の検証に使う。
     pub fn knows_entity(&self, entity: &str) -> bool {
         entity == PLAYER || self.characters.contains_key(entity)
+    }
+
+    /// entity の stat を **authored 宣言順 (YAML の記述順)** で返す (表示用)。実行時 `GameState`
+    /// は BTreeMap ゆえ順序を持たない — 状態パネルを「書いた順」に並べるため、提示層が
+    /// 宣言側 (`initial_stats` / `CharacterDef::stats`、IndexMap で記述順保持) を参照する。
+    /// engine の意味論 (gate/validate/seeding) はキー lookup で順序非依存ゆえ影響なし。
+    pub fn stat_order(&self, entity: &str) -> Vec<StatKey> {
+        if entity == PLAYER {
+            self.initial_stats.keys().cloned().collect()
+        } else {
+            self.characters
+                .get(entity)
+                .map(|c| c.stats.keys().cloned().collect())
+                .unwrap_or_default()
+        }
+    }
+
+    /// entity の attribute を **authored 宣言順** で返す ([`Self::stat_order`] の attribute 版)。
+    pub fn attribute_order(&self, entity: &str) -> Vec<AttrKey> {
+        if entity == PLAYER {
+            self.initial_attributes.keys().cloned().collect()
+        } else {
+            self.characters
+                .get(entity)
+                .map(|c| c.attributes.keys().cloned().collect())
+                .unwrap_or_default()
+        }
     }
 
     /// 現在地の**実効 NPC presence** (spec 04)。`Location.present` (場所ベース) に
@@ -1207,5 +1237,33 @@ impl Scenario {
             }
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 【表示順 (stat/attr display order)】stats/attributes は YAML の記述順を保持する
+    /// (authored 宣言を IndexMap 化)。BTreeMap 時代はアルファベット順に潰れていた — 状態パネルを
+    /// 「書いた順」で表示するための土台。engine の意味論はキー lookup で順序非依存ゆえ不変。
+    #[test]
+    fn stat_and_attribute_order_follow_yaml_declaration() {
+        // わざとアルファベット順でない順で宣言する (hp が先頭なら alpha 順、末尾なら記述順)。
+        let yaml = "title: t\nstart: room\n\
+            initial_stats: { 観察力: 6, 共感力: 6, hp: 10 }\n\
+            initial_attributes: { 役割: 探偵, 年齢: \"17\" }\n\
+            locations: { room: {} }\n";
+        let sc = Scenario::from_yaml(yaml).expect("parse");
+        assert_eq!(
+            sc.stat_order(PLAYER),
+            vec!["観察力".to_string(), "共感力".to_string(), "hp".to_string()],
+            "stat は記述順を保つ (アルファベット順 hp/共感力/観察力 ではない)"
+        );
+        assert_eq!(
+            sc.attribute_order(PLAYER),
+            vec!["役割".to_string(), "年齢".to_string()],
+            "attribute も記述順を保つ"
+        );
     }
 }
