@@ -2,6 +2,11 @@ import { createApp } from "vue";
 import { createPinia } from "pinia";
 import App from "./App.vue";
 import "./assets/main.css";
+import { applyTheme } from "./theme";
+
+// テーマ (ライト/ダーク) を mount 前に <html> へ反映する = 描画前に確定させ、
+// 保存済みライトモードで開いてもダークが一瞬映るフラッシュを防ぐ。既定ダーク。
+applyTheme();
 
 // 配布 (production) ビルドでは WebView の既定右クリックメニューを抑止する。
 // 既定メニューには「最新の情報に更新」「名前を付けて保存」「印刷」などブラウザ由来の項目が

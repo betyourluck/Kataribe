@@ -4,13 +4,14 @@ export default {
   theme: {
     extend: {
       colors: {
-        // 「語り部」: 暖炉の残り火を思わせる暗い暖色テーマ。
-        ink: "#15110e",        // 背景 (焦げ茶の黒)
-        parchment: "#e8ddc8",  // 本文 (羊皮紙)
-        ember: "#d98a4a",      // アクセント (熾火)
-        ash: "#3a322b",        // 罫線・パネル
-        glow: "#f0c27b",       // 強調 (炎の明)
-        warn: "#d9645a",       // 注意 (薄めの赤・ember の赤寄り兄弟。自己修復の ⚠ 等)
+        // 「語り部」: 暖炉の残り火を思わせる暖色テーマ。値は CSS 変数 (main.css) で定義し
+        // data-theme (ライト/ダーク) で入れ替える。<alpha-value> で opacity 修飾子 (bg-ash/30 等) を保つ。
+        ink: "rgb(var(--ink) / <alpha-value>)",             // 背景
+        parchment: "rgb(var(--parchment) / <alpha-value>)", // 本文
+        ember: "rgb(var(--ember) / <alpha-value>)",         // アクセント (熾火)
+        ash: "rgb(var(--ash) / <alpha-value>)",             // 罫線・パネル
+        glow: "rgb(var(--glow) / <alpha-value>)",           // 強調 (炎の明)
+        warn: "rgb(var(--warn) / <alpha-value>)",           // 注意 (自己修復の ⚠ 等)
       },
       fontFamily: {
         serif: ['"Noto Serif JP"', "serif"],

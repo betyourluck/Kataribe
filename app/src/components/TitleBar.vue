@@ -8,6 +8,8 @@
  * - 最小化/最大化トグル/閉じるは @tauri-apps/api/window を動的 import で叩く
  *   (ブラウザ環境=Tauri 外でも crash しない)。
  */
+import { theme, toggleTheme } from "../theme";
+
 defineProps<{
   title?: string;
   /** 使用中の AI モデル名 (パッケージ一覧アイコンの右にバッジ表示。空なら出さない)。 */
@@ -60,6 +62,24 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
     </div>
 
     <div data-tauri-drag-region class="flex-1 h-full"></div>
+
+    <!-- テーマ切替 (ダーク時=太陽でライトへ / ライト時=月でダークへ)。既定ダーク・localStorage 永続。 -->
+    <button
+      class="tb-btn"
+      :title="theme === 'dark' ? 'ライトモードに切替' : 'ダークモードに切替'"
+      aria-label="テーマ切替"
+      @click="toggleTheme"
+    >
+      <!-- 太陽 (ダーク時) -->
+      <svg v-if="theme === 'dark'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+      </svg>
+      <!-- 月 (ライト時) -->
+      <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+      </svg>
+    </button>
 
     <!-- アプリ操作: ログ保存 / 設定 / パッケージ一覧 -->
     <button class="tb-btn" title="会話ログをテキスト保存" aria-label="ログ保存" @click="emit('save-log')">
@@ -128,13 +148,14 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
   justify-content: center;
   background: transparent;
   border: none;
-  color: #9ca3af;
+  /* テーマ対応 (本文色の減光)。ライト背景でもアイコンが見える。 */
+  color: rgb(var(--parchment) / 0.5);
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 .tb-btn:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: #f3f4f6;
+  background: rgb(var(--parchment) / 0.1);
+  color: rgb(var(--parchment) / 0.95);
 }
 .tb-close:hover {
   background: #e53935;
