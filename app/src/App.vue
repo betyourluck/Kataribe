@@ -164,7 +164,13 @@ onMounted(() => {
 
     <!-- 本体 -->
     <div class="flex flex-1 overflow-hidden">
-      <main class="flex-1 flex flex-col min-w-0 bg-cover bg-center transition-[background-image] duration-700" :style="game.backgroundStyle">
+      <!-- 背景画像がある時は暗幕の上ゆえテーマに関わらず dark 配色で描く (ライトで濃色文字が
+           暗幕に埋もれるのを防ぐ)。背景なしはグローバルテーマに従う (ライトはクリーム地に濃色)。 -->
+      <main
+        class="flex-1 flex flex-col min-w-0 bg-cover bg-center transition-[background-image] duration-700"
+        :style="game.backgroundStyle"
+        :data-theme="game.background ? 'dark' : null"
+      >
         <div
           v-if="!game.started"
           class="flex-1 flex items-center justify-center text-parchment/40 px-6 text-center"
