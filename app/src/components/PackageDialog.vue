@@ -8,6 +8,7 @@
 import { ref } from "vue";
 import { useGameStore, SITE_CATEGORIES } from "../stores/game";
 import type { RemotePackage } from "../types/api";
+import { t } from "../i18n";
 import Icon from "./Icon.vue";
 
 const game = useGameStore();
@@ -48,11 +49,14 @@ function search(page: number) {
 async function install(p: RemotePackage) {
   lastInstalled.value = null;
   const installed = await game.installSitePackage(p.id);
-  if (installed) lastInstalled.value = `「${installed.title}」を取得し、一覧に追加しました`;
+  if (installed) lastInstalled.value = t("packages.installed", { title: installed.title });
 }
 
+// カテゴリ表示名は i18n（`packages.categories.<id>`、空 id は all）。未知カテゴリは id を出す。
 function categoryLabel(id: string): string {
-  return SITE_CATEGORIES.find((c) => c.id === id)?.label ?? id;
+  const key = `packages.categories.${id || "all"}`;
+  const label = t(key);
+  return label === key ? id : label;
 }
 
 function fmtSize(bytes: number): string {
@@ -70,31 +74,31 @@ function totalPages(): number {
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="emit('close')">
     <div class="w-[44rem] max-w-[92vw] h-[80vh] flex flex-col rounded-lg border border-ash bg-ink shadow-2xl">
       <header class="flex items-center gap-4 px-4 py-3 border-b border-ash">
-        <h2 class="text-glow font-bold tracking-wide">パッケージ</h2>
+        <h2 class="text-glow font-bold tracking-wide">{{ t("packages.title") }}</h2>
         <nav class="flex gap-1 text-sm">
           <button
             class="rounded px-3 py-1"
             :class="tab === 'local' ? 'bg-ember/80 text-ink font-bold' : 'text-parchment/60 hover:text-parchment'"
             @click="tab = 'local'"
           >
-            ローカル
+            {{ t("packages.tabLocal") }}
           </button>
           <button
             class="rounded px-3 py-1"
             :class="tab === 'site' ? 'bg-ember/80 text-ink font-bold' : 'text-parchment/60 hover:text-parchment'"
             @click="openSiteTab"
           >
-            配布サイト
+            {{ t("packages.tabSite") }}
           </button>
         </nav>
-        <button class="ml-auto text-parchment/50 hover:text-parchment" aria-label="閉じる" @click="emit('close')">✕</button>
+        <button class="ml-auto text-parchment/50 hover:text-parchment" :aria-label="t('packages.close')" @click="emit('close')">✕</button>
       </header>
 
       <!-- ============ ローカルタブ ============ -->
       <template v-if="tab === 'local'">
         <div class="flex-1 overflow-y-auto px-4 py-3 space-y-2">
           <p v-if="!game.packages.length" class="text-parchment/40 text-sm py-6 text-center">
-            パッケージがありません。下のフォームでフォルダパスを追加するか、配布サイトから取得してください。
+            {{ t("packages.localEmpty") }}
           </p>
           <div
             v-for="p in game.packages"
@@ -104,7 +108,7 @@ function totalPages(): number {
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
                 <span class="font-bold text-parchment truncate">{{ p.error ? p.path : p.title }}</span>
-                <span v-if="p.error" class="shrink-0 rounded bg-red-900/60 px-1.5 text-xs text-red-200">読込失敗</span>
+                <span v-if="p.error" class="shrink-0 rounded bg-red-900/60 px-1.5 text-xs text-red-200">{{ t("packages.loadFailed") }}</span>
               </div>
               <div class="text-xs text-parchment/45 truncate">{{ p.path }}</div>
               <div v-if="p.description && !p.error" class="text-xs text-parchment/60 mt-0.5">{{ p.description }}</div>
@@ -112,11 +116,11 @@ function totalPages(): number {
             </div>
             <button
               class="shrink-0 text-parchment/40 hover:text-red-400 text-sm"
-              title="一覧から削除"
-              aria-label="削除"
+              :title="t('packages.removeTitle')"
+              :aria-label="t('packages.remove')"
               @click="game.removePackage(p.path)"
             >
-              削除
+              {{ t("packages.remove") }}
             </button>
           </div>
         </div>
@@ -124,14 +128,14 @@ function totalPages(): number {
         <footer class="flex items-center gap-2 px-4 py-3 border-t border-ash">
           <input
             v-model="newPath"
-            placeholder="パッケージフォルダのパス (例: packages/houkago)"
+            :placeholder="t('packages.pathPlaceholder')"
             class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
             @keyup.enter="add"
           />
           <button
             class="shrink-0 text-parchment/60 hover:text-ember px-1.5 py-1"
-            title="フォルダ選択ダイアログで参照する (前回追加した場所から開く)"
-            aria-label="参照"
+            :title="t('packages.browseTitle')"
+            :aria-label="t('packages.browse')"
             @click="game.browseAndAddPackage()"
           >
             <Icon name="folder" :size="18" />
@@ -141,7 +145,7 @@ function totalPages(): number {
             class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
             @click="add"
           >
-            追加
+            {{ t("packages.add") }}
           </button>
         </footer>
       </template>
@@ -151,7 +155,7 @@ function totalPages(): number {
         <!-- サイト URL + 検索コントロール -->
         <div class="px-4 py-2 border-b border-ash space-y-2">
           <div class="flex items-center gap-2">
-            <span class="text-xs text-parchment/50 shrink-0">サイト</span>
+            <span class="text-xs text-parchment/50 shrink-0">{{ t("packages.site") }}</span>
             <input
               v-model="siteUrlInput"
               placeholder="https://kataribe.outcasts.jp"
@@ -160,44 +164,44 @@ function totalPages(): number {
             />
             <button
               class="rounded bg-ash/60 hover:bg-ash px-2 py-1 text-xs text-parchment"
-              title="この URL の書庫へ接続する (自前サーバも可)"
+              :title="t('packages.connectTitle')"
               @click="applySiteUrl"
             >
-              接続
+              {{ t("packages.connect") }}
             </button>
           </div>
           <div class="flex items-center gap-2">
             <input
               v-model="q"
-              placeholder="検索 (タイトル・説明)"
+              :placeholder="t('packages.searchPlaceholder')"
               class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
               @keyup.enter="search(1)"
             />
             <select v-model="category" class="rounded bg-ash/40 px-1 py-1 text-sm text-parchment" @change="search(1)">
-              <option v-for="c in SITE_CATEGORIES" :key="c.id" :value="c.id">{{ c.label }}</option>
+              <option v-for="c in SITE_CATEGORIES" :key="c.id" :value="c.id">{{ categoryLabel(c.id) }}</option>
             </select>
             <select v-model="sort" class="rounded bg-ash/40 px-1 py-1 text-sm text-parchment" @change="search(1)">
-              <option value="new">新着順</option>
-              <option value="popular">人気順</option>
-              <option value="rating">評価順</option>
+              <option value="new">{{ t("packages.sortNew") }}</option>
+              <option value="popular">{{ t("packages.sortPopular") }}</option>
+              <option value="rating">{{ t("packages.sortRating") }}</option>
             </select>
             <button
               class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold"
               @click="search(1)"
             >
-              検索
+              {{ t("packages.search") }}
             </button>
           </div>
         </div>
 
         <!-- 一覧 -->
         <div class="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-          <p v-if="game.remoteLoading" class="text-parchment/40 text-sm py-6 text-center">読み込み中…</p>
+          <p v-if="game.remoteLoading" class="text-parchment/40 text-sm py-6 text-center">{{ t("packages.loading") }}</p>
           <p v-else-if="game.remoteError" class="text-red-300/90 text-sm py-6 text-center whitespace-pre-wrap">
             {{ game.remoteError }}
           </p>
           <p v-else-if="!game.remote || !game.remote.items.length" class="text-parchment/40 text-sm py-6 text-center">
-            パッケージが見つかりません。
+            {{ t("packages.notFound") }}
           </p>
           <template v-else>
             <div
@@ -212,21 +216,21 @@ function totalPages(): number {
                   <span
                     v-if="p.kataribe_version"
                     class="shrink-0 rounded bg-ash/50 px-1.5 text-xs text-parchment/60"
-                    title="作者が申告した対応 Kataribe バージョン"
+                    :title="t('packages.kataribeVersionTitle')"
                   >
                     Kataribe {{ p.kataribe_version }}
                   </span>
                   <span
                     v-if="p.is_mature"
                     class="shrink-0 rounded bg-red-900/70 px-1.5 text-xs text-red-200"
-                    title="性・流血描写などの自己申告。倫理制約の強い LLM ではプレイできない可能性があります"
+                    :title="t('packages.matureTitle')"
                   >
                     Mature
                   </span>
                 </div>
                 <div class="text-xs text-parchment/45 mt-0.5">
-                  <span v-if="p.review_count > 0">★{{ (p.avg_rating ?? 0).toFixed(1) }} ({{ p.review_count }}件)</span>
-                  <span v-else>未評価</span>
+                  <span v-if="p.review_count > 0">{{ t("packages.rating", { rating: (p.avg_rating ?? 0).toFixed(1), count: p.review_count }) }}</span>
+                  <span v-else>{{ t("packages.unrated") }}</span>
                   <span class="mx-1.5">·</span>DL {{ p.download_count }}
                   <span class="mx-1.5">·</span>{{ fmtSize(p.file_size) }}
                   <span class="mx-1.5">·</span>{{ p.uploader_display_name }}
@@ -236,10 +240,10 @@ function totalPages(): number {
               <button
                 class="shrink-0 rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
                 :disabled="game.installingId !== null"
-                :title="'DL して展開し、ローカル一覧に追加する'"
+                :title="t('packages.installTitle')"
                 @click="install(p)"
               >
-                {{ game.installingId === p.id ? "取得中…" : "取得" }}
+                {{ game.installingId === p.id ? t("packages.installing") : t("packages.install") }}
               </button>
             </div>
           </template>
@@ -254,7 +258,7 @@ function totalPages(): number {
               :disabled="game.remote.page <= 1 || game.remoteLoading"
               @click="search(game.remote.page - 1)"
             >
-              前へ
+              {{ t("packages.prev") }}
             </button>
             <span class="text-xs text-parchment/50">{{ game.remote.page }} / {{ totalPages() }}</span>
             <button
@@ -262,7 +266,7 @@ function totalPages(): number {
               :disabled="game.remote.page >= totalPages() || game.remoteLoading"
               @click="search(game.remote.page + 1)"
             >
-              次へ
+              {{ t("packages.next") }}
             </button>
           </div>
         </footer>

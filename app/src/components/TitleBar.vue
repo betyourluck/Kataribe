@@ -9,6 +9,7 @@
  *   (ブラウザ環境=Tauri 外でも crash しない)。
  */
 import { theme, toggleTheme } from "../theme";
+import { t } from "../i18n";
 
 // git の最新タグ (ビルド時に vite.config が注入)。例 "v0.3.2"。タグ無しは空 = 非表示。
 const version = __APP_VERSION__;
@@ -66,7 +67,7 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
     class="flex items-center h-8 shrink-0 bg-ink border-b border-ash select-none"
   >
     <div data-tauri-drag-region class="px-3 text-xs font-bold tracking-widest text-glow pointer-events-none">
-      語り部<span v-if="version" class="ml-1.5 text-[10px] font-normal tracking-normal text-parchment/40">{{ version }}</span><span v-if="title" class="text-parchment/40 font-normal"> — {{ title }}</span>
+      {{ t("titlebar.brand") }}<span v-if="version" class="ml-1.5 text-[10px] font-normal tracking-normal text-parchment/40">{{ version }}</span><span v-if="title" class="text-parchment/40 font-normal"> — {{ title }}</span>
     </div>
 
     <div data-tauri-drag-region class="flex-1 h-full"></div>
@@ -74,8 +75,8 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
     <!-- テーマ切替 (ダーク時=太陽でライトへ / ライト時=月でダークへ)。既定ダーク・localStorage 永続。 -->
     <button
       class="tb-btn"
-      :title="theme === 'dark' ? 'ライトモードに切替' : 'ダークモードに切替'"
-      aria-label="テーマ切替"
+      :title="theme === 'dark' ? t('titlebar.toLight') : t('titlebar.toDark')"
+      :aria-label="t('titlebar.themeToggle')"
       @click="toggleTheme"
     >
       <!-- 太陽 (ダーク時) -->
@@ -90,7 +91,7 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
     </button>
 
     <!-- アプリ操作: ログ保存 / 設定 / パッケージ一覧 -->
-    <button class="tb-btn" title="会話ログをテキスト保存" aria-label="ログ保存" @click="emit('save-log')">
+    <button class="tb-btn" :title="t('titlebar.saveLog')" :aria-label="t('titlebar.saveLogAria')" @click="emit('save-log')">
       <!-- Document with down-arrow (ログをファイルへ書き出す) -->
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
         <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
@@ -99,7 +100,7 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
         <path d="M9.5 14.5 12 17l2.5-2.5" />
       </svg>
     </button>
-    <button class="tb-btn" title="設定" aria-label="設定" @click="emit('open-settings')">
+    <button class="tb-btn" :title="t('titlebar.settings')" :aria-label="t('titlebar.settings')" @click="emit('open-settings')">
       <!-- Cog -->
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
         <circle cx="12" cy="12" r="3" />
@@ -111,13 +112,13 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
     <button
       v-if="updateAvailable"
       class="tb-update"
-      :title="latestVersion ? `最新版 ${latestVersion} を配布サイトで開く` : '配布サイトを開く'"
+      :title="latestVersion ? t('titlebar.updateOpen', { version: latestVersion }) : t('titlebar.updateOpenGeneric')"
       @click="emit('open-update')"
     >
-      最新版があります
+      {{ t('titlebar.updateAvailable') }}
     </button>
 
-    <button class="tb-btn" title="パッケージ一覧" aria-label="パッケージ一覧" @click="emit('open-packages')">
+    <button class="tb-btn" :title="t('titlebar.packages')" :aria-label="t('titlebar.packages')" @click="emit('open-packages')">
       <!-- List -->
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
         <line x1="8" y1="6" x2="20" y2="6" />
@@ -135,7 +136,7 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
       data-tauri-drag-region
       class="mx-1 max-w-[12rem] truncate rounded-full border border-ash bg-ash/40 px-2 text-[10px] font-bold leading-4 text-parchment/70"
       :style="badgeStyle(model)"
-      :title="`使用中の AI モデル: ${model} (設定 → AIモデル で変更)`"
+      :title="t('titlebar.modelBadge', { model })"
     >
       {{ model }}
     </span>
@@ -143,13 +144,13 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
     <div class="w-px h-4 mx-1 bg-ash"></div>
 
     <!-- ウィンドウ操作 -->
-    <button class="tb-btn" title="最小化" aria-label="最小化" @click="win('minimize')">
+    <button class="tb-btn" :title="t('titlebar.minimize')" :aria-label="t('titlebar.minimize')" @click="win('minimize')">
       <svg width="11" height="11" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.2" /></svg>
     </button>
-    <button class="tb-btn" title="最大化/復帰" aria-label="最大化" @click="win('toggleMaximize')">
+    <button class="tb-btn" :title="t('titlebar.maximize')" :aria-label="t('titlebar.maximize')" @click="win('toggleMaximize')">
       <svg width="11" height="11" viewBox="0 0 10 10"><rect x="0.6" y="0.6" width="8.8" height="8.8" fill="none" stroke="currentColor" stroke-width="1.2" /></svg>
     </button>
-    <button class="tb-btn tb-close" title="閉じる" aria-label="閉じる" @click="win('close')">
+    <button class="tb-btn tb-close" :title="t('titlebar.close')" :aria-label="t('titlebar.close')" @click="win('close')">
       <svg width="11" height="11" viewBox="0 0 10 10">
         <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2" />
         <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2" />

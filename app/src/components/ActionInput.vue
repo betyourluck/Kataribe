@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, computed } from "vue";
 import { useGameStore } from "../stores/game";
+import { t } from "../i18n";
 
 const game = useGameStore();
 const text = ref("");
@@ -43,7 +44,7 @@ async function send() {
         v-model="text"
         rows="1"
         :disabled="disabled"
-        placeholder="行動を入力…（Enter で送信 / Shift+Enter で改行）"
+        :placeholder="t('action.placeholder')"
         class="block w-full resize-none bg-transparent px-3.5 py-2.5 pr-12 text-parchment placeholder-parchment/30 focus:outline-none disabled:cursor-not-allowed leading-relaxed"
         style="max-height: 200px; overflow-y: auto"
         @input="autoGrow"
@@ -53,8 +54,8 @@ async function send() {
       <button
         v-show="text.trim()"
         :disabled="!canSend"
-        aria-label="送信"
-        title="送信 (Enter)"
+        :aria-label="t('action.send')"
+        :title="t('action.sendTitle')"
         class="absolute right-2 bottom-2 grid place-items-center h-8 w-8 rounded-lg bg-ember/85 hover:bg-ember text-ink disabled:opacity-40 disabled:cursor-not-allowed transition"
         @click="send"
       >
@@ -66,6 +67,6 @@ async function send() {
         </svg>
       </button>
     </div>
-    <p v-if="game.error" class="text-ember/80 text-sm mt-2">エラー: {{ game.error }}</p>
+    <p v-if="game.error" class="text-ember/80 text-sm mt-2">{{ t("action.error", { error: game.error }) }}</p>
   </div>
 </template>

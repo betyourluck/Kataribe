@@ -10,6 +10,7 @@
 import { computed, ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
+import { t, setLocale, locale, type Locale } from "../i18n";
 import {
   DEFAULT_MSG_COLOR,
   MESSAGE_FONTS,
@@ -26,28 +27,18 @@ const game = useGameStore();
 
 type Tab = "display" | "graphics" | "sound" | "log" | "language" | "model" | "dev" | "help";
 const tab = ref<Tab>("display");
-const tabs: { id: Tab; label: string }[] = [
-  { id: "display", label: "表示" },
-  { id: "graphics", label: "グラフィック" },
-  { id: "sound", label: "サウンド" },
-  { id: "log", label: "ログ" },
-  { id: "language", label: "言語設定" },
-  { id: "model", label: "AIモデル" },
-  { id: "dev", label: "開発者" },
-  { id: "help", label: "ヘルプ" },
-];
+// ラベルは i18n（`settings.tabs.<id>`）。id は機械用のまま。
+const tabs: Tab[] = ["display", "graphics", "sound", "log", "language", "model", "dev", "help"];
 
 // --- 開発者モード (KATARIBE_DEV_MODE) ---
 const devStatus = ref("");
 async function toggleDevMode(enabled: boolean) {
-  devStatus.value = "保存中…";
+  devStatus.value = t("settings.status.saving");
   try {
     await game.setDevMode(enabled);
-    devStatus.value = enabled
-      ? "開発者モード ON（次のあなたの行動から有効）"
-      : "開発者モード OFF";
+    devStatus.value = enabled ? t("settings.status.devOn") : t("settings.status.devOff");
   } catch (e) {
-    devStatus.value = `保存失敗: ${e}`;
+    devStatus.value = t("settings.status.saveFailed", { error: String(e) });
   }
 }
 
@@ -85,10 +76,12 @@ const previewStyle = computed(() => ({
 }));
 
 // --- 言語設定 ---
-const LANG_KEY = "kataribe.lang";
-const lang = ref<string>(localStorage.getItem(LANG_KEY) || "ja");
+// UI ロケールは i18n の共有 ref に一元化 (localStorage kataribe.lang と同期)。select は
+// locale を直接 v-model し、変更で setLocale → UI が即時に切り替わる。engine 由来メッセージ
+// (却下理由) は従来どおり次の new_game で反映される (lang を new_game 時に backend へ渡す経路)。
+const lang = locale;
 function applyLang() {
-  localStorage.setItem(LANG_KEY, lang.value);
+  setLocale(lang.value as Locale);
 }
 
 // --- AIモデル (.env 連動) ---
@@ -104,7 +97,7 @@ async function loadLlm() {
   try {
     llm.value = await invoke<LlmConfigView>("get_llm_config");
   } catch (e) {
-    llmStatus.value = `読込失敗: ${e}`;
+    llmStatus.value = t("settings.status.loadFailed", { error: String(e) });
   }
 }
 
@@ -133,7 +126,7 @@ function onSelectProfile() {
     api_key: p.apiKey,
     use_tools: p.useTools,
   };
-  llmStatus.value = `「${p.name}」を表示中（「保存」で .env に反映）`;
+  llmStatus.value = t("settings.status.profileShowing", { name: p.name });
 }
 
 // [➕] 表示名の入力欄を開く。設定は下のフォームの現在値を登録する。
@@ -148,7 +141,7 @@ function cancelAddForm() {
 function saveDraft() {
   const name = draftName.value.trim();
   if (!name) {
-    llmStatus.value = "表示名を入力してください";
+    llmStatus.value = t("settings.status.nameRequired");
     return;
   }
   const profile: AiModelProfile = {
@@ -163,21 +156,21 @@ function saveDraft() {
   saveAiProfiles(profiles.value);
   selectedProfileId.value = profile.id;
   showAddForm.value = false;
-  llmStatus.value = `「${name}」を登録しました（「保存」で .env に反映）`;
+  llmStatus.value = t("settings.status.profileAdded", { name });
 }
 
 // [🗑] 選択中プロファイルを削除する (確認あり)。.env には触れない。
 function deleteProfile() {
   const p = profiles.value.find((x) => x.id === selectedProfileId.value);
   if (!p) {
-    llmStatus.value = "削除するモデルを選択してください";
+    llmStatus.value = t("settings.status.selectToDelete");
     return;
   }
-  if (!window.confirm(`登録モデル「${p.name}」を削除しますか？`)) return;
+  if (!window.confirm(t("settings.status.confirmDelete", { name: p.name }))) return;
   profiles.value = profiles.value.filter((x) => x.id !== p.id);
   saveAiProfiles(profiles.value);
   selectedProfileId.value = "";
-  llmStatus.value = `「${p.name}」を削除しました`;
+  llmStatus.value = t("settings.status.profileDeleted", { name: p.name });
 }
 // --- あらすじ要約用モデル (spec 10) ---
 // 実体は env (SUMMARY_LLM_*、app_data/.env)。localStorage の選択 id は UI 表示用。
@@ -190,7 +183,7 @@ async function applySummaryProfile() {
     if (!summaryProfileId.value) {
       await invoke("set_summary_llm_config", { baseUrl: "", model: "", apiKey: "" });
       localStorage.removeItem(SUMMARY_PROFILE_KEY);
-      summaryStatus.value = "GM と同じモデルで要約します";
+      summaryStatus.value = t("settings.status.summarySameAsGm");
       return;
     }
     const p = profiles.value.find((x) => x.id === summaryProfileId.value);
@@ -201,14 +194,14 @@ async function applySummaryProfile() {
       apiKey: p.apiKey.trim(),
     });
     localStorage.setItem(SUMMARY_PROFILE_KEY, summaryProfileId.value);
-    summaryStatus.value = `「${p.name}」で要約します（次の「新しいゲーム」から有効）`;
+    summaryStatus.value = t("settings.status.summaryUsing", { name: p.name });
   } catch (e) {
-    summaryStatus.value = `保存失敗: ${e}`;
+    summaryStatus.value = t("settings.status.saveFailed", { error: String(e) });
   }
 }
 
 async function saveLlm() {
-  llmStatus.value = "保存中…";
+  llmStatus.value = t("settings.status.saving");
   try {
     await invoke("set_llm_config", {
       baseUrl: llm.value.base_url.trim(),
@@ -216,11 +209,11 @@ async function saveLlm() {
       apiKey: llm.value.api_key.trim(),
       useTools: llm.value.use_tools,
     });
-    llmStatus.value = "保存しました（.env に永続化／次の『新しいゲーム』から有効）";
+    llmStatus.value = t("settings.status.llmSaved");
     syncSelectionToConfig(); // 直接編集が登録済みと一致すればコンボの選択に反映
     game.refreshLlmModel(); // TitleBar のバッジ + ウィンドウタイトルへ即時反映
   } catch (e) {
-    llmStatus.value = `保存失敗: ${e}`;
+    llmStatus.value = t("settings.status.saveFailed", { error: String(e) });
   }
 }
 
@@ -237,21 +230,21 @@ onMounted(async () => {
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="emit('close')">
     <div class="w-[46rem] max-w-[94vw] h-[32rem] max-h-[88vh] flex flex-col rounded-lg border border-ash bg-ink shadow-2xl">
       <header class="flex items-center px-4 py-3 border-b border-ash">
-        <h2 class="text-glow font-bold tracking-wide">設定</h2>
-        <button class="ml-auto text-parchment/50 hover:text-parchment" aria-label="閉じる" @click="emit('close')">✕</button>
+        <h2 class="text-glow font-bold tracking-wide">{{ t("settings.title") }}</h2>
+        <button class="ml-auto text-parchment/50 hover:text-parchment" :aria-label="t('settings.close')" @click="emit('close')">✕</button>
       </header>
 
       <div class="flex flex-1 min-h-0">
-        <!-- 左ペイン: タブ -->
+        <!-- 左ペイン: タブ (loop 変数は i18n の t() と衝突しないよう tb) -->
         <nav class="w-40 shrink-0 border-r border-ash py-2">
           <button
-            v-for="t in tabs"
-            :key="t.id"
+            v-for="tb in tabs"
+            :key="tb"
             class="block w-full text-left px-4 py-2 text-sm"
-            :class="tab === t.id ? 'bg-ash/40 text-glow font-bold' : 'text-parchment/60 hover:text-parchment hover:bg-ash/20'"
-            @click="tab = t.id"
+            :class="tab === tb ? 'bg-ash/40 text-glow font-bold' : 'text-parchment/60 hover:text-parchment hover:bg-ash/20'"
+            @click="tab = tb"
           >
-            {{ t.label }}
+            {{ t(`settings.tabs.${tb}`) }}
           </button>
         </nav>
 
@@ -259,37 +252,37 @@ onMounted(async () => {
         <div class="flex-1 overflow-y-auto p-5 min-w-0">
           <!-- 表示 -->
           <section v-if="tab === 'display'" class="space-y-3">
-            <h3 class="text-parchment font-bold">表示</h3>
+            <h3 class="text-parchment font-bold">{{ t("settings.display.heading") }}</h3>
             <label class="block text-sm text-parchment/70">
-              フォントサイズ
+              {{ t("settings.display.fontSize") }}
               <select
                 v-model.number="fontScale"
                 class="mt-1 block w-40 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
                 @change="applyFont"
               >
-                <option :value="16">小 (16px)</option>
-                <option :value="18">標準 (18px)</option>
-                <option :value="20">大 (20px)</option>
-                <option :value="24">特大 (24px)</option>
+                <option :value="16">{{ t("settings.display.fontSmall") }}</option>
+                <option :value="18">{{ t("settings.display.fontNormal") }}</option>
+                <option :value="20">{{ t("settings.display.fontLarge") }}</option>
+                <option :value="24">{{ t("settings.display.fontXlarge") }}</option>
               </select>
             </label>
-            <p class="text-parchment/40 text-xs">UI 全体の基準フォントサイズを変えます（即時適用・localStorage に保存）。</p>
+            <p class="text-parchment/40 text-xs">{{ t("settings.display.fontNote") }}</p>
 
             <hr class="border-ash/60" />
-            <h3 class="text-parchment font-bold">本文テキスト（GM の語り）</h3>
+            <h3 class="text-parchment font-bold">{{ t("settings.display.bodyHeading") }}</h3>
             <label class="block text-sm text-parchment/70">
-              フォント
+              {{ t("settings.display.font") }}
               <select
                 :value="game.msgFont"
                 class="mt-1 block w-56 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
                 @change="game.setMsgFont(($event.target as HTMLSelectElement).value)"
               >
-                <option v-for="f in messageFonts" :key="f.id" :value="f.id">{{ f.label }}</option>
+                <option v-for="f in messageFonts" :key="f.id" :value="f.id">{{ t(`settings.display.fonts.${f.id}`) }}</option>
               </select>
             </label>
             <div class="flex items-end gap-3">
               <label class="block text-sm text-parchment/70">
-                文字色
+                {{ t("settings.display.color") }}
                 <input
                   type="color"
                   :value="msgColorValue"
@@ -303,11 +296,11 @@ onMounted(async () => {
                 :class="{ 'opacity-40': !game.msgColor }"
                 @click="game.setMsgColor('')"
               >
-                既定に戻す
+                {{ t("settings.display.resetDefault") }}
               </button>
             </div>
             <label class="block text-sm text-parchment/70">
-              文字の影（{{ game.msgShadow }}）
+              {{ t("settings.display.shadow", { value: game.msgShadow }) }}
               <input
                 type="range"
                 min="0"
@@ -321,17 +314,17 @@ onMounted(async () => {
             <!-- プレビュー: 現在の背景 (あれば) の上に本文サンプルを敷いて実際の見え方を確認 -->
             <div class="mt-1 w-full max-w-md rounded border border-ash px-4 py-3" :style="game.backgroundStyle">
               <p class="whitespace-pre-wrap leading-relaxed text-parchment" :style="previewStyle">
-                霧が窓の外を這う。囲炉裏の火が爆ぜて、誰かが息を呑んだ。—— 本文はこの見た目で表示されます。
+                {{ t("settings.display.preview") }}
               </p>
             </div>
             <p class="text-parchment/40 text-xs">
-              会話ログの語りの文章に適用されます（即時適用・localStorage に保存）。影は背景画像の上での読みやすさに効きます。
+              {{ t("settings.display.bodyNote") }}
             </p>
 
             <hr class="border-ash/60" />
-            <h3 class="text-parchment font-bold">筋書き・伏線（✦ / ┊）</h3>
+            <h3 class="text-parchment font-bold">{{ t("settings.display.beatHeading") }}</h3>
             <label class="block text-sm text-parchment/70">
-              背景の濃さ（{{ game.beatBgOpacity }}）
+              {{ t("settings.display.beatOpacity", { value: game.beatBgOpacity }) }}
               <input
                 type="range"
                 min="0"
@@ -345,20 +338,20 @@ onMounted(async () => {
             <!-- プレビュー: 現在の背景の上にビート/想起ブロックを敷いて実際の見え方を確認 -->
             <div class="mt-1 w-full max-w-md rounded border border-ash px-4 py-3" :style="game.backgroundStyle">
               <div class="border-l-2 border-ember/60 pl-3 space-y-1 rounded-r py-1.5 pr-3" :style="game.beatBgStyle">
-                <p class="text-ember">✦ 祭壇の奥で、何かが目を覚ました。</p>
-                <p class="text-glow/70 text-sm pl-3 border-l border-ash">丘の樫の木の下で、二人は約束を交わした。</p>
+                <p class="text-ember">{{ t("settings.display.previewBeat") }}</p>
+                <p class="text-glow/70 text-sm pl-3 border-l border-ash">{{ t("settings.display.previewRecall") }}</p>
               </div>
             </div>
             <p class="text-parchment/40 text-xs">
-              発火イベント（✦）と想起された記憶（┊）の下に敷く黒の透過背景です。0 でなし、右に動かすほど濃く＝読みやすくなります。本文の語りには敷きません。
+              {{ t("settings.display.beatNote") }}
             </p>
           </section>
 
           <!-- グラフィック -->
           <section v-else-if="tab === 'graphics'" class="space-y-3">
-            <h3 class="text-parchment font-bold">グラフィック</h3>
+            <h3 class="text-parchment font-bold">{{ t("settings.graphics.heading") }}</h3>
             <label class="block text-sm text-parchment/70">
-              背景の明るさ（{{ game.bgBrightness }}）
+              {{ t("settings.graphics.brightness", { value: game.bgBrightness }) }}
               <input
                 type="range"
                 min="0"
@@ -370,7 +363,7 @@ onMounted(async () => {
               />
             </label>
             <p class="text-parchment/40 text-xs">
-              背景画像にかける暗幕の濃さを調整します（右に動かすほど画像が明るく、左ほど暗く＝文字が読みやすく）。即時適用・localStorage に保存。
+              {{ t("settings.graphics.note") }}
             </p>
             <!-- プレビュー: 現在の背景に暗幕を重ねたサンプル -->
             <div
@@ -378,12 +371,12 @@ onMounted(async () => {
               class="mt-2 h-24 w-64 rounded border border-ash"
               :style="game.backgroundStyle"
             />
-            <p v-else class="text-parchment/40 text-xs">（ゲーム開始後、背景のあるパッケージでプレビューが出ます）</p>
+            <p v-else class="text-parchment/40 text-xs">{{ t("settings.graphics.noPreview") }}</p>
           </section>
 
           <!-- サウンド -->
           <section v-else-if="tab === 'sound'" class="space-y-3">
-            <h3 class="text-parchment font-bold">サウンド</h3>
+            <h3 class="text-parchment font-bold">{{ t("settings.sound.heading") }}</h3>
             <label class="flex items-center gap-2 text-sm text-parchment/70">
               <input
                 type="checkbox"
@@ -391,10 +384,10 @@ onMounted(async () => {
                 :checked="game.audioMuted"
                 @change="game.setAudioMuted(($event.target as HTMLInputElement).checked)"
               />
-              ミュート（BGM・効果音を鳴らさない）
+              {{ t("settings.sound.mute") }}
             </label>
             <label class="block text-sm text-parchment/70">
-              音量（{{ game.audioVolume }}）
+              {{ t("settings.sound.volume", { value: game.audioVolume }) }}
               <input
                 type="range"
                 min="0"
@@ -407,23 +400,23 @@ onMounted(async () => {
               />
             </label>
             <p class="text-parchment/40 text-xs">
-              場所のループ BGM と発火時の効果音に共通でかかります（即時適用・localStorage に保存）。音の出るアセットを同梱したパッケージで有効です。
+              {{ t("settings.sound.note") }}
             </p>
           </section>
 
           <!-- ログ (会話ログのテキスト保存) -->
           <section v-else-if="tab === 'log'" class="space-y-3">
-            <h3 class="text-parchment font-bold">ログ</h3>
+            <h3 class="text-parchment font-bold">{{ t("settings.log.heading") }}</h3>
             <p class="text-parchment/60 text-sm">
-              タイトルバーの
-              <span class="text-glow">記録アイコン</span>
-              を押すと、現在の会話ログを「日時_パッケージ名.txt」で保存します。
+              {{ t("settings.log.introPre") }}
+              <span class="text-glow">{{ t("settings.log.recordIcon") }}</span>
+              {{ t("settings.log.introPost") }}
             </p>
             <label class="block text-sm text-parchment/70">
-              保存先フォルダ
+              {{ t("settings.log.folder") }}
               <input
                 v-model="logDirInput"
-                :placeholder="defaultLogDir || '(既定のアプリデータ内 logs フォルダ)'"
+                :placeholder="defaultLogDir || t('settings.log.folderPlaceholder')"
                 class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
                 @keyup.enter="applyLogDir"
               />
@@ -433,7 +426,7 @@ onMounted(async () => {
                 class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold"
                 @click="applyLogDir"
               >
-                適用
+                {{ t("settings.log.apply") }}
               </button>
               <button
                 class="rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
@@ -441,25 +434,25 @@ onMounted(async () => {
                 :class="{ 'opacity-40': !game.logDir }"
                 @click="((logDirInput = ''), applyLogDir())"
               >
-                既定に戻す
+                {{ t("settings.log.resetDefault") }}
               </button>
               <button
                 class="ml-auto rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
                 @click="game.openLogFolder()"
               >
-                フォルダを開く
+                {{ t("settings.log.openFolder") }}
               </button>
             </div>
             <p class="text-parchment/40 text-xs">
-              空欄なら既定の場所（{{ defaultLogDir || "アプリデータ内の logs" }}）へ保存します。「フォルダを開く」でエクスプローラー等が開きます（フォルダが無ければ作成）。
+              {{ t("settings.log.note", { dir: defaultLogDir || t("settings.log.defaultDir") }) }}
             </p>
           </section>
 
           <!-- 言語設定 -->
           <section v-else-if="tab === 'language'" class="space-y-3">
-            <h3 class="text-parchment font-bold">言語設定</h3>
+            <h3 class="text-parchment font-bold">{{ t("settings.language") }}</h3>
             <label class="block text-sm text-parchment/70">
-              表示言語
+              {{ t("settings.displayLanguage") }}
               <select
                 v-model="lang"
                 class="mt-1 block w-40 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
@@ -470,32 +463,32 @@ onMounted(async () => {
               </select>
             </label>
             <p class="text-parchment/40 text-xs">
-              却下理由などエンジン由来メッセージの言語。次の「新しいゲーム」から有効です（UI 文言の i18n は今後）。
+              {{ t("settings.languageNote") }}
             </p>
           </section>
 
           <!-- AIモデル (.env 連動) -->
           <section v-else-if="tab === 'model'" class="space-y-3">
-            <h3 class="text-parchment font-bold">AIモデル</h3>
+            <h3 class="text-parchment font-bold">{{ t("settings.model.heading") }}</h3>
 
             <!-- 登録モデル (localStorage)。選ぶと下のフォームに即反映 → 「保存」で .env へ書込。 -->
             <div class="space-y-2">
               <div class="flex items-center gap-1">
                 <select v-model="selectedProfileId" @change="onSelectProfile"
                   class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none">
-                  <option value="" disabled>― 登録モデルを選ぶ ―</option>
+                  <option value="" disabled>{{ t("settings.model.selectPlaceholder") }}</option>
                   <option v-for="p in profiles" :key="p.id" :value="p.id">
-                    {{ p.name }}（{{ p.model || "モデル未設定" }}）
+                    {{ p.name }}（{{ p.model || t("settings.model.modelUnset") }}）
                   </option>
                 </select>
                 <button
                   class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment"
-                  title="現在の設定を登録モデルに追加" aria-label="登録モデルを追加" @click="openAddForm">
+                  :title="t('settings.model.addTitle')" :aria-label="t('settings.model.addAria')" @click="openAddForm">
                   <Icon name="plus" :size="16" />
                 </button>
                 <button
                   class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
-                  :disabled="!selectedProfileId" title="選択中の登録モデルを削除" aria-label="登録モデルを削除"
+                  :disabled="!selectedProfileId" :title="t('settings.model.deleteTitle')" :aria-label="t('settings.model.deleteAria')"
                   @click="deleteProfile">
                   <Icon name="trash" :size="16" />
                 </button>
@@ -503,68 +496,66 @@ onMounted(async () => {
 
               <!-- 追加: 表示名だけ入力 (設定は下のフォームの現在値を使う)。 -->
               <div v-if="showAddForm" class="flex items-center gap-1">
-                <input v-model="draftName" placeholder="表示名（本番用 / お試し gemini 等）"
+                <input v-model="draftName" :placeholder="t('settings.model.draftPlaceholder')"
                   class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
                   @keydown.enter="saveDraft" />
                 <button class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold"
-                  @click="saveDraft">登録</button>
+                  @click="saveDraft">{{ t("settings.model.register") }}</button>
                 <button class="rounded px-2 py-1 text-sm text-parchment/60 hover:text-parchment"
-                  @click="cancelAddForm">キャンセル</button>
+                  @click="cancelAddForm">{{ t("settings.model.cancel") }}</button>
               </div>
             </div>
 
             <p class="text-parchment/50 text-xs">
-              下の欄が現在の接続先です。登録モデルを選ぶとここに反映されます。「保存」で .env に書き込みます。
+              {{ t("settings.model.intro") }}
             </p>
             <label class="block text-sm text-parchment/70">
-              モデル名 (LLM_MODEL)
-              <input v-model="llm.model" placeholder="claude-opus-4-8 / gpt-4o-mini 等"
+              {{ t("settings.model.modelName") }}
+              <input v-model="llm.model" :placeholder="t('settings.model.modelPlaceholder')"
                 class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
             </label>
             <label class="block text-sm text-parchment/70">
-              エンドポイント (LLM_BASE_URL)
-              <input v-model="llm.base_url" placeholder="https://api.anthropic.com/v1"
+              {{ t("settings.model.endpoint") }}
+              <input v-model="llm.base_url" :placeholder="t('settings.model.endpointPlaceholder')"
                 class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
             </label>
             <label class="block text-sm text-parchment/70">
-              API キー (LLM_API_KEY)
-              <input v-model="llm.api_key" type="password" placeholder="sk-... / さくらは UUID:シークレット"
+              {{ t("settings.model.apiKey") }}
+              <input v-model="llm.api_key" type="password" :placeholder="t('settings.model.apiKeyPlaceholder')"
                 class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
             </label>
             <label class="flex items-center gap-2 text-sm text-parchment/70">
               <input v-model="llm.use_tools" type="checkbox" class="accent-ember" />
-              ツール呼び出し (function calling) を使う
+              {{ t("settings.model.useTools") }}
             </label>
             <p class="text-parchment/40 text-xs -mt-1">
-              OpenAI / Anthropic は ON。さくら AI Engine やローカル OpenAI 互換サーバなど tool_choice 非対応は OFF
-              （プロンプトで JSON 出力を指示する経路に切替）。
+              {{ t("settings.model.useToolsNote") }}
             </p>
             <div class="flex items-center gap-3 pt-1">
               <button class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold" @click="saveLlm">
-                保存
+                {{ t("settings.model.save") }}
               </button>
               <span class="text-xs text-parchment/60">{{ llmStatus }}</span>
             </div>
             <p class="text-parchment/40 text-xs">
-              .env を書き換えます（プロセスへ即時反映＋ファイル永続化）。次の「新しいゲーム」から新モデルで接続します。
+              {{ t("settings.model.saveNote") }}
             </p>
 
             <!-- あらすじ要約用モデル (spec 10)。長編の章あらすじ生成に使う。安いモデルで十分。 -->
             <div class="pt-3 border-t border-ash/60 space-y-2">
-              <h4 class="text-parchment font-bold text-sm">あらすじ要約用モデル</h4>
+              <h4 class="text-parchment font-bold text-sm">{{ t("settings.model.summaryHeading") }}</h4>
               <select
                 v-model="summaryProfileId"
                 @change="applySummaryProfile"
                 class="block w-full rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
               >
-                <option value="">GM と同じ（既定）</option>
+                <option value="">{{ t("settings.model.summarySameAsGm") }}</option>
                 <option v-for="p in profiles" :key="p.id" :value="p.id">
-                  {{ p.name }}（{{ p.model || "モデル未設定" }}）
+                  {{ p.name }}（{{ p.model || t("settings.model.modelUnset") }}）
                 </option>
               </select>
               <p class="text-parchment/40 text-xs">
-                長編プレイで自動生成される「あらすじ」（右ペイン第 3 タブ）の要約に使うモデル。
-                安いモデルを選ぶとコストを抑えられます。選択は即保存（次の「新しいゲーム」から有効）。
+                {{ t("settings.model.summaryNote") }}
               </p>
               <span v-if="summaryStatus" class="text-xs text-parchment/60">{{ summaryStatus }}</span>
             </div>
@@ -572,7 +563,7 @@ onMounted(async () => {
 
           <!-- 開発者 -->
           <section v-else-if="tab === 'dev'" class="space-y-3">
-            <h3 class="text-parchment font-bold">開発者モード</h3>
+            <h3 class="text-parchment font-bold">{{ t("settings.dev.heading") }}</h3>
             <label class="flex items-center gap-2 text-sm text-parchment/70">
               <input
                 type="checkbox"
@@ -580,35 +571,34 @@ onMounted(async () => {
                 :checked="game.devMode"
                 @change="toggleDevMode(($event.target as HTMLInputElement).checked)"
               />
-              開発者モードを有効にする（シナリオ制作中のテストプレイ）
+              {{ t("settings.dev.enable") }}
             </label>
             <span class="block text-xs text-ember/80 h-4">{{ devStatus }}</span>
             <p class="text-parchment/50 text-xs leading-relaxed">
-              ON にすると、行動入力に
-              <code class="text-glow">&lt;meta: なぜ○○した？&gt;</code>
-              の形でメタ質問を挟めます。GM は物語を止めて、判断の根拠（盤面のどこを見たか・なぜそう振る舞ったか・なぜ間違えたか）を
-              開発者向けに率直に説明します（そのターンは状態を変えません）。
+              {{ t("settings.dev.descPre") }}
+              <code class="text-glow">{{ t("settings.dev.descMeta") }}</code>
+              {{ t("settings.dev.descPost") }}
             </p>
             <div class="rounded border border-ash/60 bg-ash/20 p-3 text-xs text-parchment/60 leading-relaxed">
-              <p class="text-parchment/80 font-bold mb-1">使い方の例</p>
-              <p><code class="text-glow">&lt;meta: いま盤面で誰がこの場にいる？&gt;</code></p>
-              <p><code class="text-glow">&lt;meta: さっきの移動が却下されたのはなぜ？&gt;</code></p>
-              <p><code class="text-glow">&lt;meta: なぜ今このフラグを立てなかった？&gt;</code></p>
+              <p class="text-parchment/80 font-bold mb-1">{{ t("settings.dev.examplesTitle") }}</p>
+              <p><code class="text-glow">{{ t("settings.dev.example1") }}</code></p>
+              <p><code class="text-glow">{{ t("settings.dev.example2") }}</code></p>
+              <p><code class="text-glow">{{ t("settings.dev.example3") }}</code></p>
               <p class="mt-1 text-parchment/40">
-                ※ メタ質問に答えられるかは LLM のモデルによります（物語から抜けられないモデルもあります）。
+                {{ t("settings.dev.examplesNote") }}
               </p>
             </div>
           </section>
 
           <!-- ヘルプ -->
           <section v-else class="space-y-2 text-sm text-parchment/70 leading-relaxed">
-            <h3 class="text-parchment font-bold">ヘルプ</h3>
-            <p>・上部のパッケージを選び「新しいゲーム」で開始。下の入力欄に行動を打ち、Enter で送信します。</p>
-            <p>・タイトルバーの <span class="text-glow">⚙</span> が設定、<span class="text-glow">☰</span> がパッケージ一覧です。</p>
-            <p>・パッケージ一覧では、配布フォルダのパスを追加/削除できます（例: <code>packages/houkago</code>）。</p>
-            <p>・AIモデルタブで接続先・モデル・API キーを切り替えられます（.env を書き換え）。</p>
-            <p>・タイトルバーの記録アイコンで会話ログをテキスト保存できます（保存先は「ログ」タブで指定）。</p>
-            <p class="text-parchment/40">語り部 — クラウド LLM をナレーター、決定論エンジンを正本とした、忘れない・矛盾しない GM。</p>
+            <h3 class="text-parchment font-bold">{{ t("settings.help.heading") }}</h3>
+            <p>{{ t("settings.help.line1") }}</p>
+            <p>{{ t("settings.help.line2Pre") }} <span class="text-glow">⚙</span> {{ t("settings.help.line2Mid") }} <span class="text-glow">☰</span> {{ t("settings.help.line2Post") }}</p>
+            <p>{{ t("settings.help.line3Pre") }} <code>packages/houkago</code>{{ t("settings.help.line3Post") }}</p>
+            <p>{{ t("settings.help.line4") }}</p>
+            <p>{{ t("settings.help.line5") }}</p>
+            <p class="text-parchment/40">{{ t("settings.help.tagline") }}</p>
           </section>
         </div>
       </div>

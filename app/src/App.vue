@@ -13,6 +13,7 @@
 import { computed, ref, watch, onMounted } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { useGameStore } from "./stores/game";
+import { t } from "./i18n";
 import TitleBar from "./components/TitleBar.vue";
 import PackageDialog from "./components/PackageDialog.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
@@ -122,7 +123,7 @@ onMounted(() => {
     <!-- ヘッダー: 再生パッケージの選択 + 開始 -->
     <header class="flex items-center gap-3 px-6 py-2.5 border-b border-ash bg-ink">
       <span class="text-parchment/45 text-sm truncate">
-        {{ game.title || "パッケージを選んで開始" }}
+        {{ game.title || t("app.selectToStart") }}
       </span>
       <!-- 右端は定位置レイアウト: select は固定幅、ボタンはアイコンの固定スロット
            (続きからが無い時は invisible = 場所を保ったまま消す。隣がズレない)。 -->
@@ -147,8 +148,8 @@ onMounted(() => {
             'grid h-8 w-8 place-items-center rounded bg-ember/80 hover:bg-ember text-ink disabled:opacity-40',
             selectedAutosaveTurn == null ? 'invisible' : '',
           ]"
-          :title="`続きから (turn ${selectedAutosaveTurn ?? 0})`"
-          aria-label="続きから"
+          :title="t('app.resumeTitle', { turn: selectedAutosaveTurn ?? 0 })"
+          :aria-label="t('app.resumeAria')"
           @click="game.resumeGame()"
         >
           <Icon name="load" :size="18" />
@@ -157,8 +158,8 @@ onMounted(() => {
         <button
           :disabled="game.loading"
           class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
-          title="新しいゲーム"
-          aria-label="新しいゲーム"
+          :title="t('app.newGame')"
+          :aria-label="t('app.newGame')"
           @click="game.newGame()"
         >
           <Icon name="new" :size="18" />
@@ -176,7 +177,7 @@ onMounted(() => {
           v-if="!game.started"
           class="flex-1 flex items-center justify-center text-parchment/40 px-6 text-center"
         >
-          パッケージを選んで「新しいゲーム」を押すと、忘れない・矛盾しない GM が物語を始めます。
+          {{ t("app.emptyHint") }}
         </div>
         <!-- メッセージは背景画像 (暗幕) の上の物語コンテンツ = 背景がある時はテーマに関わらず
              dark 配色で描く (濃色文字が暗幕に埋もれない)。入力欄 (ActionInput) は UI クロームゆえ

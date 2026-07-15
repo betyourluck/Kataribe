@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { useGameStore } from "../stores/game";
+import { t } from "../i18n";
 import Icon from "./Icon.vue";
 
 const game = useGameStore();
@@ -76,11 +77,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             ? 'border-ember text-glow'
             : 'border-transparent text-parchment opacity-40 hover:opacity-90'
         "
-        title="進行 (ターン・目標・この場にいる) — Ctrl+1 / Ctrl+Tab で切替"
+        :title="t('state.tabProgressTitle')"
         @click="activeTab = 'progress'"
       >
         <Icon name="target" :size="12" />
-        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">進行</span>
+        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabProgress") }}</span>
       </button>
       <button
         class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
@@ -89,11 +90,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             ? 'border-ember text-glow'
             : 'border-transparent text-parchment opacity-40 hover:opacity-90'
         "
-        title="状態 (現在地・所持品・フラグ) — Ctrl+2 / Ctrl+Tab で切替"
+        :title="t('state.tabWorldTitle')"
         @click="activeTab = 'world'"
       >
         <Icon name="location" :size="12" />
-        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">状態</span>
+        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabWorld") }}</span>
       </button>
       <button
         class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
@@ -102,11 +103,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             ? 'border-ember text-glow'
             : 'border-transparent text-parchment opacity-40 hover:opacity-90'
         "
-        title="あらすじ (これまでの章・最近の出来事) — Ctrl+3 / Ctrl+Tab で切替"
+        :title="t('state.tabSynopsisTitle')"
         @click="activeTab = 'synopsis'"
       >
         <Icon name="book" :size="12" />
-        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">あらすじ</span>
+        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabSynopsis") }}</span>
       </button>
     </nav>
 
@@ -115,7 +116,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         <!-- 1枚め「進行」: ターン / 目標 / この場にいる -->
         <template v-if="activeTab === 'progress'">
           <div class="mb-3 flex items-center">
-            <span class="text-parchment/40 flex items-center gap-1.5"><Icon name="turn" />ターン</span>
+            <span class="text-parchment/40 flex items-center gap-1.5"><Icon name="turn" />{{ t("state.turn") }}</span>
             <span class="ml-2 text-parchment">{{ game.state.turn }}</span>
           </div>
 
@@ -124,7 +125,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           <!-- 増えたら領域内で独立スクロール。バーは常時表示 (overflow-y-scroll) で
                ガター幅を確保し、出現/消滅による横のカクつきを防ぐ。 -->
           <div v-if="game.state.goals.length" class="mb-3 flex-1 min-h-0 flex flex-col">
-            <div class="text-parchment/40 mb-2 flex items-center gap-1.5"><Icon name="target" />目標</div>
+            <div class="text-parchment/40 mb-2 flex items-center gap-1.5"><Icon name="target" />{{ t("state.goals") }}</div>
             <ul class="goal-list space-y-1.5 flex-1 min-h-0 overflow-y-scroll pr-1">
               <li
                 v-for="g in game.state.goals"
@@ -142,7 +143,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                     :class="g.id === game.state.reached_goal ? 'bg-glow' : 'bg-parchment/30'"
                   ></span>
                   <span class="truncate">{{ g.title || g.id }}</span>
-                  <span v-if="g.id === game.state.reached_goal" class="ml-auto shrink-0">✓ 到達</span>
+                  <span v-if="g.id === game.state.reached_goal" class="ml-auto shrink-0">{{ t("state.reached") }}</span>
                 </div>
                 <p v-if="g.hint" class="mt-0.5 pl-3.5 text-[11px] leading-snug text-parchment/50">
                   {{ g.hint }}
@@ -155,13 +156,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             v-if="game.state.goal_reached"
             class="rounded bg-ember/20 border border-ember/50 px-3 py-2 text-center text-glow"
           >
-            goal 到達
+            {{ t("state.goalReached") }}
           </div>
 
           <!-- この場にいる人物 (主人公 + NPC) の顔アイコン行。クリックでプロフィール。 -->
           <!-- 居ない人物のパラメータは出さない (presence のみ可視)。 -->
           <div v-if="game.presentCharacters.length" class="mt-auto pt-4 border-t border-ash/60">
-            <div class="text-parchment/40 mb-2">この場にいる</div>
+            <div class="text-parchment/40 mb-2">{{ t("state.present") }}</div>
             <div class="flex flex-wrap gap-3">
               <button
                 v-for="c in game.presentCharacters"
@@ -186,7 +187,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         <!-- 2枚め「状態」: 現在地 / 所持品 / フラグ -->
         <template v-else-if="activeTab === 'world'">
           <div class="mb-3">
-            <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="location" />現在地</div>
+            <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="location" />{{ t("state.location") }}</div>
             <!-- 表示は authored title を優先、無ければ id (機械用セレクタ) へフォールバック。hover で id。 -->
             <div class="text-parchment" :title="game.state.location">
               {{ game.state.location_title || game.state.location }}
@@ -194,27 +195,27 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           </div>
 
           <div class="mb-3">
-            <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="bag" />所持品</div>
+            <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="bag" />{{ t("state.inventory") }}</div>
             <div v-if="game.state.inventory.length" class="text-parchment">
-              {{ game.state.inventory.join("、") }}
+              {{ game.state.inventory.join(t("state.listSep")) }}
             </div>
-            <div v-else class="text-parchment/30">なし</div>
+            <div v-else class="text-parchment/30">{{ t("state.none") }}</div>
           </div>
 
           <div class="mb-3">
-            <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="flag" />フラグ</div>
+            <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="flag" />{{ t("state.flags") }}</div>
             <!-- 表示名 (title || key) のチップ。hover で「いつ・何をして立ったか」(chronicle join) を出す。 -->
             <div v-if="game.state.flags.length" class="flex flex-wrap gap-1.5 mt-1">
               <span
                 v-for="f in game.state.flags"
                 :key="f.key"
                 class="px-2 py-0.5 rounded bg-ash/40 border border-ash text-xs text-parchment/80"
-                :title="f.cause ? `T${f.turn}: ${f.cause}` : f.turn ? `T${f.turn} に成立` : ''"
+                :title="f.cause ? `T${f.turn}: ${f.cause}` : f.turn ? t('state.flagSetAt', { turn: f.turn }) : ''"
               >
                 {{ f.title || f.key }}
               </span>
             </div>
-            <div v-else class="text-parchment/30">なし</div>
+            <div v-else class="text-parchment/30">{{ t("state.none") }}</div>
           </div>
         </template>
 
@@ -230,7 +231,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             >
               <h4 class="flex items-baseline gap-2 mb-1">
                 <span class="text-glow text-xs font-bold truncate">{{ s.title }}</span>
-                <span class="ml-auto shrink-0 text-[10px] text-parchment/35">〜T{{ s.upto_turn }}</span>
+                <span class="ml-auto shrink-0 text-[10px] text-parchment/35">{{ t("state.uptoTurn", { turn: s.upto_turn }) }}</span>
               </h4>
               <p class="text-[12px] leading-relaxed text-parchment/75 whitespace-pre-line">{{ s.text }}</p>
             </article>
@@ -239,7 +240,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           <!-- 最近の出来事 = 未圧縮 chronicle のターン別 1 行 (章が確定すると呑まれて消える)。 -->
           <section>
             <div class="text-parchment/40 mb-2 flex items-center gap-1.5">
-              <Icon name="turn" />最近の出来事
+              <Icon name="turn" />{{ t("state.recentEvents") }}
             </div>
             <ul v-if="game.recentLog.length" class="space-y-1">
               <li
@@ -251,14 +252,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
               </li>
             </ul>
             <p v-else-if="!game.synopsis.length" class="text-parchment/30 text-xs">
-              まだ物語は始まったばかり (ターンが進むとここに要約が積まれます)
+              {{ t("state.synopsisEmpty") }}
             </p>
-            <p v-else class="text-parchment/30 text-xs">なし (直近の章に含まれています)</p>
+            <p v-else class="text-parchment/30 text-xs">{{ t("state.synopsisInChapter") }}</p>
           </section>
         </template>
       </template>
 
-      <p v-else class="text-parchment/30">ゲーム未開始</p>
+      <p v-else class="text-parchment/30">{{ t("state.notStarted") }}</p>
     </div>
 
     <!-- 顔アイコンクリックで開くプロフィールカード -->
@@ -280,7 +281,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                   ? 'cursor-pointer ring-2 ring-ember/50 ring-offset-2 ring-offset-ink hover:ring-glow'
                   : 'cursor-default ring-2 ring-ash ring-offset-2 ring-offset-ink'
               "
-              :title="selectedEntity.profile ? 'プロフィールを見る' : ''"
+              :title="selectedEntity.profile ? t('state.viewProfile') : ''"
               :aria-expanded="showProfile"
               @click="selectedEntity.profile && (showProfile = !showProfile)"
             >
@@ -315,7 +316,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             </div>
             <button
               class="absolute top-2 right-2 w-7 h-7 rounded-full flex items-center justify-center text-parchment/50 hover:text-parchment hover:bg-ash/60 transition-colors"
-              aria-label="閉じる"
+              :aria-label="t('state.close')"
               @click="selectedId = null"
             >
               ✕
@@ -336,7 +337,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             <!-- ステータス: 3列グリッド -->
             <section v-if="selectedEntity.stats.length">
               <h4 class="flex items-center gap-1.5 text-parchment/40 text-xs tracking-wider mb-2">
-                <Icon name="gauge" />ステータス
+                <Icon name="gauge" />{{ t("state.stats") }}
               </h4>
               <div class="grid grid-cols-3 gap-x-5 gap-y-1.5">
                 <div
@@ -353,7 +354,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             <!-- 能力: チップ -->
             <section v-if="selectedEntity.skills.length">
               <h4 class="flex items-center gap-1.5 text-parchment/40 text-xs tracking-wider mb-2">
-                <Icon name="sparkle" />能力
+                <Icon name="sparkle" />{{ t("state.skills") }}
               </h4>
               <div class="flex flex-wrap gap-1.5">
                 <span
@@ -369,7 +370,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             <!-- 所持: チップ -->
             <section v-if="selectedEntity.items.length">
               <h4 class="flex items-center gap-1.5 text-parchment/40 text-xs tracking-wider mb-2">
-                <Icon name="bag" />所持
+                <Icon name="bag" />{{ t("state.items") }}
               </h4>
               <div class="flex flex-wrap gap-1.5">
                 <span
@@ -383,7 +384,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             </section>
 
             <p v-if="selectedIsEmpty" class="text-parchment/40 text-sm">
-              （まだ判明している情報はない）
+              {{ t("state.entityEmpty") }}
             </p>
           </div>
         </div>

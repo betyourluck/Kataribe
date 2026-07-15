@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useGameStore } from "../stores/game";
+import { t } from "../i18n";
 
 const game = useGameStore();
 </script>
@@ -20,7 +21,7 @@ const game = useGameStore();
       <!-- プレイヤーの行動 -->
       <div v-else-if="entry.kind === 'player'" class="flex justify-end">
         <div class="max-w-[80%] rounded-lg bg-ash/60 px-4 py-2 text-parchment/90">
-          <span class="text-ember/70 text-xs mr-2">あなた</span>{{ entry.text }}
+          <span class="text-ember/70 text-xs mr-2">{{ t("log.you") }}</span>{{ entry.text }}
         </div>
       </div>
 
@@ -46,7 +47,7 @@ const game = useGameStore();
           <button
             type="button"
             class="inline-flex items-center leading-none text-glow/50 hover:text-glow/80 transition-colors text-sm"
-            :title="entry.expanded ? '想起された記憶を隠す' : '想起された記憶を表示'"
+            :title="entry.expanded ? t('log.recallHide') : t('log.recallShow')"
             :aria-expanded="entry.expanded ?? false"
             @click="entry.expanded = !entry.expanded"
           >
@@ -68,7 +69,7 @@ const game = useGameStore();
       <div v-else-if="entry.kind === 'rolls'" class="space-y-0.5">
         <p v-for="(r, j) in entry.rolls" :key="j" class="text-sm text-parchment/70">
           🎲 1d{{ r.sides }} = {{ r.result }} (DC {{ r.dc }}) →
-          <span :class="r.success ? 'text-glow' : 'text-ember/60'">{{ r.success ? "成功" : "失敗" }}</span>
+          <span :class="r.success ? 'text-glow' : 'text-ember/60'">{{ r.success ? t("log.success") : t("log.fail") }}</span>
         </p>
       </div>
 
@@ -76,8 +77,8 @@ const game = useGameStore();
       <div v-else-if="entry.kind === 'checks'" class="space-y-1">
         <template v-for="(c, j) in entry.checks" :key="j">
           <p class="text-sm text-parchment/70">
-            🎯 {{ c.entity }} の{{ c.stat }}判定: 1d{{ c.sides }}({{ c.roll }}){{ c.modifier >= 0 ? "+" + c.modifier : c.modifier }} = {{ c.total }} (DC {{ c.dc }}) →
-            <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ c.success ? "成功" : "失敗" }}</span>
+            🎯 {{ t("log.checkLabel", { entity: c.entity, stat: c.stat }) }}: 1d{{ c.sides }}({{ c.roll }}){{ c.modifier >= 0 ? "+" + c.modifier : c.modifier }} = {{ c.total }} (DC {{ c.dc }}) →
+            <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ c.success ? t("log.success") : t("log.fail") }}</span>
           </p>
           <!-- authored 結末ナレーション (毎回・同ターン)。失敗を必ず描く。 -->
           <p v-if="c.narration" class="text-parchment/90 whitespace-pre-wrap" :style="game.narrationStyle">{{ c.narration }}</p>
@@ -86,11 +87,11 @@ const game = useGameStore();
 
       <!-- 却下 (正本が嘘を弾いた) -->
       <div v-else-if="entry.kind === 'reject'" class="rounded-lg bg-ash/30 px-4 py-2 text-sm">
-        <p class="text-ember/80">（GM は {{ entry.attempts }} 回試みたが、筋の通る一手を出せなかった）</p>
+        <p class="text-ember/80">{{ t("log.rejectHeader", { attempts: entry.attempts }) }}</p>
         <ul class="list-disc list-inside text-parchment/60 mt-1">
           <li v-for="(reason, j) in entry.reasons" :key="j">{{ reason }}</li>
         </ul>
-        <p class="text-parchment/40 mt-1">※ 状態は変化していません。別の行動を試してください。</p>
+        <p class="text-parchment/40 mt-1">{{ t("log.rejectNote") }}</p>
       </div>
 
       <!-- 自己修復 (GM が筋を通すまでの試行) — 既定は ⚠ アイコンのみ。クリックで展開 (メタ情報の没入低下を避ける) -->
@@ -98,16 +99,16 @@ const game = useGameStore();
         <button
           type="button"
           class="inline-flex items-center leading-none text-warn/70 hover:text-warn transition-colors"
-          :title="entry.expanded ? '自己修復の詳細を隠す' : `GM が ${entry.attempts} 回目で筋を通した — 詳細を表示`"
+          :title="entry.expanded ? t('log.selfrepairHide') : t('log.selfrepairShow', { attempts: entry.attempts })"
           :aria-expanded="entry.expanded ?? false"
           @click="entry.expanded = !entry.expanded"
         >
           ⚠
         </button>
         <div v-if="entry.expanded" class="mt-1 rounded-lg bg-ash/20 px-4 py-2 text-parchment/55">
-          <p class="text-parchment/45">GM は {{ entry.attempts }} 回目の提案で筋を通した。却下された試行:</p>
+          <p class="text-parchment/45">{{ t("log.selfrepairBody", { attempts: entry.attempts }) }}</p>
           <ul class="list-disc list-inside mt-0.5">
-            <li v-for="(reasons, j) in entry.reasons" :key="j">{{ j + 1 }} 回目: {{ reasons.join(" / ") }}</li>
+            <li v-for="(reasons, j) in entry.reasons" :key="j">{{ t("log.selfrepairAttempt", { n: j + 1, reasons: reasons.join(" / ") }) }}</li>
           </ul>
         </div>
       </div>
@@ -121,10 +122,10 @@ const game = useGameStore();
     <p v-if="game.loading" class="text-parchment/40 text-sm animate-pulse">
       {{
         game.writingEpilogue
-          ? "エピローグを紡いでいます……"
+          ? t("log.writingEpilogue")
           : game.compacting
-            ? "あらすじをまとめています……"
-            : "GM が思案している……"
+            ? t("log.compacting")
+            : t("log.thinking")
       }}
     </p>
   </div>

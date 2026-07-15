@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { t } from "../i18n";
 import type {
   GameView,
   TurnView,
@@ -393,7 +394,9 @@ export const useGameStore = defineStore("game", {
       try {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         await getCurrentWindow().setTitle(
-          this.llmModel ? `Kataribe — 語り部 (${this.llmModel})` : "Kataribe — 語り部",
+          this.llmModel
+            ? t("store.windowTitleModel", { model: this.llmModel })
+            : t("store.windowTitle"),
         );
       } catch {
         /* ウィンドウ API が無い環境ではバッジ表示のみ */
@@ -422,7 +425,7 @@ export const useGameStore = defineStore("game", {
       try {
         await invoke("open_external_url", { url: this.siteUrl });
       } catch (e) {
-        this.logToast = `サイトを開けませんでした: ${e}`;
+        this.logToast = t("store.openSiteFailed", { error: String(e) });
       }
     },
 
@@ -521,7 +524,7 @@ export const useGameStore = defineStore("game", {
         });
         if (picked) this.addPackage(picked);
       } catch (e) {
-        this.error = `フォルダの選択に失敗しました: ${e}`;
+        this.error = t("store.folderPickFailed", { error: String(e) });
       }
     },
 
@@ -535,14 +538,13 @@ export const useGameStore = defineStore("game", {
         const title = entry.title || path;
         if (
           window.confirm(
-            `「${title}」のセーブデータ (turn ${entry.autosave_turn}) も削除しますか？\n` +
-              `キャンセル: セーブは残ります (パスを再追加すれば続きから遊べます)`,
+            t("store.deleteSaveConfirm", { title, turn: entry.autosave_turn }),
           )
         ) {
           try {
             await invoke("delete_autosave", { packagePath: path });
           } catch (e) {
-            this.logToast = `セーブの削除に失敗: ${e}`;
+            this.logToast = t("store.deleteSaveFailed", { error: String(e) });
           }
         }
       }
@@ -621,7 +623,7 @@ export const useGameStore = defineStore("game", {
             lines.push(e.text);
             break;
           case "player":
-            lines.push(`> あなた: ${e.text}`);
+            lines.push(`> ${t("log.you")}: ${e.text}`);
             break;
           case "narration":
             lines.push(e.text);
@@ -633,28 +635,30 @@ export const useGameStore = defineStore("game", {
           case "rolls":
             for (const r of e.rolls)
               lines.push(
-                `🎲 1d${r.sides} = ${r.result} (DC ${r.dc}) → ${r.success ? "成功" : "失敗"}`,
+                `🎲 1d${r.sides} = ${r.result} (DC ${r.dc}) → ${r.success ? t("log.success") : t("log.fail")}`,
               );
             break;
           case "checks":
             for (const c of e.checks) {
               const mod = c.modifier >= 0 ? `+${c.modifier}` : `${c.modifier}`;
               lines.push(
-                `🎯 ${c.entity} の${c.stat}判定: 1d${c.sides}(${c.roll})${mod} = ${c.total} (DC ${c.dc}) → ${c.success ? "成功" : "失敗"}`,
+                `🎯 ${t("log.checkLabel", { entity: c.entity, stat: c.stat })}: 1d${c.sides}(${c.roll})${mod} = ${c.total} (DC ${c.dc}) → ${c.success ? t("log.success") : t("log.fail")}`,
               );
               if (c.narration) lines.push(c.narration);
             }
             break;
           case "reject":
-            lines.push(`（GM は ${e.attempts} 回試みたが、筋の通る一手を出せなかった）`);
+            lines.push(t("log.rejectHeader", { attempts: e.attempts }));
             for (const r of e.reasons) lines.push(`  - ${r}`);
             break;
           case "selfrepair":
             // ログ保存は畳まず全文 (診断情報を残す)。
-            lines.push(`GM は ${e.attempts} 回目の提案で筋を通した`);
+            lines.push(t("log.selfrepairDone", { attempts: e.attempts }));
             if (e.reasons.length) {
-              lines.push("却下された試行:");
-              e.reasons.forEach((rs, i) => lines.push(`  ${i + 1} 回目: ${rs.join(" / ")}`));
+              lines.push(t("log.rejectedAttempts"));
+              e.reasons.forEach((rs, i) =>
+                lines.push(`  ${t("log.selfrepairAttempt", { n: i + 1, reasons: rs.join(" / ") })}`),
+              );
             }
             break;
           case "system":
@@ -669,7 +673,7 @@ export const useGameStore = defineStore("game", {
     // 現在のログを「日時_パッケージ名.txt」で保存する。backend がフォルダを解決・書き込む。
     async saveLog(): Promise<void> {
       if (!this.started || !this.log.length) {
-        this.logToast = "保存するログがありません";
+        this.logToast = t("store.noLogToSave");
         return;
       }
       const now = new Date();
@@ -684,16 +688,16 @@ export const useGameStore = defineStore("game", {
           .replace(/\s+/g, "_")
           .slice(0, 40) || "kataribe";
       const fileName = `${stamp}_${safeTitle}.txt`;
-      const header = `# ${this.title || "語り部"}\n# 保存日時: ${now.toLocaleString()}\n\n`;
+      const header = `# ${this.title || t("store.brandFallback")}\n# ${t("store.logHeaderDate")}: ${now.toLocaleString()}\n\n`;
       try {
         const path = await invoke<string>("save_log_file", {
           folder: this.logDir,
           fileName,
           content: header + this.formatLog(),
         });
-        this.logToast = `ログを保存しました: ${path}`;
+        this.logToast = t("store.logSaved", { path });
       } catch (e) {
-        this.logToast = `保存失敗: ${e}`;
+        this.logToast = t("store.saveFailed", { error: String(e) });
       }
     },
 
@@ -702,7 +706,7 @@ export const useGameStore = defineStore("game", {
       try {
         await invoke("open_log_folder", { folder: this.logDir });
       } catch (e) {
-        this.logToast = `フォルダを開けません: ${e}`;
+        this.logToast = t("store.openFolderFailed", { error: String(e) });
       }
     },
 
@@ -734,7 +738,7 @@ export const useGameStore = defineStore("game", {
         this.log.push({ kind: "system", text: `⚠ ${w}` });
       }
       if (view.resumed) {
-        this.log.push({ kind: "system", text: `── 続きから (turn ${view.resumed.turn}) ──` });
+        this.log.push({ kind: "system", text: t("store.resumeMarker", { turn: view.resumed.turn }) });
         if (view.resumed.last_narration) {
           this.log.push({ kind: "narration", text: view.resumed.last_narration });
         }
@@ -818,16 +822,20 @@ export const useGameStore = defineStore("game", {
             const goalLabel = turn.goal_title ?? turn.goal_id;
             if (turn.transition) {
               // campaign: この章の結末 → 次モジュールへ。入力は締めず続行。
-              const end = goalLabel ? `結末「${goalLabel}」` : "この章の結末";
+              const end = goalLabel
+                ? t("store.chapterEndNamed", { goal: goalLabel })
+                : t("store.chapterEndGeneric");
               this.log.push({
                 kind: "system",
-                text: `${end}に到達。次の章『${turn.transition.module_title}』へ。`,
+                text: t("store.transitionTo", { end, module: turn.transition.module_title }),
               });
               // 遷移先モジュールの開幕描写。
               this.log.push({ kind: "opening", text: turn.transition.description });
             } else {
               // 単発シナリオ/キャンペーン終端 = クリア。
-              const label = goalLabel ? `🎉 結末「${goalLabel}」に到達した。` : "🎉 クリア。goal に到達した。";
+              const label = goalLabel
+                ? t("store.clearedNamed", { goal: goalLabel })
+                : t("store.clearedGeneric");
               this.log.push({ kind: "system", text: label });
             }
           }
@@ -835,7 +843,7 @@ export const useGameStore = defineStore("game", {
           // (バナーが余韻をぶった切らない)。narration と同じ本文スタイルで積む
           // = 会話ログのテキスト保存にも自然に含まれる。
           if (turn.epilogue) {
-            this.log.push({ kind: "system", text: "―― エピローグ ――" });
+            this.log.push({ kind: "system", text: t("store.epilogueMarker") });
             this.log.push({ kind: "narration", text: turn.epilogue });
           }
         } else {
@@ -851,7 +859,7 @@ export const useGameStore = defineStore("game", {
           this.cacheWarned = true;
           this.log.push({
             kind: "system",
-            text: `⚠ プロンプトキャッシュが ${cs.consecutive_misses} リクエスト連続でヒットしていません。入力コストが割高になっている可能性があります (キャッシュ非対応のプロバイダ/ローカルモデルでは正常です)。`,
+            text: t("store.cacheWarning", { misses: cs.consecutive_misses }),
           });
         }
         // あらすじ (spec 10): 追記差分を push (append-only)。章が確定したら「最近の出来事」から
