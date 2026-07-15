@@ -1316,6 +1316,7 @@ version = "0.1.0"
 dependencies = [
  "dotenvy",
  "gm_core",
+ "indexmap 2.14.0",
  "llm_client",
  "serde",
  "serde_json",

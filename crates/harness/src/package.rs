@@ -8,10 +8,11 @@
 //! `player`/`globals` を各モジュールへ射し込むのは [`inject_cast`](crate::inject_cast) と同型。
 //! 自己完結 = 参照は全てフォルダ相対、外部参照ゼロ (package.yaml 不在 / entry 不在は load 時エラー)。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use gm_core::{AttrKey, FlagKey, ItemId, Scenario, SkillId, StatKey};
+use indexmap::IndexMap;
 use serde::Deserialize;
 
 use crate::error::HarnessError;
@@ -50,8 +51,10 @@ pub struct PlayerDef {
     #[serde(default)]
     pub name: String,
     /// 初期数値。各モジュールへ merge する際 **package が勝つ** (モジュール跨ぎの分裂を防ぐ)。
+    /// `IndexMap` = YAML 記述順を保持 (`CharacterDef::stats` と対称) → `inject_package` が
+    /// `initial_stats` へ宣言順で注入し、状態パネルが主人公も「書いた順」で並ぶ。
     #[serde(default)]
-    pub stats: BTreeMap<StatKey, i64>,
+    pub stats: IndexMap<StatKey, i64>,
     /// 初期スキル (閉世界)。各モジュールへ union。
     #[serde(default)]
     pub skills: BTreeSet<SkillId>,
@@ -60,8 +63,9 @@ pub struct PlayerDef {
     pub items: BTreeSet<ItemId>,
     /// 初期の文字列属性 (クラス/職業/種族 等)。各モジュールの `initial_attributes` へ merge
     /// (package が勝つ)。宣言キーが player 属性の閉世界許可集合になる。
+    /// `IndexMap` = YAML 記述順を保持 (stats と同じく主人公の属性を宣言順で表示するため)。
     #[serde(default)]
-    pub attributes: BTreeMap<AttrKey, String>,
+    pub attributes: IndexMap<AttrKey, String>,
     /// 主人公の性向 = 語りの素材 (非検証、prompt 供給)。surfacing は後続。
     #[serde(default)]
     pub profile: String,
@@ -320,7 +324,7 @@ mod tests {
             player: Some(PlayerDef {
                 name: "先生".into(),
                 profile: "高校教師。".into(),
-                stats: BTreeMap::from([("hp".to_string(), 10)]),
+                stats: IndexMap::from([("hp".to_string(), 10)]),
                 items: BTreeSet::from(["chalk".to_string()]),
                 ..Default::default()
             }),
@@ -339,5 +343,39 @@ mod tests {
         assert_eq!(sc.world, "現代日本の高校。", "world が注入される");
         assert_eq!(sc.protagonist.name, "先生", "主人公の呼称が注入される");
         assert_eq!(sc.protagonist.profile, "高校教師。", "主人公の設定が注入される");
+    }
+
+    /// 【順序 PoC】package の `player.stats`/`attributes` は YAML 記述順で注入される
+    /// (NPC=`CharacterDef` と対称)。旧 `BTreeMap` ではキー昇順に潰れ、主人公だけ状態パネルが
+    /// アルファベット順になる回帰 (2026-07-15 実プレイ発見) の固定。
+    #[test]
+    fn inject_package_player_stats_and_attributes_follow_yaml_declaration() {
+        // YAML から parse して記述順が保たれることを検証 (直接 IndexMap::from では順序が自明すぎる)。
+        let manifest: PackageManifest = serde_yaml::from_str(concat!(
+            "entry: x\n",
+            "player:\n",
+            "  name: 勇者\n",
+            "  stats: { 気力: 8, 腕力: 5, hp: 10 }\n",
+            "  attributes: { クラス: 見習い, 種族: ヒューマン }\n",
+        ))
+        .unwrap();
+        let mut sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: a\n",
+            "locations:\n  a: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        inject_package(&mut sc, &manifest);
+        // アルファベット順 (hp, 気力, 腕力 / クラス, 種族) でなく YAML 記述順で並ぶ。
+        assert_eq!(
+            sc.stat_order("player"),
+            vec!["気力".to_string(), "腕力".to_string(), "hp".to_string()],
+            "主人公の stat は宣言順 (BTreeMap 昇順に潰れない)"
+        );
+        assert_eq!(
+            sc.attribute_order("player"),
+            vec!["クラス".to_string(), "種族".to_string()],
+            "主人公の attribute も宣言順"
+        );
     }
 }

@@ -9,6 +9,7 @@ description = "GM ターンループ。LLM 提案 → 正本裁定 → 却下な
 [dependencies]
 gm_core.workspace = true
 llm_client = { path = "../llm_client" }
+indexmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
