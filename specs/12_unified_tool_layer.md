@@ -1,18 +1,44 @@
 # 12. 統一ツール層 — LLM プロバイダアダプタ (Claude / GPT / Gemini / Grok)
 
-Status: **Phase A〜D Done + Phase E 一部実測（2026-07-15）。**
+Status: **Phase A〜D Done + Phase E 実測完了（2026-07-15）。**
 Phase E 実測結果:
 - **Anthropic ✓** — cache_read=13607（ターン 2 以降、#44 資産の回帰なし）
 - **Grok（grok-4.3 + tool-use）主目的 Green** — reasoning_effort=none の既定送出で
   空デルタ/タイムアウトが解消し応答が返る（completion 257/185 tokens 実測）。
-  ただし **cached=128 で頭打ち**（prompt 6199→6688 でも不変）— #45 の 89% 実測
-  （2026-07-11、別モデル）と乖離。モデル差（reasoning 系のキャッシュ挙動）か要診断
-  （残項目: 数ターン継続で cached が伸びるか / grok-4-1-fast との A/B）
-- **Gemini ✗→C.5a 適用** — schema は受理されたが `oneOf` が**黙って落ち**、
-  `ops:[1,2,3]` 捏造で提案者エラー（failures.md #52）。`gemini::adapt_schema` で
-  oneOf→anyOf 付け替え（バリアント制約保持）。live 再検証待ち。
-  効かなければ C.5b = 全バリアント統合の単一 object 化（op enum + 全フィールド optional）。
-残 = Grok キャッシュ診断 / Gemini C.5a 再検証 / narration 量計測（tool-use ≥ no-tools×1.5 目安）。
+  **cached=128 頭打ちは解決（2026-07-15 再測）**: 5 ターン通しプレイで
+  turn1-2=128（ウォームアップ）→ **turn3 から 6400（~86-88% = 6400/7300）に跳ね安定**、
+  #45 の 89% 実測と一致。旧「128 頭打ち」は ~2 往復しか回さず sticky routing の確定前を
+  掴んだアーティファクトだった（xAI キャッシュ確定に 2 ターン要）。5 ターン 11 秒・
+  却下/Empty/timeout ゼロ。→ grok-4-1-fast との A/B は不要（128 は cap でなく warmup と判明）。
+  **副次（提案の noisiness、n=4 観察で確定）**: 当初 n=1 で「grok-4.3 は移動を拒否する
+  simulationist な傾向」と見えたが、benign/move-only 台本で n=4 に増やすと**再現せず溶けた**
+  （move-only で 5/5 移動 honor・却下ゼロ）。cast_vote 乱発（1 run で×5）・realism 拒否は
+  すべて**確率的な一発**。再現した唯一の quirk は「その場の人物に話しかける」での冗長な
+  自location move（2/2）。真の差は grok-4.3 が Gemini より **op 提案が noisy**（spurious op で
+  self-repair 往復が増える。Gemini は同台本で却下ゼロ）だが、**engine が全 spurious op を
+  backstop し state 汚染ゼロ・outcome 到達**＝「正本 > 文章力」は騒がしい提案者下でも保たれる。
+  教訓: LLM-GM 挙動は run-to-run 分散が大きく、n=1 の劇的失敗を systematic と誤認しない（n≥3 で観察）。
+- **Gemini ✓ C.5a 検証 Green（2026-07-15 再測、`gemini-flash-latest`＝実体 `gemini-3.5-flash`）** —
+  `oneOf` 黙殺（failures.md #52、`ops:[1,2,3]` 捏造）は `gemini::adapt_schema` の oneOf→anyOf
+  付け替えで解消。friday_lemmon 5 ターン通しプレイ（seed 42・use_tools=true）で
+  **整数列 ops ゼロ / 全 op が正しい StateOp オブジェクト（move・add_item・set_flag・
+  attempt_challenge の 4 バリアントで `op` 判別子＋必須フィールドを構築）/ 却下 1 回のみ
+  かつ正当（authored 専権フラグへの set_flag を #50 バックストップが却下→self-repair が 1 回で修正）/
+  attempt_challenge のダイス経路も端から端まで通る（1d20+6 vs DC10 成功→kitchen_open）/
+  EmptyResponse・timeout ゼロ**。→ **C.5b（全バリアント統合の単一 object 化）は不要**。
+  留保: n=1 モデルの一発通し（passthrough に戻す gold-standard A/B は未実施だが oneOf→anyOf の
+  ピンポイント差分ゆえ確度高）。副次: (a)「latest」エイリアスが 3.5-flash に進んだ（docs は
+  2.5 前提・エイリアス依存の再現性に注意）(b) Gemini ネイティブ経路のキャッシュは
+  cached≈4071/prompt≈6900（~59%）で全ターン安定＝#44/#45 資産が spec-12 後も生存、
+  thinking（thoughtsTokenCount 305〜1062）も completion を枯渇させず。
+- **narration 量計測 ✓（2026-07-15、Grok で実施）** — spec 目的 2（no-tools JSON モードが
+  narration を圧縮し、tool-use で回復するか）を実測。**Gemini ネイティブでは A/B 不成立**
+  （`gemini::encode` は use_tools を消費せず常に tool-use＝K4。互換経路 `.../v1beta/openai/`
+  に向ければ可能だがネイティブでは不可）→ **Grok（OpenAiCompat）で実施**: 同一台本 5 ターン、
+  tool-use=118 文字/ターン vs no-tools=74 文字/ターン = **1.60×（目安 1.5 クリア）**。
+  no-tools が narration を圧縮する仮説を支持。留保: n=1 pair・両 run とも grok 拒否的癖下
+  （報告値として扱う。分布を締めるなら複数 pair）。
+Phase E は 4 プロバイダ全項目実測完了。残 = Phase F（streaming、真因が streaming 絡みの時のみ・任意）。
 - Phase A: canonical + seam + OpenAICompatAdapter（llm_client 30→32 PoC、挙動変更ゼロ）
 - Phase B: ClaudeAdapter 正式化（`anthropic::encode(&canonical)` — build_request を統合）+
   `LLM_EFFORT` opt-in（`thinking: adaptive` + `output_config.effort`、未設定なら送らない）+

@@ -876,4 +876,37 @@ optional に畳む — engine の adjudicate が意味論を守るので schema 
 まだ親切で、静かな部分適用が最悪。プロバイダ毎に「どの JSON Schema キーが grammar に
 乗るか」の対応表を検証項目にせよ (受理テストでなく**出力形のテスト**でしか検出できない)。
 PoC: gemini_encode_maps_system_tools_and_roles に oneOf 不在 + anyOf 存在 + バリアント実体
-保持の assert を追加。live 再検証は次プレイ (それまで C.5a は仮説修正)。
+保持の assert を追加。
+【live 検証 Green (2026-07-15 再測, `gemini-flash-latest`=実体 gemini-3.5-flash)】friday_lemmon
+5 ターン通しで**整数列 ops ゼロ / 全 op が正しい StateOp オブジェクト (move・add_item・
+set_flag・attempt_challenge の 4 バリアントで op 判別子+必須フィールドを構築) / attempt_challenge
+のダイス経路も端から端まで**。C.5a で確定、C.5b (全バリアント統合) は不要。留保: n=1 モデルの
+一発通し (passthrough に戻す gold-standard A/B は未実施だが oneOf→anyOf のピンポイント差分ゆえ
+確度高)。副次: 「latest」エイリアスが 3.5-flash に進んだ (docs は 2.5 前提・エイリアス依存に注意)。
+
+## 方法論 (2026-07-15 spec 12 Phase E — Grok GM 挙動の観察)
+
+### 53. n=1 の劇的な LLM 失敗を systematic と誤認する — Grok の「拒否癖」も「cast_vote latch」も溶けた
+【観察 (2026-07-15, grok-4.3 tool-use, friday_lemmon)】1 回の通しプレイで grok-4.3 が
+(a) 移動要求「厨房へ入る」に源蔵の拒否を narrate し move op を出さない (b) 非投票シナリオに
+`cast_vote` を ×5 乱発 (GM_SYSTEM の明示禁止「投票の節が無ければ cast_vote を提案するな」を
+無視)。ここから 2 つの仮説 — **①grok は simulationist で「書かれた世界」を守りすぎる**
+(ユーザー観察) / **②巨大 GM_SYSTEM の投票ブロックに latch する** (私の観察) — を立てた。
+【棄却】failures に書く前に n を増やす (ユーザー判断「正解はまだわからない」)。benign 台本
+再実行 + 純移動 (move-only) 台本 + Gemini 対照で **n=4**: ①も②も**再現せず溶けた** —
+move-only で **5/5 移動 honor・却下ゼロ**、benign 再実行で café 進入も成功、cast_vote は
+4 run 中 **1 run のみ** (確率的一発)。両「劇的失敗」は systematic な癖でなく run-to-run 分散。
+【再現したもの】唯一 2/2 で再現したのは「その場に居る人物に話しかける」で**冗長な自 location
+への move** を出す小さな quirk (self-repair で回復・無害)。
+【真因 (モデル特性、欠陥ではない)】grok-4.3 は Gemini より **op 提案が noisy** — spurious op
+(冗長 move / まれに cast_vote / authored set_flag) を出す確率が高く self-repair 往復が増える。
+Gemini は同台本で却下ゼロ。だが **engine が全 spurious op を backstop し state 汚染ゼロ・
+outcome 到達** = 「正本 > 文章力」は騒がしい提案者の下でも保たれる (#50 の authored-flag
+backstop・cast_vote guard・self-exit 拒否が全部効いた = アーキテクチャの positive 検証)。
+壊れているのは提案の質であって正本ではない。コストは self-repair の往復増 (レイテンシ/トークン)。
+【一般化】**LLM-GM 挙動を failures/spec に「systematic」と書く前に n≥3 で観察する** — LLM は
+run-to-run 分散が大きく、n=1 の劇的失敗は systematic な欠陥と誤認しやすい (この session で
+ユーザーと私が別々に踏んだ)。同型先例 = キャッシュ warmup を cap と誤認した 2 ターン計測 (#45 の
+再測で判明)。**モデル選択の但し書き**: レイテンシ/トークン重視の配布なら Gemini/Claude が
+提案クリーン、grok-4.3 は noisy だが outcome は到達 (engine が守る)。PoC 無し (コード修正でなく
+観察方法の罠)。
