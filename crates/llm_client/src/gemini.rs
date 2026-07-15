@@ -156,7 +156,10 @@ pub(crate) fn encode_with_cache(
         )
     };
 
-    // cache が静的プレフィックス (systemInstruction + tools) を持つ時は二重送信しない。
+    // cache が静的プレフィックス (systemInstruction + tools + tool_config) を持つ時は二重送信
+    // しない。**Gemini は cachedContent 参照時にこれらのいずれかが request にあると 400**
+    // ("CachedContent can not be used with GenerateContent request setting system_instruction,
+    // tools or tool_config" — Phase D live で確認)。強制指定 (mode ANY) も cache 側に載せる。
     let use_cache = cached.is_some();
     GenerateContentRequest {
         contents,
@@ -166,7 +169,7 @@ pub(crate) fn encode_with_cache(
             Some(SystemInstruction { parts: system_parts })
         },
         tools: if use_cache { None } else { tool_decls },
-        tool_config,
+        tool_config: if use_cache { None } else { tool_config },
         generation_config: GenerationConfig {
             max_output_tokens: req.max_tokens,
             temperature: req.temperature,
@@ -285,6 +288,10 @@ pub(crate) struct CreateCacheRequest {
     pub system_instruction: Option<SystemInstruction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDecl>>,
+    /// 強制指定 (mode ANY) も cache に載せる — Gemini は cachedContent 参照時に request 側の
+    /// tool_config を 400 で拒否する (Phase D live)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_config: Option<ToolConfig>,
     /// `"900s"` 形式。
     pub ttl: String,
 }
@@ -314,6 +321,7 @@ pub(crate) fn build_create_request(
         model,
         system_instruction: full.system_instruction,
         tools: full.tools,
+        tool_config: full.tool_config,
         ttl: format!("{ttl_secs}s"),
     }
 }

@@ -945,3 +945,23 @@ fingerprint + cachedContents create/参照/lifecycle、client 内に閉じ fallb
 best-effort 機構は閾値を跨ぐと無言で 0 になる。usage を一次ソースに実測せよ (#44/#45 の系)。
 留保: 閾値 ~8000 は近似 (prompt 7937 効き→8420 不発で挟んだ)、n=1 モデル・n=1 アカウント
 (best-effort ゆえ region/account 差の可能性は残る)。PoC 無し (Gemini 側の性質の観測)。
+
+### 55. Gemini 明示キャッシュ参照時は system_instruction/tools/tool_config を request に載せると 400
+【観察 (2026-07-15, spec 13 Phase D の初回 live)】cachedContent を参照する generateContent が
+`400 INVALID_ARGUMENT: "CachedContent can not be used with GenerateContent request setting
+system_instruction, tools or tool_config. Proposed fix: move those values to CachedContent"`。
+【真因】明示キャッシュ実装で systemInstruction と tools は request から省いたが、**tool_config
+(functionCallingConfig mode:ANY) を request 側に残した** — spec 13 D1 の設計判断「強制指定は
+per-request ゆえ残す」が誤り。Gemini は cachedContent 参照時に**これら 3 つのいずれか**が request に
+あると 400 にする (cache と request で二重定義になるため)。ツール宣言と強制指定を分離できると
+思い込んだのが罠 (OpenAI 互換の直観を Gemini に持ち込んだ)。
+【解】tool_config も cache 側 (CreateCacheRequest) へ移し、cache 参照時の generateContent からは
+systemInstruction/tools/tool_config を**すべて省く** (`encode_with_cache(Some)` で 3 つとも None)。
+Kataribe は常に emit_delta を強制するので mode ANY は cache 単位で一定 = cache に載せて問題なし。
+【一般化】**明示キャッシュは「静的なもの全部」を cache に入れ、参照側 request には可変分だけ
+残す — 部分的に残すと 400**。プロバイダの直観 (OpenAI では tool_choice は per-request) を別
+プロバイダに転用しない。**この罠は unit test では出ず live でのみ露見** — Phase D (実キー) を
+分けておいた設計が効いた (最初の 1 実行で捕捉→修正)。PoC: `gemini_encode_with_cache_omits_prefix_
+and_references_cache` (cache 参照時 toolConfig も None) / `gemini_build_create_request_extracts_
+static_prefix` (toolConfig は cache 側) を修正後の分割に更新。修正後 live で 8000 超の全ターン
+cachedContentTokenCount=7173 を確認 (崖を迂回、spec 13 目標達成)。

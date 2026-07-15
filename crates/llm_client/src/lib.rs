@@ -1027,13 +1027,11 @@ mod tests {
         assert_eq!(body["cachedContent"], "cachedContents/xyz");
         assert!(body.get("systemInstruction").is_none(), "system は cache 側 (二重送信しない)");
         assert!(body.get("tools").is_none(), "tool 宣言も cache 側");
+        // Gemini は cachedContent 参照時に tool_config を request に載せると 400 (Phase D live)。
+        assert!(body.get("toolConfig").is_none(), "強制指定 (mode ANY) も cache 側 — request には出さない");
         assert!(
             !body["contents"].as_array().unwrap().is_empty(),
             "可変 contents は request に残る"
-        );
-        assert_eq!(
-            body["toolConfig"]["functionCallingConfig"]["mode"], "ANY",
-            "強制指定 (mode ANY) は per-request"
         );
     }
 
@@ -1081,6 +1079,11 @@ mod tests {
         assert_eq!(
             create["tools"][0]["functionDeclarations"][0]["name"], EMIT_DELTA_TOOL,
             "tool 宣言を含む"
+        );
+        // 強制指定 (mode ANY) も cache に載せる (Gemini は request 側 tool_config を 400 で拒否)。
+        assert_eq!(
+            create["toolConfig"]["functionCallingConfig"]["mode"], "ANY",
+            "tool_config も cache 側"
         );
         assert!(create.get("contents").is_none(), "可変 contents は cache に含めない");
         assert!(gemini::static_prefix_chars(&req) > 100, "静的プレフィックスの文字数を測れる");
