@@ -31,6 +31,12 @@ Phase E 実測結果:
   2.5 前提・エイリアス依存の再現性に注意）(b) Gemini ネイティブ経路のキャッシュは
   cached≈4071/prompt≈6900（~59%）で全ターン安定＝#44/#45 資産が spec-12 後も生存、
   thinking（thoughtsTokenCount 305〜1062）も completion を枯渇させず。
+  **【重要・2026-07-15 追測】この安定は総プロンプト <~8000 tokens の時だけ** — gemini-flash-latest
+  (=3.5-flash) の暗黙キャッシュは**総プロンプト ~8000 tokens で崖**（超えると cached=0）。制御実験
+  （friday の world 段階パディング / user 側パディング）で「因果は total-prompt サイズ・sysInstr
+  でも package 内容でもない」を単離、大シナリオ（sun_girl_ntr は turn1 から超過）/長セッション全般で
+  暗黙キャッシュ不発（failures #54）。**下の「明示 cached_content 不要」判断は 3.5-flash で反証**
+  → **明示キャッシュ（`cachedContent`）が robust な解**（Phase F / 新 spec で起票）。2.5-flash は 404 引退で対照不能。
 - **narration 量計測 ✓（2026-07-15、Grok で実施）** — spec 目的 2（no-tools JSON モードが
   narration を圧縮し、tool-use で回復するか）を実測。**Gemini ネイティブでは A/B 不成立**
   （`gemini::encode` は use_tools を消費せず常に tool-use＝K4。互換経路 `.../v1beta/openai/`
