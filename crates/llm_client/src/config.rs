@@ -121,6 +121,17 @@ pub struct LlmConfig {
     /// 推論の深さ (`LLM_EFFORT`、spec 12 Phase B)。**None なら送らない** (opt-in・現行動作)。
     /// Claude: `thinking: adaptive` + `output_config.effort` / Grok (Phase D): `reasoning_effort`。
     pub effort: Option<Effort>,
+    /// spec 13: Gemini 明示キャッシュ (cachedContent) を使うか (既定 true、`LLM_GEMINI_CACHE=0` で off)。
+    /// 暗黙キャッシュの ~8000 トークン崖 (failures #54) を静的プレフィックスの明示 pin で迂回する。
+    /// **Gemini 以外の provider では無視** (Anthropic は cache_control で明示済 #44)。
+    pub gemini_cache_enabled: bool,
+    /// cachedContent の TTL 秒 (`LLM_GEMINI_CACHE_TTL`、既定 900=15分)。失効は透過再試行。
+    pub gemini_cache_ttl_secs: u64,
+    /// サイズゲート: 静的プレフィックスの文字数がこれ未満なら cache を作らない
+    /// (`LLM_GEMINI_CACHE_MIN_CHARS`、既定 4000)。明示キャッシュには最小トークン (モデル依存) が
+    /// あり小さいプレフィックスは create が 400 になる — 無駄な create を避ける最適化 (下回っても
+    /// 正しさは fallback が守る)。
+    pub gemini_cache_min_chars: usize,
 }
 
 impl LlmConfig {
@@ -179,6 +190,12 @@ impl LlmConfig {
                 .unwrap_or(true),
             provider,
             effort,
+            // spec 13: Gemini 明示キャッシュ (既定 on、Gemini 以外では無視)。
+            gemini_cache_enabled: env_opt("LLM_GEMINI_CACHE")
+                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
+                .unwrap_or(true),
+            gemini_cache_ttl_secs: env_parse("LLM_GEMINI_CACHE_TTL", 900u64)?,
+            gemini_cache_min_chars: env_parse("LLM_GEMINI_CACHE_MIN_CHARS", 4000usize)?,
         };
         // 非 fatal の設定警告 (headroom / temperature 併用) を起動時に 1 回 surface する。
         for w in config.warnings() {
@@ -256,6 +273,10 @@ impl LlmConfig {
             provider,
             // 要約は安い/速い設定が目的 — GM の effort は継がない (深い思考は要約に不要)。
             effort: None,
+            // spec 13: cache 設定は本体から継承 (要約は小プレフィックスゆえサイズゲートが自然に Bypass)。
+            gemini_cache_enabled: base.gemini_cache_enabled,
+            gemini_cache_ttl_secs: base.gemini_cache_ttl_secs,
+            gemini_cache_min_chars: base.gemini_cache_min_chars,
         }))
     }
 
@@ -274,6 +295,9 @@ impl LlmConfig {
             use_tools: true,
             provider,
             effort: None,
+            gemini_cache_enabled: true,
+            gemini_cache_ttl_secs: 900,
+            gemini_cache_min_chars: 4000,
         }
     }
 
@@ -296,6 +320,17 @@ impl LlmConfig {
             format!("{base}/models/{}:generateContent", self.model)
         } else {
             format!("{base}/v1beta/models/{}:generateContent", self.model)
+        }
+    }
+
+    /// Gemini 明示キャッシュ作成エンドポイント `{base}/v1beta/cachedContents` (spec 13)。
+    /// [`Self::gemini_endpoint`] と同じく base_url はホスト直 / `/v1beta` 込みの両方を受ける。
+    pub fn cachedcontents_endpoint(&self) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        if base.ends_with("/v1beta") {
+            format!("{base}/cachedContents")
+        } else {
+            format!("{base}/v1beta/cachedContents")
         }
     }
 }

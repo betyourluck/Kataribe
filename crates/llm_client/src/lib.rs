@@ -1037,6 +1037,55 @@ mod tests {
         );
     }
 
+    /// 【spec 13 Phase B】cache 判定: 無効/サイズゲート未満は Bypass、handle 無し(十分大)は Create、
+    /// fingerprint 一致は Reuse、不一致(scenario 変化)は Create(作り直し)。純関数 (HTTP 非依存)。
+    #[test]
+    fn gemini_decide_cache_action_reuse_create_bypass() {
+        use gemini::{decide_cache_action, CacheAction, CacheHandle};
+        let (big, small, min) = (5000usize, 100usize, 4000usize);
+        assert!(matches!(decide_cache_action(false, min, big, 1, None), CacheAction::Bypass), "無効化");
+        assert!(matches!(decide_cache_action(true, min, small, 1, None), CacheAction::Bypass), "サイズゲート未満");
+        assert!(matches!(decide_cache_action(true, min, big, 1, None), CacheAction::Create), "handle 無し→作成");
+        let h = CacheHandle { name: "cachedContents/x".into(), fingerprint: 42 };
+        match decide_cache_action(true, min, big, 42, Some(&h)) {
+            CacheAction::Reuse(n) => assert_eq!(n, "cachedContents/x", "fp 一致→既存を参照"),
+            other => panic!("Reuse を期待: {other:?}"),
+        }
+        assert!(
+            matches!(decide_cache_action(true, min, big, 99, Some(&h)), CacheAction::Create),
+            "fp 不一致 (別シナリオ)→作り直し"
+        );
+    }
+
+    /// 【spec 13 Phase B】cachedContents create body: model は `models/` プレフィックス必須、
+    /// 静的プレフィックス (systemInstruction + tools) を含み ttl を秒形式で、**可変 contents は含めない**。
+    #[test]
+    fn gemini_build_create_request_extracts_static_prefix() {
+        let req = canonical::ChatRequest {
+            model: "gemini-3.5-flash".into(),
+            messages: user_msgs(),
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort: None,
+        };
+        let create = serde_json::to_value(gemini::build_create_request(&req, 900)).unwrap();
+        assert_eq!(create["model"], "models/gemini-3.5-flash", "create は models/ プレフィックス必須");
+        assert_eq!(create["ttl"], "900s");
+        assert_eq!(create["systemInstruction"]["parts"][0]["text"], "あなたはGM", "静的 system を含む");
+        assert_eq!(
+            create["tools"][0]["functionDeclarations"][0]["name"], EMIT_DELTA_TOOL,
+            "tool 宣言を含む"
+        );
+        assert!(create.get("contents").is_none(), "可変 contents は cache に含めない");
+        assert!(gemini::static_prefix_chars(&req) > 100, "静的プレフィックスの文字数を測れる");
+    }
+
     /// 【Phase C decode】functionCall.args (最初からオブジェクト = D2 恒等) を canonical へ、
     /// id は **client 単位の単調 seq** から `call_{seq}_{index}` を合成 (rev4 Must 4 —
     /// リクエスト毎リセットの call_0 は却下→再生成で衝突する)。usage の

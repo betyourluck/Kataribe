@@ -60,6 +60,9 @@ pub struct LlmClient {
     /// Gemini の呼び出し id 合成用の単調カウンタ (spec 12 rev4 Must 4)。リクエスト毎に
     /// リセットしない — 却下→再生成の同一ターン内で `call_0` が重複しないため。
     call_seq: std::sync::atomic::AtomicU64,
+    /// spec 13: Gemini 明示キャッシュのセッションハンドル。fingerprint が現在の静的プレフィックスと
+    /// 一致すれば reuse、違えば作り直す (campaign 遷移等)。失効時はクリアして full request へ透過。
+    gemini_cache: Mutex<Option<gemini::CacheHandle>>,
 }
 
 impl LlmClient {
@@ -73,6 +76,7 @@ impl LlmClient {
             conv_id: new_conv_id(),
             cache_stat: Mutex::new(CacheStat::default()),
             call_seq: std::sync::atomic::AtomicU64::new(0),
+            gemini_cache: Mutex::new(None),
         })
     }
 
@@ -169,14 +173,9 @@ impl LlmClient {
                 let wire_req = openai_compat::encode(&req, self.config.use_tools);
                 self.compat_with_retry(&wire_req).await?
             }
-            // Gemini ネイティブ経路 (Phase C): x-goog-api-key ヘッダ認証 (キーを URL に
-            // 載せない K5)。id 合成のカウンタは client 単位で単調 (rev4 Must 4)。
-            Provider::Gemini => {
-                let native = gemini::encode(&req);
-                let raw = self.gemini_with_retry(&native).await?;
-                let seq = self.call_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                gemini::decode(raw, seq)
-            }
+            // Gemini ネイティブ経路 (Phase C) + 明示キャッシュ (spec 13): 静的プレフィックスを
+            // cachedContent に pin し、暗黙キャッシュの ~8000 崖 (failures #54) を迂回する。
+            Provider::Gemini => self.gemini_complete(req).await?,
         };
         self.record_cache(resp.usage.cache_read);
         Ok(resp)
@@ -405,6 +404,96 @@ impl LlmClient {
                 }
             }
         }
+    }
+
+    /// Gemini リクエストを明示キャッシュ (spec 13) 込みで完了させる。fingerprint で cache を
+    /// reuse/再作成し、systemInstruction+tools を cachedContent に載せて generateContent は
+    /// 可変 contents だけ送る。作成失敗・サイズゲート未満・無効化は full request に fallback
+    /// (キャッシュは最適化であって正しさの前提ではない — turn は絶対に落とさない)。
+    async fn gemini_complete(
+        &self,
+        req: canonical::ChatRequest,
+    ) -> Result<canonical::ChatResponse, LlmError> {
+        let fp = gemini::fingerprint(&req);
+        let static_chars = gemini::static_prefix_chars(&req);
+        // std Mutex guard は await を跨げない — 判定だけ lock 内で済ませて即 drop。
+        let action = {
+            let guard = self.gemini_cache.lock();
+            let handle = guard.as_ref().ok().and_then(|g| g.as_ref());
+            gemini::decide_cache_action(
+                self.config.gemini_cache_enabled,
+                self.config.gemini_cache_min_chars,
+                static_chars,
+                fp,
+                handle,
+            )
+        };
+        let cache_name = match action {
+            gemini::CacheAction::Reuse(name) => Some(name),
+            gemini::CacheAction::Bypass => None,
+            gemini::CacheAction::Create => match self.gemini_create_cache(&req, fp).await {
+                Ok(name) => Some(name),
+                Err(e) => {
+                    if std::env::var("LLM_CACHE_DEBUG").is_ok() {
+                        eprintln!("[LLM_CACHE] cachedContent 作成失敗 → full request にフォールバック: {e}");
+                    }
+                    None
+                }
+            },
+        };
+
+        let native = gemini::encode_with_cache(&req, cache_name.clone());
+        let raw = match self.gemini_with_retry(&native).await {
+            Ok(r) => r,
+            // cache 参照の失効兆候 → handle をクリアして full request で 1 回だけ再試行 (透過)。
+            Err(e) if cache_name.is_some() && gemini::is_cache_miss_error(&e) => {
+                if let Ok(mut g) = self.gemini_cache.lock() {
+                    *g = None;
+                }
+                if std::env::var("LLM_CACHE_DEBUG").is_ok() {
+                    eprintln!("[LLM_CACHE] cachedContent 失効 → full request で再試行");
+                }
+                self.gemini_with_retry(&gemini::encode(&req)).await?
+            }
+            Err(e) => return Err(e),
+        };
+        let seq = self.call_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(gemini::decode(raw, seq))
+    }
+
+    /// `POST {base}/v1beta/cachedContents` で静的プレフィックスを pin し、handle を保存して
+    /// resource name を返す (spec 13 Phase B)。認証は generateContent と同じ x-goog-api-key。
+    async fn gemini_create_cache(
+        &self,
+        req: &canonical::ChatRequest,
+        fp: u64,
+    ) -> Result<String, LlmError> {
+        let create = gemini::build_create_request(req, self.config.gemini_cache_ttl_secs);
+        let resp = self
+            .http
+            .post(self.config.cachedcontents_endpoint())
+            .header("x-goog-api-key", &self.config.api_key)
+            .json(&create)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api { status: status.as_u16(), body });
+        }
+        let body = resp.text().await?;
+        let parsed: gemini::CreateCacheResponse =
+            serde_json::from_str(&body).map_err(|source| LlmError::Parse { source, raw: body })?;
+        if parsed.name.is_empty() {
+            return Err(LlmError::Api { status: 200, body: "cachedContents create: name が空".into() });
+        }
+        if let Ok(mut g) = self.gemini_cache.lock() {
+            *g = Some(gemini::CacheHandle { name: parsed.name.clone(), fingerprint: fp });
+        }
+        if std::env::var("LLM_CACHE_DEBUG").is_ok() {
+            eprintln!("[LLM_CACHE] cachedContent 作成: {}", parsed.name);
+        }
+        Ok(parsed.name)
     }
 }
 

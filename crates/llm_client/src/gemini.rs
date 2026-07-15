@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::canonical;
+use crate::error::LlmError;
 use crate::wire::Role;
 
 // --- リクエスト ---------------------------------------------------------------
@@ -212,6 +213,115 @@ pub(crate) fn fingerprint(req: &canonical::ChatRequest) -> u64 {
         h = fnv1a(h, t.parameters.to_string().as_bytes());
     }
     h
+}
+
+// --- 明示キャッシュ / cachedContent (spec 13 Phase B) --------------------------
+
+/// 明示キャッシュのセッションハンドル。client が `Mutex<Option<CacheHandle>>` で保持する。
+/// `fingerprint` が現リクエストの静的プレフィックスと一致すれば reuse、違えば作り直す。
+#[derive(Debug, Clone)]
+pub(crate) struct CacheHandle {
+    /// `cachedContents/<id>`。
+    pub name: String,
+    /// 作成時の静的プレフィックス fingerprint (再作成判定)。
+    pub fingerprint: u64,
+}
+
+/// cache をどう扱うか ([`decide_cache_action`] の結果)。
+#[derive(Debug)]
+pub(crate) enum CacheAction {
+    /// 既存 cache を参照する。
+    Reuse(String),
+    /// cache を (再) 作成する (handle 無し or fingerprint 不一致 = scenario 変化)。
+    Create,
+    /// cache を使わない (無効 or サイズゲート未満) — 従来の full request。
+    Bypass,
+}
+
+/// cache 判定 (純粋・spec 13 D2/D3)。`enabled` off / `static_chars < min_chars` は Bypass。
+/// handle の fingerprint が現在と一致すれば Reuse、それ以外 (None/不一致) は Create。
+pub(crate) fn decide_cache_action(
+    enabled: bool,
+    min_chars: usize,
+    static_chars: usize,
+    current_fp: u64,
+    handle: Option<&CacheHandle>,
+) -> CacheAction {
+    if !enabled || static_chars < min_chars {
+        return CacheAction::Bypass;
+    }
+    match handle {
+        Some(h) if h.fingerprint == current_fp => CacheAction::Reuse(h.name.clone()),
+        _ => CacheAction::Create,
+    }
+}
+
+/// 静的プレフィックス (先頭 system + tools) の文字数 = サイズゲートの近似トークン量。
+/// 可変 user は含めない。明示キャッシュの最小トークン閾値に対する**安いゲート** — 正確さは
+/// create 失敗の fallback が守るので char 近似で足りる。
+pub(crate) fn static_prefix_chars(req: &canonical::ChatRequest) -> usize {
+    let mut n = 0;
+    for m in &req.messages {
+        match m.role {
+            Role::System => n += m.content.chars().count(),
+            _ => break,
+        }
+    }
+    for t in &req.tools {
+        n += t.name.chars().count()
+            + t.description.chars().count()
+            + t.parameters.to_string().chars().count();
+    }
+    n
+}
+
+/// `POST /v1beta/cachedContents` の作成リクエスト。静的プレフィックス + TTL を pin する。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateCacheRequest {
+    /// **`models/<name>` 形式必須** (create API の要求)。
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_instruction: Option<SystemInstruction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDecl>>,
+    /// `"900s"` 形式。
+    pub ttl: String,
+}
+
+/// create 応答 (必要なのは resource name だけ)。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct CreateCacheResponse {
+    /// `cachedContents/<id>`。
+    #[serde(default)]
+    pub name: String,
+}
+
+/// 静的プレフィックス (systemInstruction + tools) から create body を組む (spec 13 Phase B)。
+/// `encode_with_cache(req, None)` の抽出を**再利用** — cache する中身が、cache 不使用時に
+/// generateContent へ inline されるものと必ず一致する (乖離が起きない)。可変 contents は含めない。
+pub(crate) fn build_create_request(
+    req: &canonical::ChatRequest,
+    ttl_secs: u64,
+) -> CreateCacheRequest {
+    let full = encode_with_cache(req, None);
+    let model = if req.model.starts_with("models/") {
+        req.model.clone()
+    } else {
+        format!("models/{}", req.model)
+    };
+    CreateCacheRequest {
+        model,
+        system_instruction: full.system_instruction,
+        tools: full.tools,
+        ttl: format!("{ttl_secs}s"),
+    }
+}
+
+/// cache 参照が失効した兆候か (TTL 切れ等で cachedContent 不在)。保守的に Api 403/404 のみ —
+/// transient (429/5xx) は gemini_with_retry が既に捌く。正確なトリガーは live で確定 (Phase D)。
+pub(crate) fn is_cache_miss_error(err: &LlmError) -> bool {
+    matches!(err, LlmError::Api { status, .. } if *status == 403 || *status == 404)
 }
 
 /// JSON Schema を Gemini の Schema サブセット (OpenAPI 3.0 系) へ適応させる (Phase C.5a)。
