@@ -40,13 +40,27 @@ const game = useGameStore();
         :style="game.beatBgStyle"
       >
         <p v-if="entry.narration.trim()" class="text-ember" :style="{ textShadow: game.narrationStyle.textShadow ?? '' }">✦ {{ entry.narration }}</p>
-        <p
-          v-for="(line, j) in entry.recalled"
-          :key="j"
-          class="text-glow/70 text-sm whitespace-pre-wrap pl-3 border-l border-ash"
-        >
-          {{ line }}
-        </p>
+        <!-- 想起された伏線 (memoria) — 既定で畳む。次ターンに GM が語りへ織り込むので、生表示はメタ/ネタバレ気味 -->
+        <template v-if="entry.recalled.length">
+          <button
+            type="button"
+            class="inline-flex items-center leading-none text-glow/50 hover:text-glow/80 transition-colors text-sm"
+            :title="entry.expanded ? '想起された記憶を隠す' : '想起された記憶を表示'"
+            :aria-expanded="entry.expanded ?? false"
+            @click="entry.expanded = !entry.expanded"
+          >
+            ◈
+          </button>
+          <div v-if="entry.expanded" class="space-y-1 mt-1">
+            <p
+              v-for="(line, j) in entry.recalled"
+              :key="j"
+              class="text-glow/70 text-sm whitespace-pre-wrap pl-3 border-l border-ash"
+            >
+              {{ line }}
+            </p>
+          </div>
+        </template>
       </div>
 
       <!-- ダイス -->
@@ -78,14 +92,23 @@ const game = useGameStore();
         <p class="text-parchment/40 mt-1">※ 状態は変化していません。別の行動を試してください。</p>
       </div>
 
-      <!-- 受理までに却下された試行の理由 (なぜ筋を通すのに N 回かかったか) -->
-      <div v-else-if="entry.kind === 'retries'" class="rounded-lg bg-ash/20 px-4 py-2 text-xs text-parchment/55">
-        <p class="text-parchment/45">却下された試行:</p>
-        <ul class="list-disc list-inside mt-0.5">
-          <li v-for="(reasons, j) in entry.reasons" :key="j">
-            {{ j + 1 }} 回目: {{ reasons.join(" / ") }}
-          </li>
-        </ul>
+      <!-- 自己修復 (GM が筋を通すまでの試行) — 既定は ⚠ アイコンのみ。クリックで展開 (メタ情報の没入低下を避ける) -->
+      <div v-else-if="entry.kind === 'selfrepair'" class="text-xs">
+        <button
+          type="button"
+          class="inline-flex items-center leading-none text-warn/70 hover:text-warn transition-colors"
+          :title="entry.expanded ? '自己修復の詳細を隠す' : `GM が ${entry.attempts} 回目で筋を通した — 詳細を表示`"
+          :aria-expanded="entry.expanded ?? false"
+          @click="entry.expanded = !entry.expanded"
+        >
+          ⚠
+        </button>
+        <div v-if="entry.expanded" class="mt-1 rounded-lg bg-ash/20 px-4 py-2 text-parchment/55">
+          <p class="text-parchment/45">GM は {{ entry.attempts }} 回目の提案で筋を通した。却下された試行:</p>
+          <ul class="list-disc list-inside mt-0.5">
+            <li v-for="(reasons, j) in entry.reasons" :key="j">{{ j + 1 }} 回目: {{ reasons.join(" / ") }}</li>
+          </ul>
+        </div>
       </div>
 
       <!-- システム告知 -->

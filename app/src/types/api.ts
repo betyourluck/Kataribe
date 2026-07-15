@@ -203,11 +203,14 @@ export type LogEntry =
   | { kind: "opening"; text: string }
   | { kind: "player"; text: string }
   | { kind: "narration"; text: string }
-  | { kind: "beat"; narration: string; recalled: string[] }
+  // narration は authored な物語ビート (常時表示)。recalled (memoria/伏線) は次ターンに GM が
+  // 語りへ織り込むので既定で畳む (expanded で展開)。
+  | { kind: "beat"; narration: string; recalled: string[]; expanded?: boolean }
   | { kind: "rolls"; rolls: RollView[] }
   | { kind: "checks"; checks: CheckView[] }
   | { kind: "reject"; reasons: string[]; attempts: number }
-  | { kind: "retries"; reasons: string[][] }
+  // 自己修復 (GM が筋を通すまでの試行) — 既定で畳み、⚠ アイコンのみ表示。expanded で展開。
+  | { kind: "selfrepair"; attempts: number; reasons: string[][]; expanded?: boolean }
   | { kind: "system"; text: string };
 
 // ============================================================================

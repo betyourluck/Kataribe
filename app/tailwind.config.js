@@ -10,6 +10,7 @@ export default {
         ember: "#d98a4a",      // アクセント (熾火)
         ash: "#3a322b",        // 罫線・パネル
         glow: "#f0c27b",       // 強調 (炎の明)
+        warn: "#d9645a",       // 注意 (薄めの赤・ember の赤寄り兄弟。自己修復の ⚠ 等)
       },
       fontFamily: {
         serif: ['"Noto Serif JP"', "serif"],

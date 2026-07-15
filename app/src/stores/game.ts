@@ -617,9 +617,13 @@ export const useGameStore = defineStore("game", {
             lines.push(`（GM は ${e.attempts} 回試みたが、筋の通る一手を出せなかった）`);
             for (const r of e.reasons) lines.push(`  - ${r}`);
             break;
-          case "retries":
-            lines.push("却下された試行:");
-            e.reasons.forEach((rs, i) => lines.push(`  ${i + 1} 回目: ${rs.join(" / ")}`));
+          case "selfrepair":
+            // ログ保存は畳まず全文 (診断情報を残す)。
+            lines.push(`GM は ${e.attempts} 回目の提案で筋を通した`);
+            if (e.reasons.length) {
+              lines.push("却下された試行:");
+              e.reasons.forEach((rs, i) => lines.push(`  ${i + 1} 回目: ${rs.join(" / ")}`));
+            }
             break;
           case "system":
             lines.push(`── ${e.text} ──`);
@@ -762,15 +766,15 @@ export const useGameStore = defineStore("game", {
             // narration も recalled も無い「効果のみ」の発火はログに出さない (裸の ✦ を防ぐ)。
             // CG は turn.beats から、SE は下で別途処理するのでログに積まなくても失われない。
             if (b.narration.trim() || b.recalled.length) {
-              this.log.push({ kind: "beat", narration: b.narration, recalled: b.recalled });
+              this.log.push({ kind: "beat", narration: b.narration, recalled: b.recalled, expanded: false });
             }
             // 発火 SE を one-shot 再生 (受理ターンのみ。CG と同様、語りの瞬間に鳴らす)。
             this.playSe(assetUrl(b.sound));
           }
           if (turn.attempts > 1) {
-            this.log.push({ kind: "system", text: `GM は ${turn.attempts} 回目の提案で筋を通した` });
-            // なぜ却下されたか (試行ごとの理由) を author に見せる。
-            if (turn.retries.length) this.log.push({ kind: "retries", reasons: turn.retries });
+            // 自己修復は既定で畳む (⚠ アイコンのみ) — メタ情報の没入低下を避ける。
+            // クリックで「N 回目で筋を通した」+ 却下理由を展開 (author 診断)。
+            this.log.push({ kind: "selfrepair", attempts: turn.attempts, reasons: turn.retries, expanded: false });
           }
           // goal 到達: 単発/終端なら goal_reached、campaign 継続なら transition で signal。
           if (turn.goal_reached || turn.transition) {
