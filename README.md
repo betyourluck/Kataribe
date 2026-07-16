@@ -1,83 +1,93 @@
-# 🎲 Kataribe (語り部) — 忘れない・矛盾しない GM
+**English** | [日本語](README_jp.md)
 
-クラウド LLM をナレーターに、**Rust の決定論エンジンを正本（ゲーム状態の唯一の真実）**に据えた TRPG ゲームマスター。
+# <img src="images/kataribe.png" alt="Kataribe" width="32"> Kataribe (語り部) — a GM that never forgets or contradicts
 
-AI Dungeon 系の LLM-GM が必ず崩れる死因は、文章力ではなく**忘却と矛盾**（持ち物・誰が死んだ・どこにいる・前回何を決めたか）。Kataribe はその故障モードを、LLM に状態を持たせないアーキテクチャで構造的に断つ。売りは「無限の自由」ではなく **一貫性**。
+A TRPG game master with a cloud LLM as narrator and a **deterministic Rust engine as the source of truth** for game state.
 
-## ダウンロード
+The failure mode that always breaks AI Dungeon–style LLM GMs isn't weak prose — it's **forgetting and contradiction** (what you carry, who died, where you are, what was decided last turn). Kataribe cuts that off structurally: the LLM never holds the state. What it sells is not "infinite freedom" but **consistency**.
 
-[**最新リリース**](https://github.com/betyourluck/Kataribe/releases/latest) から各 OS のインストーラを入手できる。
+A side effect of that architecture: because the engine guarantees correctness, Kataribe runs well on **cheap, free, or fully local models**. The engine backs up a small model's mistakes, so you don't need a frontier model to get a coherent game — only richer prose.
 
-| OS | ファイル | 状態 |
+![Kataribe in play](images/kataribe_ui.png)
+
+*A scenario package in play — the GM's narration over a scene background, with live goals and the characters present in the scene on the right. Everything is driven by the deterministic engine underneath.*
+
+## Download
+
+Get the installer for your OS from the [**latest release**](https://github.com/betyourluck/Kataribe/releases/latest).
+
+| OS | File | Status |
 |---|---|---|
-| **Windows** | `Kataribe_x.y.z_x64-setup.exe`（インストーラ）/ `.msi` | ✅ 動作確認済み |
-| macOS (Apple Silicon) | `.dmg` | CI ビルドのみ・未検証 |
-| Linux | `.deb` / `.AppImage` / `.rpm` | CI ビルドのみ・未検証 |
+| **Windows** | `Kataribe_x.y.z_x64-setup.exe` (installer) / `.msi` | ✅ Verified working |
+| macOS (Apple Silicon) | `.dmg` | CI build only, unverified |
+| Linux | `.deb` / `.AppImage` / `.rpm` | CI build only, unverified |
 
-起動後、**設定 → AIモデル** で OpenAI 互換エンドポイントの `base_url` / `model` / `api_key` を設定する（クラウド LLM またはローカルの OpenAI 互換サーバ）。シナリオパッケージはフォルダ追加または配布サイトから取得して遊ぶ。
+After launching, go to **Settings → AI Model** and set the `base_url` / `model` / `api_key` for an OpenAI-compatible endpoint (a cloud LLM, or a local OpenAI-compatible server). Play scenario packages by adding a folder or fetching them from the distribution site.
 
-## 設計の核 — 三権分立
+## Design core — separation of powers
 
-> **LLM は提案し、エンジンが裁き、Memoria が覚え、シナリオが縛る。**
+> **The LLM proposes, the engine adjudicates, Memoria remembers, the scenario constrains.**
 
-| 脚 | 役割 | 実装 | 状態 |
+| Branch | Role | Implementation | Status |
 |---|---|---|---|
-| **エンジン（正本）** | HP/所持品/ダイス/フラグ/位置を決定論的に裁く | `crates/gm_core` (Rust) | ✅ PoC green |
-| **LLM（提案）** | 情景描写・NPC台詞・行動提案。数値の真実を持たない | `crates/llm_client` (予定) | ⬜ 次フェーズ |
-| **Memoria（記憶）** | エピソード・伏線・キャラ性格の semantic recall | (予定) | ⬜ ループ green 後 |
-| **シナリオ（拘束）** | beat graph + gate 条件で筋から外れすぎを防ぐ | `scenarios/*.yaml` | ✅ 最小版 |
+| **Engine (source of truth)** | Deterministically adjudicates every mutable state — HP/stats, inventory, dice, flags, location, skills, attributes | `crates/gm_core` (Rust) | ✅ Done |
+| **LLM (proposal)** | Narration, NPC lines, action proposals. Holds no numeric truth (structurally can't) | `crates/llm_client` (Rust) | ✅ Done — 4 providers |
+| **Memoria (memory)** | Semantic recall of foreshadowing & character personality (never mutable state) | `crates/harness` (memoria_bridge) | ✅ Done |
+| **Scenario (constraint)** | A location graph + gate conditions keep improvisation on the rails | YAML packages | ✅ Done |
 
-**鉄則:** 可変世界状態は state machine。埋め込み想起（ベクトル recall）には**絶対に置かない** — 曖昧な recall は「忘れる GM」を再現してしまう。伏線・性格だけが Memoria の領分。
+**Iron rule:** mutable world state lives in the engine's state machine. It is **never** placed in vector recall — fuzzy recall would recreate the "forgetting GM." Only foreshadowing and personality belong to Memoria.
 
-## GM ターンループ
+## What the engine guarantees
 
-```
-プレイヤー入力
-  → 関連 canon/記憶を文脈に注入
-  → LLM が StateDelta（structured output: narration + ops）を提案
-  → エンジンが adjudicate（不正なら理由つき却下 → 再生成、最大 N 回）
-  → 受理なら原子的に state 更新 + beat 前進
-  → （後で）Memoria に記録
-```
+The LLM proposes a `StateDelta` (structured output: `narration` + `ops`). The engine's `adjudicate` — a pure function that changes no state — verifies every op; on an illegal op it rejects with a machine-readable reason and the loop regenerates. Only on acceptance does `apply` mutate state, **atomically** (one bad op rejects the whole delta; state stays intact).
 
-`adjudicate` は state を一切変えない純粋関数。`apply` は受理時のみ原子的に適用する。
+Because of that boundary:
 
-## 今ここまで動く（PoC）
+- **Numbers are the engine's.** The LLM states the intent ("train hard: +STR, −HP"); the engine does the arithmetic. It cannot fabricate a die roll, an HP value, or an item it doesn't hold — the op structure makes it impossible.
+- **Dice are deterministic & auditable** (seeded RNG). Same seed → same rolls.
+- **Closed world.** Undeclared stats / items / skills / flags don't exist; the engine rejects any op that touches them. Skills, character classes, and who-is-present change only through authored triggers, never LLM whim.
+- **Consequence is authored.** Named goals, campaign transitions (state carries across modules), challenges (dice → tiers → flags), delayed events, and hidden roles + voting (werewolf-style) are all gated by the engine, not the prose.
+- **Long memory.** A running chronicle and compressed chapter synopses feed the GM its own past, so it stays consistent across long sessions — the second half of "never forgets."
 
-正本エンジン単体を、密室脱出シナリオで実証済み（`cargo test` で 9/9 green）:
+## Proven with real LLMs, across genres
 
-- ✅ 正規の筋（引き出し→鍵→解錠→脱出）で goal 到達
-- ✅ 不正状態の遮断（鍵なし解錠・解錠前移動・引き出し前の鍵取得）
-- ✅ **敵対ターン**: 持っていない「マスターキー」で開けようとしても却下 = 正本が LLM の流暢さに勝つ
-- ✅ 原子性: 一部不正なデルタは全体却下、state は無傷
-- ✅ ダイスは決定論的・監査可能（seeded RNG）
+The same unchanged engine drives fantasy dungeons, dating-sim routes (raising a heroine's affection), mystery, and social deduction (a hidden-werewolf village). The engine is genre-neutral; the LLM supplies the flavor. Verified end-to-end with **Claude, Gemini, and Grok**, and with local OpenAI-compatible servers via a **no-tools JSON mode** (for models that don't support tool calling). Prompt caching (Anthropic `cache_control` / Gemini `cachedContent` / xAI sticky routing) keeps the repeated input cheap.
 
-## ビルド & テスト
+The signature demonstration: tell the GM you use a "prophecy skill you never had," and it grounds the lie away — *"there was never such a power"* — with zero state change. **The source of truth beats the LLM's fluency.**
+
+## Authoring & distribution
+
+Scenarios ship as self-contained **packages** — a folder with `package.yaml` + characters + scenarios (+ optional campaign, images, audio). Zip it, unzip it, it runs. A companion distribution site (the *Kataribe 書庫*) lets authors share packages and players install them from inside the app. You can even build a package by handing an LLM the format spec and a synopsis; see the authoring guide.
+
+## Build & test
 
 ```bash
-cargo test          # PoC テスト
-cargo clippy --all-targets
+cargo test --workspace                     # 250+ deterministic PoC tests (Red→Green)
+cargo clippy --workspace --all-targets
 ```
 
-## 構成
+The desktop app (Tauri 2 + Vue 3) lives in `app/`:
+
+```bash
+cd app && npm install && npm run tauri dev  # requires WebView2 on Windows
+```
+
+## Layout
 
 ```text
 Kataribe/
-├── data_contract.yaml     # ★名詞の凍結（GameState / StateDelta / Gate の契約）
-├── scenarios/
-│   └── locked_room.yaml   # PoC シナリオ（密室脱出）
-└── crates/
-    └── gm_core/           # Rust: 正本（state / spine / engine）
-        └── src/
-            ├── state.rs   # GameState / StateOp / StateDelta / 決定論RNG
-            ├── spine.rs   # Scenario / Location / Exit / Gate
-            └── engine.rs  # adjudicate / apply / is_goal + PoCテスト
+├── data_contract.yaml   # ★ Frozen nouns (the GameState / StateDelta / Gate / Scenario contract)
+├── crates/
+│   ├── gm_core/         # Source of truth: state, scenario spine, adjudicate/apply engine
+│   ├── llm_client/      # Narrator leg: 4-provider unified tool layer, schemars-generated schema,
+│   │                    #   prompt caching, no-tools JSON fallback for cheap/local models
+│   └── harness/         # Turn loop, memoria_bridge, synopsis/chronicle (long-term memory), campaigns
+├── app/                 # Tauri 2 + Vue 3 desktop app (save/load, immersion assets, i18n ja/en, 書庫)
+├── packages/            # Distributable scenario packages
+├── specs/               # Design specs (NN_*.md)
+└── CLAUDE.md            # Project ledger (architecture, north star, mandates)
 ```
 
-## ルーツ
+## License
 
-LocalAI（廃棄プロジェクト）から摘出予定の資産: `llm_client`（OpenAI互換抽象）/ SSE ストリーミング骨格 / HybridMemory / Tauri+Vue UI 殻。中核（正本エンジン・シナリオ脊椎）は新規。
-
-## ライセンス
-
-[MIT License](LICENSE)。エンジンも同梱シナリオも自由に使い・改変し・再配布できる。**使われてなんぼ** — フォークしてあなたの世界を作ってほしい。
+[MIT License](LICENSE). The engine and the bundled scenarios can be freely used, modified, and redistributed. **It's worth something only when it's used** — fork it and build your own world.
