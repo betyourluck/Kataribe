@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "play";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "play" | "map";
   size?: number;
 }>();
 </script>
@@ -72,6 +72,12 @@ defineProps<{
     <template v-else-if="name === 'plus'">
       <path d="M12 5v14" />
       <path d="M5 12h14" />
+    </template>
+    <!-- マップ: 折り畳み地図 -->
+    <template v-else-if="name === 'map'">
+      <path d="M9 3 3 6v15l6-3 6 3 6-3V3l-6 3-6-3Z" />
+      <path d="M9 3v15" />
+      <path d="M15 6v15" />
     </template>
     <!-- あらすじ: 開いた本 -->
     <template v-else-if="name === 'book'">

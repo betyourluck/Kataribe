@@ -12,6 +12,7 @@ import type {
   SynopsisView,
   LogLineView,
   SlotView,
+  MapView,
 } from "../types/api";
 
 // アセット絶対パス → asset:// URL のメモ化 (convertFileSrc を毎回呼ばない。spec 01 小論点2)。
@@ -289,6 +290,8 @@ interface GameState {
   compacting: boolean;
   // backend がエピローグ生成中 (epilogue-writing イベント、spec 11)。同じくローディング文言用。
   writingEpilogue: boolean;
+  // マップ (spec 15) — 訪問済み+1歩先の有向グラフ。移動/遷移で backend が差し替える。
+  map: MapView;
   // 自前の確認ダイアログ (WebView2 の window.confirm は tauri://localhost の URL を出すため自作)。
   // null なら非表示。askConfirm() がこれをセットし、ConfirmDialog が OK/キャンセルで解決する。
   confirmDialog: { message: string; confirmLabel: string } | null;
@@ -338,6 +341,7 @@ export const useGameStore = defineStore("game", {
       recentLog: [],
       compacting: false,
       writingEpilogue: false,
+      map: { nodes: [], edges: [] },
       confirmDialog: null,
     };
   },
@@ -766,6 +770,7 @@ export const useGameStore = defineStore("game", {
       this.background = assetUrl(view.background);
       this.bgm = assetUrl(view.bgm);
       this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
+      this.map = view.map ?? { nodes: [], edges: [] };
       this.log = [{ kind: "opening", text: view.description }];
       this.cacheWarned = false; // 新しいセッション = 新しいクライアント (計測もゼロから)
       // あらすじ (spec 10): 新規開始は空、再開はセーブから全量復元。
@@ -958,6 +963,8 @@ export const useGameStore = defineStore("game", {
         }
         this.state = turn.state;
         this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
+        // マップ (spec 15) — 移動/遷移で backend が差し替える (却下でも現状スナップショット)。
+        if (turn.map) this.map = turn.map;
         // 背景は受理ターンのみ更新する。却下 = 物語が進んでいないので現在の背景 (=直前の CG) を保つ。
         // イベント CG は瞬間 (spec 01 #3): 発火ターンに出て、次の受理ターンで場所背景へ復帰する。
         // campaign 遷移は前章の CG を持ち越さず遷移先の場所背景にする。

@@ -114,6 +114,8 @@ export interface GameView {
   synopsis: SynopsisView[];
   /** 「最近の出来事」= 未圧縮 chronicle の 1 行要約列 (再開時の初期表示)。 */
   recent_log: LogLineView[];
+  /** マップ (spec 15) — 訪問済み+1歩先の有向グラフ。 */
+  map: MapView;
 }
 
 /** あらすじ 1 章 (spec 10)。一度確定したら不変 (append-only)。リスト key は upto_turn。 */
@@ -130,6 +132,33 @@ export interface SynopsisView {
 export interface LogLineView {
   turn: number;
   summary: string;
+}
+
+/** マップの 1 ノード (spec 15)。visited=false は frontier (未踏)。
+ *  frontier は title/description/image を伏せる (「？」表示・ネタバレ回避)。 */
+export interface MapNode {
+  id: string;
+  /** 表示名 (Location.title、空なら id へフォールバック)。frontier は空。 */
+  title: string;
+  /** 場所の説明 (クリックで詳細に出す)。frontier は空。 */
+  description: string;
+  /** 場所の画像の絶対パス (frontend が convertFileSrc で URL 化)。無ければ null。 */
+  image: string | null;
+  current: boolean;
+  visited: boolean;
+}
+
+/** マップの 1 辺 (有向の出口)。locked=true は gate 未達 (🔒・今は通れない)。 */
+export interface MapEdge {
+  from: string;
+  to: string;
+  locked: boolean;
+}
+
+/** 右ペインのマップ view (spec 15) — 訪問済み+1歩先の有向グラフ。 */
+export interface MapView {
+  nodes: MapNode[];
+  edges: MapEdge[];
 }
 
 /** 手動セーブスロット一覧の 1 項目 (spec 07 Phase D)。exists=false は空きスロット。 */
@@ -209,6 +238,8 @@ export interface TurnView {
   /** エピローグ本文 (spec 11)。到達 goal に epilogue_prompt があり終端のときだけ非 null。
    *  生成失敗時は null (結末文 + バナーの従来表示へフォールバック)。 */
   epilogue: string | null;
+  /** マップ (spec 15) — 訪問済み+1歩先の有向グラフ (移動/遷移で変わるので毎ターン)。 */
+  map: MapView;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

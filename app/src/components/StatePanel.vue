@@ -3,13 +3,14 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
 import Icon from "./Icon.vue";
+import MapPanel from "./MapPanel.vue";
 
 const game = useGameStore();
 
-// 右ペインは縦タブ 3 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
-// ・ synopsis=あらすじ: 圧縮済み章 + 最近の出来事、spec 10)。
-// 1 枚に全部積むと全体スクロールになるのでタブで切り替える。
-const TABS = ["progress", "world", "synopsis"] as const;
+// 右ペインは縦タブ 4 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
+// ・ map=マップ: 訪問済み+1歩先の有向グラフ、spec 15 ・ synopsis=あらすじ: 圧縮済み章 +
+// 最近の出来事、spec 10)。1 枚に全部積むと全体スクロールになるのでタブで切り替える。
+const TABS = ["progress", "world", "map", "synopsis"] as const;
 type Tab = (typeof TABS)[number];
 const activeTab = ref<Tab>("progress");
 
@@ -50,13 +51,13 @@ function onKeydown(e: KeyboardEvent) {
   if (e.isComposing) return;
   if (!e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "Tab") {
-    // Ctrl+Tab: 3 枚の巡回 (Shift 併用で逆順)。
+    // Ctrl+Tab: タブ巡回 (Shift 併用で逆順)。
     e.preventDefault();
     const i = TABS.indexOf(activeTab.value);
     const step = e.shiftKey ? TABS.length - 1 : 1;
     activeTab.value = TABS[(i + step) % TABS.length];
-  } else if (e.key === "1" || e.key === "2" || e.key === "3") {
-    // Ctrl+1/2/3: 直接選択 (2026-07-08 に予約した拡張枠を 3 で使用)。
+  } else if (["1", "2", "3", "4"].includes(e.key)) {
+    // Ctrl+1/2/3/4: 直接選択。
     e.preventDefault();
     activeTab.value = TABS[Number(e.key) - 1];
   }
@@ -95,6 +96,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       >
         <Icon name="location" :size="12" />
         <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabWorld") }}</span>
+      </button>
+      <button
+        class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
+        :class="
+          activeTab === 'map'
+            ? 'border-ember text-glow'
+            : 'border-transparent text-parchment opacity-40 hover:opacity-90'
+        "
+        :title="t('state.tabMapTitle')"
+        @click="activeTab = 'map'"
+      >
+        <Icon name="map" :size="12" />
+        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabMap") }}</span>
       </button>
       <button
         class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
@@ -219,7 +233,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           </div>
         </template>
 
-        <!-- 3枚め「あらすじ」(spec 10): 圧縮済み章 (append-only) + 最近の出来事 (未圧縮 chronicle)。
+        <!-- 3枚め「マップ」(spec 15): 訪問済み+1歩先の有向グラフ。 -->
+        <template v-else-if="activeTab === 'map'">
+          <MapPanel />
+        </template>
+
+        <!-- 4枚め「あらすじ」(spec 10): 圧縮済み章 (append-only) + 最近の出来事 (未圧縮 chronicle)。
              GM が prompt で見ている長期記憶と同じもの = 要約ドリフトの観測装置でもある。 -->
         <template v-else>
           <!-- 圧縮済みの章 (古い順)。key は upto_turn (title は表示専用で衝突し得る)。 -->

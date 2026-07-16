@@ -200,6 +200,8 @@ struct GameView {
     synopsis: Vec<SynopsisView>,
     /// 「最近の出来事」= 未圧縮 chronicle の 1 行要約列 (再開時の初期表示。以後は差分で伸びる)。
     recent_log: Vec<LogLineView>,
+    /// マップ (spec 15) — 訪問済み+1歩先の有向グラフ。
+    map: MapView,
 }
 
 /// scenario の lint を作者向けの表示文にする (非 fatal — load は拒否せず開幕に ⚠ で報せる。
@@ -273,6 +275,9 @@ struct TurnView {
     /// エピローグ本文 (spec 11)。到達 goal に epilogue_prompt があり終端 (遷移しない) の
     /// 受理ターンだけ Some。生成失敗時は None (結末文 + バナーの従来表示 = フォールバック)。
     epilogue: Option<String>,
+    /// マップ (spec 15) — 訪問済み+1歩先の有向グラフ。移動/遷移で変わるので毎ターン返す
+    /// (却下ターンは state 不変ゆえ現状スナップショット)。
+    map: MapView,
 }
 
 /// campaign のモジュール遷移 (前モジュールの goal 到達 → 次モジュールへ state を糸通しして差し替え)。
@@ -353,6 +358,127 @@ fn goal_view(
         ),
         None => (None, None, None),
     }
+}
+
+// =============================================================================
+// マップ (spec 15) — 訪問済み+1歩先の有向グラフ (engine 無改修の派生表示)
+// =============================================================================
+
+/// マップの 1 ノード (ロケーション)。`visited=false` は frontier (未踏の1歩先)。
+/// **frontier はネタバレ回避で title/description/image を伏せる** (frontend が「？」表示)。
+#[derive(Serialize)]
+struct MapNode {
+    id: String,
+    /// 表示名 (Location.title、空なら frontend が id へフォールバック)。frontier は空。
+    title: String,
+    /// 場所の説明 (クリックで詳細パネルに出す)。frontier は空 (未踏)。
+    description: String,
+    /// 場所のイベント CG/背景画像の絶対パス (frontend が convertFileSrc で URL 化)。
+    /// visited かつ Location.image があるときのみ。frontier は None。
+    image: Option<String>,
+    /// 現在地か。
+    current: bool,
+    /// 訪問済みか (false = frontier = 未踏の1歩先。丸だけ描き「？」で示す)。
+    visited: bool,
+}
+
+/// マップの 1 辺 (有向の出口)。`locked=true` は gate 未達 (🔒・今は通れない)。
+#[derive(Serialize)]
+struct MapEdge {
+    from: String,
+    to: String,
+    locked: bool,
+}
+
+/// 右ペインのマップ view (spec 15)。
+#[derive(Serialize)]
+struct MapView {
+    nodes: Vec<MapNode>,
+    edges: Vec<MapEdge>,
+}
+
+/// 訪問済み + その1歩先だけを描く有向グラフを組む (可視範囲=霧、ユーザー確定)。
+/// **engine 無改修の派生**: `Scenario.exits` (グラフ) + `GameState` (現在地・Gate::eval) +
+/// chronicle (`TurnLog.location`=訪問済み) から導く。訪問済みは history 由来ゆえ正本に
+/// `visited` を足さない。gate 評価は既存 `Gate::eval`。
+///
+/// - visited = {start, 現在地} ∪ {history の location}、現 scenario の location に限定
+///   (campaign 遷移で前モジュールの location が history に残るのを除外)。
+/// - frontier = visited の各出口先 (1歩先・未訪問でも名前を出す)。奥は霧 = 出さない。
+/// - edges = visited ノードの exits のみ (frontier からの辺は描かない = その先は霧)。
+fn map_view(
+    scenario: &Scenario,
+    state: &GameState,
+    history: &[TurnLog],
+    root: &Path,
+) -> MapView {
+    use std::collections::BTreeSet;
+    // 訪問済み: 現 scenario に実在する location のみ採る (幻ノード・他モジュールを除外)。
+    let mut visited: BTreeSet<String> = BTreeSet::new();
+    let mark = |id: &str, set: &mut BTreeSet<String>| {
+        if scenario.location(id).is_some() {
+            set.insert(id.to_string());
+        }
+    };
+    mark(&scenario.start, &mut visited);
+    mark(&state.location, &mut visited);
+    for log in history {
+        if !log.location.is_empty() {
+            mark(&log.location, &mut visited);
+        }
+    }
+    // visited から出る辺を集め、行き先の未訪問を frontier (1歩先) に積む。
+    let mut frontier: BTreeSet<String> = BTreeSet::new();
+    let mut edges: Vec<MapEdge> = Vec::new();
+    for from in &visited {
+        let Some(loc) = scenario.location(from) else { continue };
+        for exit in &loc.exits {
+            // 行き先が現 scenario に無いなら描かない (幻ノードを作らない)。
+            if scenario.location(&exit.to).is_none() {
+                continue;
+            }
+            if !visited.contains(&exit.to) {
+                frontier.insert(exit.to.clone());
+            }
+            edges.push(MapEdge {
+                from: from.clone(),
+                to: exit.to.clone(),
+                locked: !exit.gate.eval(state),
+            });
+        }
+    }
+    // ノード = visited ∪ frontier (両者は互いに素)。決定論順 (visited→frontier、各キー昇順)。
+    // visited は名前/説明/画像を載せる (クリックで詳細パネルへ)。frontier は伏せる
+    // (「？」+「まだ到達していない」= ネタバレ回避、可視範囲=霧の一貫)。
+    let node = |id: &String, is_visited: bool| {
+        let loc = scenario.location(id);
+        let (title, description, image) = if is_visited {
+            (
+                loc.map(|l| if l.title.is_empty() { id.clone() } else { l.title.clone() })
+                    .unwrap_or_else(|| id.clone()),
+                loc.map(|l| normalize(&l.description)).unwrap_or_default(),
+                loc.and_then(|l| l.image.as_ref())
+                    .and_then(|im| resolve_asset(root, AssetKind::Images, im))
+                    .map(|p| p.to_string_lossy().into_owned()),
+            )
+        } else {
+            (String::new(), String::new(), None)
+        };
+        MapNode {
+            id: id.clone(),
+            title,
+            description,
+            image,
+            current: *id == state.location,
+            visited: is_visited,
+        }
+    };
+    let nodes = visited
+        .iter()
+        .map(|id| node(id, true))
+        .chain(frontier.iter().map(|id| node(id, false)))
+        .collect();
+    MapView { nodes, edges }
 }
 
 // =============================================================================
@@ -1408,6 +1534,7 @@ async fn new_game(
         },
         synopsis: Vec::new(),
         recent_log: Vec::new(),
+        map: map_view(&scenario, &state, &[], &pkg_dir),
     };
 
     let save_path = autosave_path(&app, &pkg_dir);
@@ -1524,6 +1651,7 @@ async fn restore_session(
             let upto = save.synopsis.compressed_upto();
             save.history.iter().filter(|l| l.turn > upto).map(log_line_view).collect()
         },
+        map: map_view(&scenario, &state, &save.history, &pkg_dir),
     };
 
     // オートセーブの書き先 (ロード元がスロットでも常に autosave パス = スロットは凍結点のまま)。
@@ -1809,6 +1937,7 @@ async fn play_turn(
                 new_synopsis: Vec::new(), // 圧縮ジョブの後に差分で埋める
                 new_log: Vec::new(),
                 epilogue: None, // 終端判定の後に埋める (spec 11)
+                map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -1835,6 +1964,7 @@ async fn play_turn(
             new_synopsis: Vec::new(),
             new_log: Vec::new(),
             epilogue: None,
+            map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
         },
     };
 
@@ -1899,6 +2029,9 @@ async fn play_turn(
                 view.bgm = bgm_for(&sess.scenario, &sess.state, &sess.package_root);
                 view.present_characters =
                     present_characters(&sess.scenario, &sess.state, &sess.package_root);
+                // マップは遷移先モジュールのグラフへ差し替え (history は章跨ぎで残るが
+                // map_view が現 scenario の location だけに絞るので前章のノードは出ない)。
+                view.map = map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root);
                 // キャンペーンは続くので入力を締めない (終端は advance=None で締まる)。
                 view.goal_reached = false;
             }
@@ -2134,6 +2267,68 @@ mod tests {
         assert_eq!(narration_snippet("一行目\\n二行目"), "一行目 二行目", "literal \\n は空白へ");
         assert_eq!(narration_snippet("一行目\n二行目"), "一行目 二行目", "実改行も空白へ");
         assert_eq!(narration_snippet("短い"), "短い", "短文はそのまま (… なし)");
+    }
+
+    /// 【マップ PoC (2026-07-16, spec 15)】可視範囲=霧: 訪問済み (a,b) とその1歩先 (c) だけ
+    /// 出し、その先 (d) は霧で出さない。辺は visited ノードから出るものだけ (c→d は描かない)。
+    #[test]
+    fn map_view_shows_visited_and_one_hop_frontier_hiding_the_rest() {
+        let sc = gm_core::Scenario::from_yaml(concat!(
+            "title: t\nstart: a\n",
+            "locations:\n",
+            "  a: { description: d, items: {}, exits: [ { to: b } ] }\n",
+            "  b: { description: d, items: {}, exits: [ { to: c } ] }\n",
+            "  c: { description: d, items: {}, exits: [ { to: d } ] }\n",
+            "  d: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let mut s = sc.initial_state(1);
+        s.location = "a".into();
+        // 過去に b を通った記録 (現在地は a に戻っている)。
+        let history =
+            vec![harness::TurnLog { turn: 1, location: "b".into(), ..Default::default() }];
+        let m = super::map_view(&sc, &s, &history, Path::new("."));
+
+        let ids: std::collections::BTreeSet<&str> =
+            m.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(ids.contains("a") && ids.contains("b"), "訪問済み a,b は出る");
+        assert!(ids.contains("c"), "1歩先 c は名前だけ出る (frontier)");
+        assert!(!ids.contains("d"), "その先 d は霧 = 出さない");
+
+        let a = m.nodes.iter().find(|n| n.id == "a").unwrap();
+        assert!(a.current && a.visited, "a は現在地かつ訪問済み");
+        let c = m.nodes.iter().find(|n| n.id == "c").unwrap();
+        assert!(!c.visited && !c.current, "c は未踏 (frontier)");
+        assert!(
+            c.title.is_empty() && c.description.is_empty(),
+            "frontier は名前・説明を伏せる (「？」表示 = ネタバレ回避)"
+        );
+        assert!(!a.title.is_empty() && a.description == "d", "訪問済みは名前と説明を持つ");
+
+        // 辺は visited (a,b) から出るものだけ。c→d は描かない (c は frontier)。
+        assert!(m.edges.iter().any(|e| e.from == "a" && e.to == "b"));
+        assert!(m.edges.iter().any(|e| e.from == "b" && e.to == "c"));
+        assert!(!m.edges.iter().any(|e| e.from == "c"), "frontier からの辺は描かない");
+    }
+
+    /// 【マップ PoC】gate 未達の出口は locked (🔒)、現在地は current。
+    #[test]
+    fn map_view_marks_locked_exits_and_current() {
+        let sc = gm_core::Scenario::from_yaml(concat!(
+            "title: t\nstart: a\n",
+            "locations:\n",
+            "  a: { description: d, items: {}, exits: [ { to: b, gate: { kind: flag_is, key: open, value: true } } ] }\n",
+            "  b: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let s = sc.initial_state(1); // 現在地 a、flag open は未設定 (=false)。
+        let m = super::map_view(&sc, &s, &[], Path::new("."));
+
+        let e = m.edges.iter().find(|e| e.from == "a" && e.to == "b").expect("a→b がある");
+        assert!(e.locked, "gate (flag open=true) 未達なので locked (🔒)");
+        assert!(m.nodes.iter().find(|n| n.id == "a").unwrap().current, "a が現在地");
     }
 
     /// 【`..` 畳み】asset protocol が拒否する `..` をパスから除去する (403 の原因対策)。
