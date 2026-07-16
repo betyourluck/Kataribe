@@ -259,7 +259,9 @@ impl TurnOutcome {
 /// `history` は経緯ログ (chronicle)。過去ターンの 1 行要約列を「これまでの経緯」として
 /// 注入し、GM が数ターン前の経過を保持する (recent_narration の中期記憶版)。
 /// `synopsis` はあらすじ (spec 10)。圧縮済みの章 segment 列を「これまでのあらすじ」として
-/// 経緯の前に注入し、chronicle の予算からあふれた古い物語の連続性を保持する (長期記憶)。
+/// 注入し、chronicle の予算からあふれた古い物語の連続性を保持する (長期記憶)。spec 14 で
+/// 可変 user から**独立した 2 本目の leading system** へ分離 (append-only = 章追加の間
+/// byte 安定 → 第二のキャッシュ段。提示位置は「history の前」から「state の前」へ)。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn<P: DeltaProposer>(
     proposer: &P,
@@ -280,31 +282,39 @@ pub async fn run_turn<P: DeltaProposer>(
     let mut messages = vec![
         // dev モード (KATARIBE_DEV_MODE) なら DEV_META を先頭に足す (env 直読み、signature 不変)。
         ChatMessage::system(prompt::gm_system_prompt(scenario, prompt::dev_mode_enabled())),
-        ChatMessage::user(format!(
-            "{}{}{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
-            prompt::state_brief(state, scenario),
-            // #49: 直前ターンで移動していたら、置いていかれた NPC を固有名で否定接地する
-            // (GM 自身の移動語りの「同行の素振り」が recent_narration/chronicle 経由で
-            // presence を汚染するのへの対抗。一般規律は具体の語りに負ける)。
-            prompt::moved_note(scenario, state, history),
-            // spec 10: 圧縮済みの章あらすじ (長期の物語記憶)。経緯より古い時間を覆うので前に置く。
-            prompt::synopsis_note(synopsis),
-            // spec 08-A: 現在の文脈 (行動文 + 現在地 + presence) をクエリに、直近は無条件・
-            // それより古い経緯は関連するものだけ想起する二層注入。
-            prompt::history_note(
-                history,
-                &prompt::HistoryQuery {
-                    action: player_action,
-                    location: &state.location,
-                    present: scenario.present_at(state).into_iter().collect(),
-                }
-            ),
-            prompt::check_outcome_note(recent_checks),
-            prompt::recalled_lore_note(recalled_lore),
-            prompt::recent_narration_note(recent_narration),
-            player_action
-        )),
     ];
+    // spec 14 Phase B: append-only あらすじ (spec 10) は可変 user に混ぜず、独立した
+    // **2 本目の leading system** として出す — user は state_brief が毎ターン変わるので
+    // byte 0 から可変 = 中に置くとキャッシュに乗らない。分離すれば章追加の間は
+    // `[system(静的), system(synopsis)]` が byte 安定 = 第二のキャッシュ段
+    // (Anthropic 多段 breakpoint / OpenAI・Grok 自動延伸 / Gemini は inline 降格 = D4)。
+    // 空なら出さない (breakpoint を無駄に使わない)。
+    let synopsis_block = prompt::synopsis_note(synopsis);
+    if !synopsis_block.is_empty() {
+        messages.push(ChatMessage::system(synopsis_block.trim_start().to_string()));
+    }
+    messages.push(ChatMessage::user(format!(
+        "{}{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
+        prompt::state_brief(state, scenario),
+        // #49: 直前ターンで移動していたら、置いていかれた NPC を固有名で否定接地する
+        // (GM 自身の移動語りの「同行の素振り」が recent_narration/chronicle 経由で
+        // presence を汚染するのへの対抗。一般規律は具体の語りに負ける)。
+        prompt::moved_note(scenario, state, history),
+        // spec 08-A: 現在の文脈 (行動文 + 現在地 + presence) をクエリに、直近は無条件・
+        // それより古い経緯は関連するものだけ想起する二層注入。
+        prompt::history_note(
+            history,
+            &prompt::HistoryQuery {
+                action: player_action,
+                location: &state.location,
+                present: scenario.present_at(state).into_iter().collect(),
+            }
+        ),
+        prompt::check_outcome_note(recent_checks),
+        prompt::recalled_lore_note(recalled_lore),
+        prompt::recent_narration_note(recent_narration),
+        player_action
+    )));
 
     let mut last_reasons = Vec::new();
     // 受理前に却下された各試行の理由 (試行順)。受理時に提示層へ渡し「なぜ N 回かかったか」を見せる。

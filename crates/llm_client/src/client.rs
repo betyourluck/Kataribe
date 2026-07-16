@@ -22,6 +22,12 @@ use crate::wire::{ChatMessage, ChatRequest, ChatResponse};
 /// 読まれた (入力コスト減)。GUI が**連続 miss** を検知して「キャッシュ経路が壊れているかも」を
 /// 警告する材料になる — #44 (Anthropic 互換層は caching 非対応) / #45 (xAI は sticky ヘッダ必須)
 /// の「キャッシュの静かな漏出は usage が一次ソース」を GUI へ引き上げる。
+///
+/// spec 14 Phase C: hit rate 曲線の観測を追加。**定義は D5 で凍結** —
+/// `cached = cache_read` (読取 0.1× のみ。書込 1.25× の cache_creation は「hit」に含めない =
+/// 章追加ターンの再 warm を誤計上しない) / `prompt = input_tokens` (総入力)。
+/// per-request 履歴は**有界** ([`Self::RECENT_CAP`] のリングバッファ) — 長セッションで
+/// 常駐メモリを伸ばさない。ドル建てコストは出さない (provider 価格は変動・stale 化)。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct CacheStat {
     /// 直近リクエストの cache read トークン (0 = miss)。
@@ -30,17 +36,41 @@ pub struct CacheStat {
     pub consecutive_misses: u32,
     /// 累計リクエスト数。初回は書き込みゆえ miss が正常なので、判定は 2 回目以降を見る。
     pub total_requests: u32,
+    /// 累積キャッシュ読取トークン (spec 14)。セッション累積 hit rate の分子。
+    pub hit_tokens: u64,
+    /// 累積入力トークン (spec 14)。分母 — `hit_tokens / total_tokens` = セッションのキャッシュ率。
+    pub total_tokens: u64,
+    /// 直近 [`Self::RECENT_CAP`] 件の per-request 記録 (spec 14)。hit rate 曲線の可視化用。
+    pub recent: Vec<CachePoint>,
+}
+
+/// 1 リクエスト分のキャッシュ計測点 (spec 14)。`cached / prompt` = そのリクエストの hit rate。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct CachePoint {
+    /// cache read トークン (D5: cache_creation は含めない)。
+    pub cached: u64,
+    /// 総入力トークン。
+    pub prompt: u64,
 }
 
 impl CacheStat {
-    /// 1 リクエスト分の cache read を記録する (純粋・テスト可)。
-    pub(crate) fn record(&mut self, cache_read: u64) {
+    /// リングバッファの上限。曲線の可視化に足りる小ささ (無制限履歴は持たない — rev2 W4)。
+    pub const RECENT_CAP: usize = 32;
+
+    /// 1 リクエスト分の cache read / 総入力を記録する (純粋・テスト可)。
+    pub(crate) fn record(&mut self, cache_read: u64, prompt: u64) {
         self.total_requests = self.total_requests.saturating_add(1);
         self.last_cache_read = cache_read;
         if cache_read > 0 {
             self.consecutive_misses = 0;
         } else {
             self.consecutive_misses = self.consecutive_misses.saturating_add(1);
+        }
+        self.hit_tokens = self.hit_tokens.saturating_add(cache_read);
+        self.total_tokens = self.total_tokens.saturating_add(prompt);
+        self.recent.push(CachePoint { cached: cache_read, prompt });
+        if self.recent.len() > Self::RECENT_CAP {
+            self.recent.remove(0);
         }
     }
 }
@@ -94,10 +124,35 @@ impl LlmClient {
         self.cache_stat.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
-    /// 1 リクエスト分の cache read を計測に記録する (両経路の chat_once / messages_once から呼ぶ)。
-    fn record_cache(&self, cache_read: u64) {
+    /// 1 リクエスト分の cache read / 総入力を計測に記録する ([`Self::complete`] が canonical
+    /// usage から一元で呼ぶ)。`LLM_CACHE_DEBUG=1` なら**機械可読の 1 行** (spec 14 Phase C:
+    /// req 連番 + unix 秒 + input + cache_read + per-req ratio + 累積 ratio) を stderr へ —
+    /// 長セッションの hit rate 曲線をログから grep で再構成できる (provider 別の生 usage 行と併存)。
+    /// `t=` (unix 秒) は Phase D の仮説弁別用: 自動キャッシュの miss が**リクエスト間隔**
+    /// (TTL/eviction) と相関するか、間隔非依存 (ルーティング分散) かを人間ペースのプレイで切り分ける
+    /// (Grok 実測 2026-07-16: 間隔非依存で TTL 説棄却 = 分散/eviction、failures #57)。
+    /// `conv=` は client の系列弁別用: summary 用 client (spec 10) が同じ stderr に
+    /// **req 連番を 1 から別カウント**して混ざるため、grep 集計はこのキーで系列を分ける。
+    fn record_cache(&self, cache_read: u64, prompt: u64) {
         if let Ok(mut g) = self.cache_stat.lock() {
-            g.record(cache_read);
+            g.record(cache_read, prompt);
+            if std::env::var("LLM_CACHE_DEBUG").is_ok() {
+                let ratio = |c: u64, p: u64| if p > 0 { c as f64 / p as f64 } else { 0.0 };
+                let t = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                eprintln!(
+                    "[LLM_CACHE_STAT] conv={} req={} t={} input={} cache_read={} ratio={:.3} cum_ratio={:.3}",
+                    self.conv_id,
+                    g.total_requests,
+                    t,
+                    prompt,
+                    cache_read,
+                    ratio(cache_read, prompt),
+                    ratio(g.hit_tokens, g.total_tokens),
+                );
+            }
         }
     }
 
@@ -177,7 +232,7 @@ impl LlmClient {
             // cachedContent に pin し、暗黙キャッシュの ~8000 崖 (failures #54) を迂回する。
             Provider::Gemini => self.gemini_complete(req).await?,
         };
-        self.record_cache(resp.usage.cache_read);
+        self.record_cache(resp.usage.cache_read, resp.usage.prompt);
         Ok(resp)
     }
 

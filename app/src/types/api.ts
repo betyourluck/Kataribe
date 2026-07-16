@@ -200,6 +200,12 @@ export interface CacheStatView {
   consecutive_misses: number;
   /** 累計リクエスト数。初回は書き込みゆえ miss が正常なので判定は 2 回目以降を見る。 */
   total_requests: number;
+  /** 累積キャッシュ読取トークン (spec 14)。セッション累積 hit rate = hit_tokens / total_tokens。 */
+  hit_tokens: number;
+  /** 累積入力トークン (spec 14)。 */
+  total_tokens: number;
+  /** 直近 N 件の per-request 計測点 (spec 14、有界リングバッファ。曲線メーターは Phase E)。 */
+  recent: { cached: number; prompt: number }[];
 }
 
 export interface TurnView {

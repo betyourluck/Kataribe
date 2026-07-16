@@ -92,8 +92,9 @@ pub(crate) struct GenerationConfig {
 
 /// canonical → Gemini ネイティブリクエスト (encode 純関数)。
 ///
-/// - 先頭の連続 system → `systemInstruction` (パート毎に保持)。
-/// - 先頭以外の system (万一混じった場合) → user に降格 (anthropic encode と同じ流儀)。
+/// - **1 本目**の leading system → `systemInstruction` (spec 14 D4 — 静的プレフィックスのみ)。
+/// - 2 本目以降の leading system (append-only synopsis) と先頭以外の system → user に降格
+///   (inline contents = 非キャッシュ。cachedContent の再 pin churn を避ける)。
 /// - assistant → role "model"。
 /// - `effort` は送らない (Gemini の thinkingConfig 方言は未実装 — 対象は Claude/Grok のみ)。
 /// - no-tools モード (`use_tools=false`) は Gemini では無視 (functionCallingConfig を
@@ -115,7 +116,11 @@ pub(crate) fn encode_with_cache(
     let mut contents: Vec<Content> = Vec::new();
     for m in &req.messages {
         match m.role {
-            Role::System if contents.is_empty() => {
+            // spec 14 D4: 静的 (systemInstruction = cachedContent の対象) は **1 本目**の
+            // leading system だけ。2 本目以降 (append-only synopsis) は下の腕へ落ちて
+            // inline contents (user) になる — pin すると章追加毎に fingerprint が変わり
+            // cachedContent を再作成する storage churn になるため、キャッシュ対象にしない。
+            Role::System if contents.is_empty() && system_parts.is_empty() => {
                 system_parts.push(Part { text: m.content.clone() })
             }
             Role::System | Role::Tool | Role::User => contents.push(Content {
@@ -199,14 +204,13 @@ fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
 #[allow(dead_code)]
 pub(crate) fn fingerprint(req: &canonical::ChatRequest) -> u64 {
     let mut h = fnv1a(0xcbf2_9ce4_8422_2325, req.model.as_bytes());
-    // 先頭の連続 system 群 (= systemInstruction になる部分) だけが静的プレフィックス。
-    for m in &req.messages {
-        match m.role {
-            Role::System => {
-                h = fnv1a(h, b"\x00sys\x00");
-                h = fnv1a(h, m.content.as_bytes());
-            }
-            _ => break,
+    // **1 本目**の leading system (= systemInstruction になる部分) だけが静的プレフィックス
+    // (spec 14 D4)。2 本目以降 (synopsis) を含めると章追加毎に別 key → cachedContent の
+    // 再 pin churn になるため除外する。
+    if let Some(m) = req.messages.first() {
+        if m.role == Role::System {
+            h = fnv1a(h, b"\x00sys\x00");
+            h = fnv1a(h, m.content.as_bytes());
         }
     }
     for t in &req.tools {
@@ -259,15 +263,15 @@ pub(crate) fn decide_cache_action(
     }
 }
 
-/// 静的プレフィックス (先頭 system + tools) の文字数 = サイズゲートの近似トークン量。
-/// 可変 user は含めない。明示キャッシュの最小トークン閾値に対する**安いゲート** — 正確さは
+/// 静的プレフィックス (**1 本目**の leading system + tools、spec 14 D4) の文字数 =
+/// サイズゲートの近似トークン量。可変 user も 2 本目以降の system (synopsis) も含めない。
+/// 明示キャッシュの最小トークン閾値に対する**安いゲート** — 正確さは
 /// create 失敗の fallback が守るので char 近似で足りる。
 pub(crate) fn static_prefix_chars(req: &canonical::ChatRequest) -> usize {
     let mut n = 0;
-    for m in &req.messages {
-        match m.role {
-            Role::System => n += m.content.chars().count(),
-            _ => break,
+    if let Some(m) = req.messages.first() {
+        if m.role == Role::System {
+            n += m.content.chars().count();
         }
     }
     for t in &req.tools {

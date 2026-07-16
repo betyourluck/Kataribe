@@ -1,6 +1,13 @@
 # 14. 入力キャッシュの最大化 — append-only あらすじの多段キャッシュ + キャッシュ実効の観測
 
-Status: **Draft rev2（2026-07-16 起草 → 同日 rev1 査読反映、未着手）。**
+Status: **Phase A〜C 実装済（2026-07-16、Draft rev2 のまま実装 — Phase D live 実測と Phase E 任意メーターが残）。**
+実装: Phase A = Anthropic 多段 breakpoint（leading system 毎・cap 4）+ Gemini synopsis 除外
+（encode/fingerprint/サイズゲートとも 1 本目のみ、PoC `anthropic_places_breakpoint_per_leading_system_capped_at_four` /
+`gemini_excludes_second_leading_system_from_cache`）→ Phase B = turn.rs が synopsis を独立した
+2 本目の leading system へ分離（空なら出さない、PoC `synopsis_becomes_second_leading_system_for_cache`）→
+Phase C = `CacheStat` に累積 hit_tokens/total_tokens + 直近 32 件リングバッファ（有界）、
+`[LLM_CACHE_STAT]` 機械可読行（PoC 計数則/有界/零値）。A→B の順序凍結どおりに実装。
+契約は data_contract `input_cache_maximization` 節。
 rev2 反映: #1 D4 に Gemini adapter の synopsis 除外を明記 + Phase A 受入条件へ / #2 実装に A→B 依存を凍結 /
 W5 D5 に hit rate 定義（cached=cache_read, prompt=input_tokens）/ W4 CacheStat の有界化 / W2 D2 に user 側
 breakpoint の拡張余地 / W3 D3 を章追加 dip に整合 / W1 未決2 に位置変化の検証追加 / #3 未決5 を「本 spec
@@ -152,16 +159,16 @@ system を出す）を A より先に出すと、Anthropic は旧実装で最後
 （現状より悪化）。かつ Gemini は synopsis を pin してしまう（D4 違反）。よって A で全プロバイダの分岐を
 確定させてから B へ。
 
-- **Phase A — Anthropic 多段 breakpoint + Gemini synopsis 除外（純粋 encode 改修）**: Anthropic =「最後の
+- ✅ **Phase A — Anthropic 多段 breakpoint + Gemini synopsis 除外（純粋 encode 改修）**: Anthropic =「最後の
   1 ブロック」→「先頭から連続する leading system 毎に cache_control（cap 4）」。**Gemini = 2 本目の leading
   system を cachedContent から除外し inline 化、fingerprint は 1 本目のみ（受入条件、#1）**。PoC: Anthropic
   2 leading system → 2 cache_control / 1 本 → 1 個（既存回帰）/ 5 本 → 先頭 4 個 ; Gemini 2 leading system →
   cachedContent は 1 本目のみ・2 本目は inline contents。canonical は無改修。
-- **Phase B — synopsis を別 leading message へ（turn.rs）。A 完了が前提**: 空 synopsis は 2 本目を出さない。
+- ✅ **Phase B — synopsis を別 leading message へ（turn.rs）。A 完了が前提**: 空 synopsis は 2 本目を出さない。
   既存 `synopsis_is_woven_into_prompt_before_history` / `empty_synopsis_means_no_synopsis_block` の
   position 変化を追従（synopsis が user 内から system へ移る = 提示位置が history の前から state の前へ）。
   PoC: synopsis 有 → system 2 枚 + user から synopsis 節が消える / 無 → system 1 枚。
-- **Phase C — 観測（`CacheStat` 拡張 + 実測経路）**: per-turn ratio 記録 + デバッグ行の機械可読化。
+- ✅ **Phase C — 観測（`CacheStat` 拡張 + 実測経路）**: per-turn ratio 記録 + デバッグ行の機械可読化。
   PoC: 計数則（両経路の cached/prompt を拾う）/ 零値スナップショット。
 - **Phase D — live 実測（実キー 4 プロバイダ・長セッション）= ②の acceptance かつ①の実体**:
   30 ターン級の通しプレイで **hit rate 曲線が平ら**（章追加ターンだけ dip して次ターン回復）を確認。
@@ -169,6 +176,84 @@ system を出す）を A より先に出すと、Anthropic は旧実装で最後
   cache_read>0、OpenAI/Grok は自動延伸を usage で確認、Gemini は静的のみ（D4）。
 - **Phase E — app キャッシュ率メーター（任意）**: セッションの cached/prompt をヘッダ等に surface
   （#44 の健全性警告の基盤を流用）。コスト可視化の布石。
+
+### Phase D 先行観測 — Grok・GUI 人間ペース 12 リクエスト（2026-07-16、ユーザー実測）
+
+`cached` が **128 / 6144 の二値**で 2〜3 連の塊で交替（6 hit / 6 miss、累積 hit rate 42.7%、
+prompt は 6395→8169 に単調成長）。読み:
+
+- **6144 = 静的プレフィックス全体**（128 トークンブロック × 48。prompt が 7312→8169 と伸びても
+  6144 で一定 = キャッシュされているのは静的 system+tools だけで、可変 user は乗っていない —
+  本 spec の動機②の実測そのもの）。**128 = miss のフロア**（最小ブロック 1 個）。
+  つまり「128 頭打ち」は上限でなく **miss の表示値**だった。
+- spec 12 Phase E の「turn3 から ~88% 安定」は**台本駆動の高速ループ**（リクエスト間隔が秒オーダー）
+  での観測。人間ペース（間隔が分オーダー）では 50% 前後に落ちる — **有力仮説は TTL/eviction**
+  （自動キャッシュの保持が数分で、プレイヤーの思考・入力時間が閾値を跨ぐと miss）。
+  対立仮説は sticky routing の best-effort 分散（x-grok-conv-id 送出済みでも LB が複数バックエンドに
+  流し、温まっていない個体に当たる）。
+- **弁別装置**: `[LLM_CACHE_STAT]` に `t=`（unix 秒）を追加済み。miss が長い間隔の直後に集中すれば
+  TTL 説、間隔非依存なら分散説。次の Grok プレイは本ビルド + `LLM_CACHE_DEBUG=1` で計測する。
+- **本 spec への含意**: Grok の実効 hit rate は入力間隔依存 = サーバ側 TTL は我々のレバーでない。
+  Anthropic は cache_control の TTL 5 分が**読取で更新**されるので人間ペースに強い（対照実験候補）。
+
+### 第二測定 — `t=` 付き 40 リクエスト（2026-07-16 同日、Grok・GUI 人間ペース・~39 ターン + エピローグ）
+
+**結論 2 つ（failures.md #57 に凍結）**:
+
+1. **TTL 説は棄却**: miss の直前間隔 29〜68 秒 / hit の直前間隔 25〜118 秒（平均 59 秒）—
+   miss は間隔と無相関。残る説明は LB の best-effort 分散（sticky ヘッダでも時々コールド個体）
+   ないし確率的 eviction。定常 miss 率 ~11%（4/35）、warm-up 3 リクエスト + 部分ヒット 4096 が 1、
+   セッション累積 hit rate **60.6%**（人間ペース Grok の上限見積もりに使う）。
+2. **本 spec の Grok live Green（D1+D3 実証）**: 章圧縮のたび `cached` が **6144→6400→6656 と
+   +256/章 の階段**で成長 = synopsis（2 本目 leading system）が自動プレフィックスキャッシュに乗った。
+   章追加直後は旧プレフィックス分（6144/6400）だけヒット → 1〜2 リクエストで新全量に回復 —
+   **D3 が予測した dip の形そのもの**。圧縮後は prompt 自体も 9024→8436 へ縮む（spec 10 の注入経済）。
+
+副次観測: ①summary 用 client（spec 10）の `[LLM_CACHE_STAT]` が **req 連番を 1 から別カウント**して
+同じ stderr に混ざる（cached=0・input ~1200 の行）→ 行に `conv=` を追加して系列を弁別可能にした。
+②エピローグ（spec 11、GM client の最終 req）は messages 形状が別物なので miss=128 が正常。
+③GUI キャッシュ警告（連続 miss>=3）が Grok の warm-up 3 連 miss で開幕に発火しうる — 閾値 3→5 か
+「一度でも hit した後だけ武装」への再調整候補（未実施）。
+
+### 第三測定 — Anthropic 対照・53 リクエスト（2026-07-16 同日、GUI 人間ペース・~50 ターン + エピローグ）
+
+**多段 breakpoint live Green + D5 定義の実測補正（failures.md #58）**:
+
+1. **決定論の対照が成立**: 通常ターン 51 のうち **miss ゼロ**（Grok の確率的 ~11% と対照）。
+   260 秒間隔でもヒット = TTL 5 分が読取で更新される決定論挙動の実証。
+2. **多段 breakpoint の階段**: 章圧縮のたび cache_read が **8978→9359→9650→9978**（synopsis
+   第二段が読まれている）。章追加ターンは静的分 8978 のみ読み + **synopsis ブロック全体を再書込**
+   （write=381/672/1000）— Anthropic は breakpoint 単位の exact 一致なので、Grok（ブロック粒度の
+   byte-prefix、延伸差分だけ miss）と違い章追加毎に synopsis 全体が 1.25× 書込になる。ただし
+   synopsis は予算 2000 字で有界 → コストは無視できる（この差は仕様として記録、対処不要）。
+3. **D5 の定義補正**: Anthropic native の `input_tokens` は**非キャッシュ分のみ**（総入力 =
+   input + cache_read + cache_creation）→ 素通しだと ratio が 1 を超える（実測 6.88）。
+   anthropic::decode で canonical `prompt` を総入力へ正規化（OpenAI/Gemini は元々総入力 = 無改修）。
+   **凍結する分母 = 総入力**。正規化後の累積 hit rate **71.0%**（Grok 60.6% との差 = 決定論 vs
+   確率分散 + 静的プレフィックスの相対サイズ）。
+4. エピローグ（最終 req）は read=0/write=0 — 別形状 + 静的 prefix が最小キャッシュ（4096 tokens）
+   未満で cache_control 黙殺。正常。
+
+### 第四測定 — Gemini 対照・25 リクエスト（2026-07-16〜17、GUI 人間ペース・73 分の中断込み）
+
+**D4（synopsis 除外）live Green + TTL 方言の発見（failures.md #59）**:
+
+1. **D4 の実証**: 章圧縮（summary client の req=1）の後も `cached=5630`（静的 pin）のまま・
+   **再 pin なし**（「cachedContent 作成」ログが出ない = fingerprint が 1 本目のみから計算されて
+   いる Phase A 修正が効いた）。synopsis は inline contents で prompt に +214 乗る。章追加の
+   storage churn ゼロ — 設計どおり。
+2. **TTL は作成時刻から固定（読取で更新されない）**: 検算で cache age ~900s ちょうどに失効境界
+   （req18 age~900s ヒット / req19 age~953s 失効、直前リクエストから 56 秒しか空いていない）。
+   Anthropic（読取更新）と真逆 → 連続プレイでも **~15 分周期で失効→fallback→再 pin** が入る。
+   fallback は設計どおりターンを落とさず、失効ターンは暗黙キャッシュが静的の ~72%（4074/5630）を
+   拾う。73 分中断後の失効も同経路で透過回復。
+3. 累積 hit rate **72.6%**（失効 2 回込み）— Anthropic 71.0% / Grok 60.6% と並ぶ。
+   Gemini の promptTokenCount は総入力（cached を含む）なので #58 の正規化問題は無し。
+4. 改善候補（未実施・優先度低）: `CacheHandle.created_at` + age >= ttl−margin で**先回り再 pin**
+   （失効 403 のラウンドトリップ節約）。または PATCH で ttl 延長。
+
+**Phase D の残り**: OpenAI 互換の対照測定（自動延伸の確認、任意）と、synopsis の system role 化の
+behavior 検証（未決 2 — 実測 3 本 ~140 ターンで GM の語りの破綻報告は無し、明示検証は残）。
 
 ## 北極星との整合
 

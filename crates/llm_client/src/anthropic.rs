@@ -29,8 +29,9 @@ pub(crate) struct MessagesRequest {
     /// 明示設定時のみ送る (claude-opus-4-8 等は temperature 非対応で 400)。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    /// 先頭 system 群。**末尾ブロックに cache_control** = tools→system の安定プレフィックス
-    /// 全体をキャッシュする breakpoint (最大 4 個中 1 個だけ使う)。
+    /// 先頭 system 群。**leading system メッセージ毎に cache_control** (spec 14 Phase A、
+    /// API 上限の 4 個まで) = 安定プレフィックスの多段 breakpoint。1 本 (静的のみ) は従来と
+    /// 同数、2 本 (静的 + append-only synopsis) で二段キャッシュになる。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system: Vec<SystemBlock>,
     pub messages: Vec<TurnMessage>,
@@ -104,7 +105,7 @@ pub(crate) struct ToolChoice {
 
 /// canonical → ネイティブ Messages リクエスト (spec 12 Phase A/B の encode 純関数)。
 ///
-/// - 先頭の連続 system → `system` ブロック配列 (末尾に cache_control)。
+/// - 先頭の連続 system → `system` ブロック配列 (各ブロックに cache_control、先頭から 4 個まで)。
 /// - 先頭以外の system (万一混じった場合) → user に降格 (ネイティブは先頭 system のみ)。
 /// - tools があれば ToolDef + `{type: tool, name}` で強制 (ネイティブは tool_choice を確実に
 ///   尊重するので use_tools は関係ない = 常に tool-use)。
@@ -130,10 +131,12 @@ pub(crate) fn encode(req: &canonical::ChatRequest) -> MessagesRequest {
             }),
         }
     }
-    // 安定プレフィックスの末尾に breakpoint。可変な turns 側には置かない
-    // (毎ターン別内容 → 読まれないキャッシュ書込 1.25× の無駄になるだけ)。
-    if let Some(last) = system.last_mut() {
-        last.cache_control = Some(CacheControl::ephemeral());
+    // 安定プレフィックスの多段 breakpoint (spec 14 Phase A): leading system メッセージ毎に
+    // 1 個、先頭から API 上限の 4 個まで。2 本目 (append-only synopsis) が章追加で失効しても
+    // 1 本目 (静的) の breakpoint は生き残る = 大半のターンで synopsis までキャッシュが読まれる。
+    // 可変な turns 側には置かない (毎ターン別内容 → 読まれないキャッシュ書込 1.25× の無駄)。
+    for block in system.iter_mut().take(4) {
+        block.cache_control = Some(CacheControl::ephemeral());
     }
 
     let (tools, tool_choice) = match req.tools.first() {
@@ -228,7 +231,11 @@ pub(crate) fn decode(resp: MessagesResponse) -> canonical::ChatResponse {
         .usage
         .as_ref()
         .map(|u| canonical::Usage {
-            prompt: u.input_tokens,
+            // Anthropic native の input_tokens は**非キャッシュ分のみ** (総入力 = input +
+            // cache_read + cache_creation)。OpenAI prompt_tokens / Gemini promptTokenCount は
+            // 総入力なので、canonical の prompt は「総入力」へ正規化してプロバイダ間で比較可能に
+            // する (spec 14 D5 の分母。実測 ratio=6.88 で発覚、failures #58)。
+            prompt: u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens,
             completion: u.output_tokens,
             cache_read: u.cache_read_input_tokens,
         })

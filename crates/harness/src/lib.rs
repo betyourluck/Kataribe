@@ -93,6 +93,10 @@ mod tests {
             let seen = self.seen.lock().unwrap();
             seen[n - 1].iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("\n")
         }
+        /// n 回目 (1-origin) の propose に渡された messages そのもの (role 検証用、spec 14)。
+        fn seen_messages(&self, n: usize) -> Vec<ChatMessage> {
+            self.seen.lock().unwrap()[n - 1].clone()
+        }
     }
     impl DeltaProposer for ScriptedProposer {
         async fn propose(&self, messages: &[ChatMessage]) -> Result<StateDelta, HarnessError> {
@@ -378,7 +382,8 @@ mod tests {
         assert!(syn_pos < his_pos, "あらすじは経緯より前 (時系列順) に注入される");
     }
 
-    /// 【spec 10】あらすじ無しならあらすじブロックを注入しない。
+    /// 【spec 10】あらすじ無しならあらすじブロックを注入しない
+    /// (spec 14: 2 本目の leading system も出さない = breakpoint を無駄に使わない)。
     #[tokio::test]
     async fn empty_synopsis_means_no_synopsis_block() {
         let sc = scenario();
@@ -389,6 +394,50 @@ mod tests {
         }])]);
         run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("# これまでのあらすじ"), "あらすじ無しなら注入しない");
+        let system_count = p
+            .seen_messages(1)
+            .iter()
+            .filter(|m| m.role == llm_client::Role::System)
+            .count();
+        assert_eq!(system_count, 1, "あらすじ無しなら leading system は静的 1 本だけ");
+    }
+
+    /// 【spec 14 Phase B】append-only あらすじは可変 user に混ぜず、**独立した 2 本目の
+    /// leading system** として出す — user メッセージは state_brief が毎ターン変わるので
+    /// byte 0 から可変 = synopsis を中に置くとキャッシュに乗らない。分離すれば章追加の間は
+    /// `[system(静的), system(synopsis)]` が byte 安定 = 第二のキャッシュ段になる
+    /// (Anthropic は多段 breakpoint、OpenAI/Grok は自動延伸、Gemini は inline 降格 = D4)。
+    #[tokio::test]
+    async fn synopsis_becomes_second_leading_system_for_cache() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = ScriptedProposer::new(vec![delta(vec![StateOp::SetFlag {
+            key: "drawer_opened".into(),
+            value: true,
+        }])]);
+        let synopsis = vec![SynopsisEntry {
+            upto_turn: 15,
+            title: "村の章".into(),
+            text: "旅人は村に着き、長老から祠の封印の話を聞いた。".into(),
+        }];
+        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &[], &synopsis)
+            .await
+            .unwrap();
+
+        let msgs = p.seen_messages(1);
+        assert!(msgs.len() >= 3, "静的 system + synopsis system + user: {}", msgs.len());
+        assert_eq!(msgs[0].role, llm_client::Role::System, "1 本目 = 静的プレフィックス");
+        assert_eq!(msgs[1].role, llm_client::Role::System, "2 本目 = synopsis (独立 leading system)");
+        assert!(
+            msgs[1].content.contains("# これまでのあらすじ") && msgs[1].content.contains("村の章"),
+            "synopsis 本文は 2 本目に載る: {}",
+            msgs[1].content
+        );
+        assert_eq!(msgs[2].role, llm_client::Role::User, "3 本目 = 可変 user");
+        assert!(
+            !msgs[2].content.contains("# これまでのあらすじ"),
+            "user 側から synopsis 節が消える (可変部に混ぜない)"
+        );
     }
 
     /// 経緯が無い初回ターンは経緯ブロックを注入しない (ノイズを足さない)。

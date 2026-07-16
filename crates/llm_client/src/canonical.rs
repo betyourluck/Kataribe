@@ -54,11 +54,11 @@ pub(crate) enum Finish {
     Other,
 }
 
-/// プロバイダ中立の usage。`cache_read` は CacheStat (GUI キャッシュ健全性警告 #44/#45) の
-/// 一次ソースで、adapter が各 wire の該当フィールドから正規化する。
+/// プロバイダ中立の usage。`cache_read` / `prompt` は CacheStat (GUI キャッシュ健全性警告
+/// #44/#45 + spec 14 の hit rate 曲線) の一次ソースで、adapter が各 wire の該当フィールド
+/// から正規化する。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Usage {
-    #[allow(dead_code)]
     pub prompt: u64,
     #[allow(dead_code)]
     pub completion: u64,

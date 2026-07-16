@@ -22,7 +22,7 @@ mod openai_compat;
 mod parse;
 mod wire;
 
-pub use client::{CacheStat, LlmClient};
+pub use client::{CachePoint, CacheStat, LlmClient};
 pub use config::{Effort, LlmConfig, Provider};
 pub use error::LlmError;
 pub use parse::strip_reasoning_blocks;
@@ -618,6 +618,44 @@ mod tests {
         assert!(body.get("output_config").is_none());
     }
 
+    /// 【spec 14 Phase A】Anthropic 多段 breakpoint: 先頭から連続する leading system
+    /// **メッセージ毎**に cache_control を置く (API 上限の 4 個まで、先頭から)。
+    /// 1 本 (静的のみ) は従来と同数 = 回帰なし。2 本 (静的 + synopsis) で二段キャッシュ —
+    /// 章追加ターンは第二段だけ失効し、第一段 (静的) は生き残る。
+    #[test]
+    fn anthropic_places_breakpoint_per_leading_system_capped_at_four() {
+        let mk = |n: usize| {
+            let mut msgs: Vec<ChatMessage> =
+                (0..n).map(|i| ChatMessage::system(format!("S{i}"))).collect();
+            msgs.push(ChatMessage::user("行動"));
+            canonical::ChatRequest {
+                model: "claude-opus-4-8".into(),
+                messages: msgs,
+                tools: Vec::new(),
+                tool_choice: canonical::ToolChoice::None,
+                temperature: None,
+                max_tokens: 4096,
+                effort: None,
+            }
+        };
+        let marks = |n: usize| -> Vec<bool> {
+            let body = serde_json::to_value(anthropic::encode(&mk(n))).unwrap();
+            body["system"]
+                .as_array()
+                .expect("system はブロック配列")
+                .iter()
+                .map(|b| b.get("cache_control").is_some())
+                .collect()
+        };
+        assert_eq!(marks(1), vec![true], "1 本 → 1 個 (既存挙動の回帰なし)");
+        assert_eq!(marks(2), vec![true, true], "静的 + synopsis → 2 breakpoint (二段キャッシュ)");
+        assert_eq!(
+            marks(5),
+            vec![true, true, true, true, false],
+            "cap 4: 先頭 4 個まで、5 本目には置かない"
+        );
+    }
+
     /// 【ネイティブ応答の解決】tool_use ブロックの input (JSON オブジェクト) を canonical へ
     /// **恒等写像**し (D2 — 文字列化→再パースの往復を廃止)、単一抽出経路 parse::extract →
     /// StateDelta。usage は canonical Usage に正規化される
@@ -641,6 +679,14 @@ mod tests {
 
         let canonical_resp = anthropic::decode(resp);
         assert_eq!(canonical_resp.usage.cache_read, 8021, "canonical Usage に正規化");
+        // 【spec 14 D5 / failures #58】Anthropic native の input_tokens は**非キャッシュ分のみ**
+        // (総入力 = input + cache_read + cache_creation)。canonical の prompt は「総入力」に
+        // 正規化する — さもないと hit rate (cached/prompt) が 1 を超える (実測 ratio=6.88)。
+        assert_eq!(
+            canonical_resp.usage.prompt,
+            321 + 8021,
+            "prompt = 総入力 (input_tokens + cache_read + cache_creation) に正規化"
+        );
         assert_eq!(canonical_resp.finish, canonical::Finish::ToolUse);
         assert_eq!(canonical_resp.tool_calls[0].id, "tu_1");
         assert_eq!(canonical_resp.tool_calls[0].name, "emit_delta");
@@ -1035,6 +1081,75 @@ mod tests {
         );
     }
 
+    /// 【spec 14 Phase A / D4】Gemini は **1 本目**の leading system だけを静的
+    /// (systemInstruction / cachedContent / fingerprint / サイズゲート) として扱い、
+    /// 2 本目以降 (append-only synopsis) は **inline contents (user) へ非キャッシュで**送る —
+    /// synopsis を pin すると章追加毎に fingerprint が変わり cachedContent を再作成する
+    /// storage churn になる (D1 の「synopsis を安定 message にした」意図と逆)。
+    #[test]
+    fn gemini_excludes_second_leading_system_from_cache() {
+        let mk = |synopsis: &str| canonical::ChatRequest {
+            model: "gemini-3.5-flash".into(),
+            messages: vec![
+                ChatMessage::system("あなたはGM"),
+                ChatMessage::system(synopsis),
+                ChatMessage::user("行動"),
+            ],
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort: None,
+        };
+        let req = mk("# これまでのあらすじ\n第一章: 村に着いた。");
+
+        // systemInstruction は 1 本目のみ、2 本目は contents 先頭に user として inline。
+        let body = serde_json::to_value(gemini::encode(&req)).unwrap();
+        let parts = body["systemInstruction"]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1, "静的 (1 本目) だけが systemInstruction: {parts:?}");
+        assert_eq!(parts[0]["text"], "あなたはGM");
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(contents[0]["role"], "user", "synopsis は inline contents へ降格");
+        assert!(
+            contents[0]["parts"][0]["text"].as_str().unwrap().contains("これまでのあらすじ"),
+            "synopsis 本文が inline で残る: {contents:?}"
+        );
+
+        // fingerprint / サイズゲートは synopsis 非依存 (章追加で cachedContent を再 pin しない)。
+        assert_eq!(
+            gemini::fingerprint(&req),
+            gemini::fingerprint(&mk("# これまでのあらすじ\n第一章…第二章: 祠に入った。")),
+            "synopsis の増減は fingerprint に影響しない"
+        );
+        assert_eq!(
+            gemini::static_prefix_chars(&req),
+            gemini::static_prefix_chars(&mk("倍以上に伸びた synopsis ののび太ののび太ののび太")),
+            "サイズゲートも静的 (1 本目) のみで測る"
+        );
+
+        // cachedContents create body にも synopsis は入らない。
+        let create = serde_json::to_value(gemini::build_create_request(&req, 900)).unwrap();
+        let create_parts = create["systemInstruction"]["parts"].as_array().unwrap();
+        assert_eq!(create_parts.len(), 1, "cache に pin するのは静的だけ");
+        assert_eq!(create_parts[0]["text"], "あなたはGM");
+
+        // cachedContent 参照時も synopsis は可変 contents として request に残る。
+        let cached =
+            serde_json::to_value(gemini::encode_with_cache(&req, Some("cachedContents/x".into())))
+                .unwrap();
+        assert!(
+            cached["contents"][0]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("これまでのあらすじ"),
+            "cache 参照時も synopsis は inline: {cached:?}"
+        );
+    }
+
     /// 【spec 13 Phase B】cache 判定: 無効/サイズゲート未満は Bypass、handle 無し(十分大)は Create、
     /// fingerprint 一致は Reuse、不一致(scenario 変化)は Create(作り直し)。純関数 (HTTP 非依存)。
     #[test]
@@ -1169,25 +1284,50 @@ mod tests {
     /// 【CacheStat の計数則】miss で連続 miss が伸び、1 回のヒットで 0 にリセットされる
     /// (GUI の「キャッシュ経路が壊れているかも」警告 = total>=2 かつ consecutive_misses>=3 の材料)。
     /// 初回リクエストは書き込みゆえ miss が正常 — total_requests で判定側が除外できる。
+    /// 【spec 14 Phase C】累積 hit_tokens/total_tokens (hit rate = cached/prompt、
+    /// cache_creation は cached に含めない定義 = D5) も同時に積む。
     #[test]
     fn cache_stat_counts_misses_and_resets_on_hit() {
         let mut s = CacheStat::default();
         assert_eq!((s.total_requests, s.consecutive_misses, s.last_cache_read), (0, 0, 0));
 
-        s.record(0); // 初回 = 書き込み (miss が正常)
-        s.record(0);
-        s.record(0);
+        s.record(0, 100); // 初回 = 書き込み (miss が正常)
+        s.record(0, 110);
+        s.record(0, 120);
         assert_eq!(s.total_requests, 3);
         assert_eq!(s.consecutive_misses, 3, "連続 miss が積み上がる");
         assert_eq!(s.last_cache_read, 0);
 
-        s.record(8100); // ヒットで復帰
+        s.record(8100, 9000); // ヒットで復帰
         assert_eq!(s.consecutive_misses, 0, "1 回のヒットで連続 miss はリセット");
         assert_eq!(s.last_cache_read, 8100);
         assert_eq!(s.total_requests, 4);
 
-        s.record(0); // 再び miss — 1 から数え直し
+        s.record(0, 200); // 再び miss — 1 から数え直し
         assert_eq!(s.consecutive_misses, 1);
+
+        // spec 14 D5: 累積 = セッション全体の hit rate の分子/分母。
+        assert_eq!(s.hit_tokens, 8100, "累積 cached = cache_read の総和");
+        assert_eq!(s.total_tokens, 100 + 110 + 120 + 9000 + 200, "累積 prompt = input の総和");
+    }
+
+    /// 【spec 14 Phase C】per-request のリングバッファは**有界** — 長セッション (100 ターン超)
+    /// で常駐メモリが伸びないよう直近 N 件だけ保持し、古い方から捨てる (曲線の可視化用)。
+    #[test]
+    fn cache_stat_recent_ring_buffer_is_bounded() {
+        let mut s = CacheStat::default();
+        for i in 0..(CacheStat::RECENT_CAP as u64 + 8) {
+            s.record(i, 100 + i);
+        }
+        assert_eq!(s.recent.len(), CacheStat::RECENT_CAP, "上限で頭打ち (無制限履歴は持たない)");
+        // 最古の 8 件が落ち、末尾は最新の記録。
+        assert_eq!(s.recent.first().map(|p| p.cached), Some(8), "古い方から捨てる");
+        let last = s.recent.last().unwrap();
+        assert_eq!(
+            (last.cached, last.prompt),
+            (CacheStat::RECENT_CAP as u64 + 7, 100 + CacheStat::RECENT_CAP as u64 + 7),
+            "末尾 = 直近のリクエスト"
+        );
     }
 
     /// 【クライアントのスナップショット】新規クライアントの cache_stat は零値
@@ -1201,6 +1341,8 @@ mod tests {
         assert_eq!(s.total_requests, 0);
         assert_eq!(s.consecutive_misses, 0);
         assert_eq!(s.last_cache_read, 0);
+        assert_eq!((s.hit_tokens, s.total_tokens), (0, 0), "累積も零値 (spec 14)");
+        assert!(s.recent.is_empty(), "リングバッファも空");
     }
 
     /// 【stray system の降格】ネイティブは先頭 system のみ対応 → 先頭以外の system
