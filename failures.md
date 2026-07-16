@@ -965,3 +965,21 @@ Kataribe は常に emit_delta を強制するので mode ANY は cache 単位で
 and_references_cache` (cache 参照時 toolConfig も None) / `gemini_build_create_request_extracts_
 static_prefix` (toolConfig は cache 側) を修正後の分割に更新。修正後 live で 8000 超の全ターン
 cachedContentTokenCount=7173 を確認 (崖を迂回、spec 13 目標達成)。
+
+### 56. WebView2 の window.confirm/alert は本文に tauri://localhost を混ぜて表示する (app)
+【観察 (2026-07-16, spec 07 Phase D セーブスロットの上書き確認で発覚)】Tauri2 (Windows=WebView2) で
+`window.confirm("スロット1を上書きしますか？")` を出すと、ダイアログ本文の先頭に `tauri://localhost`
+などのオリジン文字列が勝手に前置され、素人臭く・不審に見える。開発者が仕込んだ文字列ではない。
+【真因】WebView2 (Edge/Chromium) は `window.confirm/alert/prompt` を「このサイトからのメッセージ」
+として扱い、**呼び出し元オリジンをブラウザが自動で本文に付与する** (フィッシング対策の標準挙動)。
+Tauri の内部オリジンが `tauri://localhost` なのでそれが露出する。JS 側からは抑制できない
+(ブラウザネイティブ UI ゆえ CSS/文言の制御外)。
+【解】`window.confirm/alert/prompt` を app 内で全廃し、**Promise ベースの自前モーダル (ConfirmDialog)**
+に置換。store が `askConfirm(message, okLabel?) -> Promise<boolean>` を持ち (resolver はモジュール
+ローカルで保持、Pinia state に関数を入れない)、ダイアログの OK/キャンセルで解決する。テーマにも
+揃い、Enter=決定 / Esc・幕クリック=取消 まで作り込める。grep で `window.(confirm|alert|prompt)` の
+ゼロを担保 (回帰の砦)。
+【一般化】**ネイティブブラウザ UI (confirm/alert/prompt/beforeunload の離脱確認等) は WebView 埋め込み
+アプリでは「オリジン露出・文言非制御・テーマ不一致」を必ず伴う — デスクトップ殻では最初から自前
+モーダルにする**。「標準 API で十分」は Web の直観で、埋め込みアプリには持ち込まない (#55 の
+「プロバイダの直観を転用しない」の UI 版)。
