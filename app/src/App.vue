@@ -56,6 +56,11 @@ const saveMismatch = computed(
   () => game.started && game.packagePath !== game.activePackagePath,
 );
 
+// コンボリストは「最後に追加(ダウンロード)したものを上」に並べる (ダウンロードしたばかりを
+// すぐ選べる方が使いやすい、ユーザーFB)。packagePaths は追加順ゆえ逆順が新しい順。
+// reverse は元配列を壊すのでコピーに対して行う。
+const packagesNewestFirst = computed(() => [...game.packages].reverse());
+
 // ループ BGM の <audio> 要素。store.bgm (場所の BGM) を src に流し、音量はミュート/音量設定に追従。
 // 状態の真実は store が握り、ここは再生デバイスとして従う (CG/SE と分業: SE は one-shot で store が鳴らす)。
 const bgmEl = ref<HTMLAudioElement | null>(null);
@@ -145,7 +150,7 @@ onMounted(() => {
           class="w-[28rem] max-w-[50vw] truncate rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
         >
           <option
-            v-for="p in game.packages"
+            v-for="p in packagesNewestFirst"
             :key="p.path"
             :value="p.path"
             :disabled="!p.playable || !!p.error"
