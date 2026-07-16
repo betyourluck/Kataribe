@@ -545,19 +545,101 @@ fn open_external_url(url: String) -> Result<(), String> {
     os_open(u)
 }
 
-/// パッケージ別オートセーブの置き場 (spec 07 Phase C): `app_data_dir/saves/<パスのFNVハッシュ>.yaml`。
-/// app data dir = OS 標準のアプリデータ置き場 — 配布 zip を差し替えてもセーブが消えない
-/// (パッケージフォルダを汚さない)。パスの安定ハッシュでパッケージ別 1 autosave。
-fn autosave_path(app: &tauri::AppHandle, pkg_dir: &Path) -> Option<PathBuf> {
-    let dir = app.path().app_data_dir().ok()?.join("saves");
+/// 手動セーブスロットの本数 (spec 07 Phase D)。スロット番号は 1..=SAVE_SLOTS。
+const SAVE_SLOTS: u8 = 5;
+
+/// パッケージ dir の安定キー (FNV-1a 64bit hex)。オートセーブ/スロットのファイル名 stem。
+/// 依存ゼロ・プロセス/バージョン非依存の安定ハッシュ。
+fn package_save_stem(pkg_dir: &Path) -> String {
     let key = pkg_dir.to_string_lossy();
-    // FNV-1a 64bit (依存ゼロ・プロセス/バージョン非依存の安定ハッシュ)。
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in key.as_bytes() {
         h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    Some(dir.join(format!("{h:016x}.yaml")))
+    format!("{h:016x}")
+}
+
+/// セーブのファイル名 (拡張子込み)。`slot=None` はオートセーブ、`Some(n)` は手動スロット n。
+/// 純関数 = PoC でスロット同士・オートセーブとの非衝突を固定する。
+fn save_file_name(stem: &str, slot: Option<u8>) -> String {
+    match slot {
+        None => format!("{stem}.yaml"),
+        Some(n) => format!("{stem}_slot{n}.yaml"),
+    }
+}
+
+/// セーブの置き場 (`app_data_dir/saves`)。app data dir = OS 標準のアプリデータ置き場 —
+/// 配布 zip を差し替えてもセーブが消えない (パッケージフォルダを汚さない)。
+fn saves_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("saves"))
+}
+
+/// パッケージ別オートセーブのパス (spec 07 Phase C): `saves/<パスのFNVハッシュ>.yaml`。
+/// パッケージ別 1 autosave (最新進捗)。
+fn autosave_path(app: &tauri::AppHandle, pkg_dir: &Path) -> Option<PathBuf> {
+    Some(saves_dir(app)?.join(save_file_name(&package_save_stem(pkg_dir), None)))
+}
+
+/// 手動セーブスロットのパス (spec 07 Phase D): `saves/<ハッシュ>_slot{n}.yaml`。
+/// autosave と同じ器 (SessionSave) を別名で書くだけ — 「気に入ったシーン」の凍結点。
+fn slot_save_path(app: &tauri::AppHandle, pkg_dir: &Path, slot: u8) -> Option<PathBuf> {
+    Some(saves_dir(app)?.join(save_file_name(&package_save_stem(pkg_dir), Some(slot))))
+}
+
+/// package_path (repo 相対 or 絶対) を正規化済み絶対パスへ解決する
+/// (セーブのハッシュ・パッケージロードの起点。`..` は asset protocol が拒否するので畳む)。
+fn resolve_pkg_dir(rel: &str) -> PathBuf {
+    let p = Path::new(rel);
+    let dir = if p.is_absolute() { PathBuf::from(rel) } else { repo_root().join(rel) };
+    normalize_path(&dir)
+}
+
+/// 手動セーブスロット一覧の 1 項目 (スロットダイアログ表示用、spec 07 Phase D)。
+#[derive(Serialize)]
+struct SlotView {
+    /// スロット番号 (1..=SAVE_SLOTS)。
+    slot: u8,
+    /// セーブが存在するか (false なら空きスロット、以下のメタは零値)。
+    exists: bool,
+    /// セーブ時点のターン数。
+    turn: u32,
+    /// 保存日時 (file mtime, epoch ms)。frontend が locale 表示する。取れなければ None。
+    saved_at_ms: Option<u64>,
+    /// 直前の語りの冒頭 (シーン識別の手がかり。「気に入ったシーン」を探す目印)。
+    snippet: String,
+}
+
+/// 語りの冒頭をスロット一覧用に整形する (60 字 + …。改行は空白へ、char 境界安全)。
+fn narration_snippet(s: &str) -> String {
+    let t = normalize(s).replace('\n', " ");
+    let t = t.trim();
+    let mut out: String = t.chars().take(60).collect();
+    if t.chars().count() > 60 {
+        out.push('…');
+    }
+    out
+}
+
+/// スロット 1 本の view を作る。読めない/版不一致は「空き」扱い (寛容 — autosave_turn と同基準)。
+fn slot_view(app: &tauri::AppHandle, pkg_dir: &Path, slot: u8) -> SlotView {
+    let path = slot_save_path(app, pkg_dir, slot);
+    let loaded = path.as_deref().and_then(|p| load_session(p).ok());
+    match loaded {
+        Some(save) => SlotView {
+            slot,
+            exists: true,
+            turn: save.state.turn,
+            saved_at_ms: path
+                .as_deref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64),
+            snippet: narration_snippet(&save.last_narration),
+        },
+        None => SlotView { slot, exists: false, turn: 0, saved_at_ms: None, snippet: String::new() },
+    }
 }
 
 /// 却下理由の表示言語。`KATARIBE_LANG=en` で英語、既定は日本語 (CLI と同値)。
@@ -726,25 +808,25 @@ struct PackageEntry {
     error: Option<String>,
     /// オートセーブが在ればその時点のターン数 (「続きから (turn N)」の提示素。無ければ None)。
     autosave_turn: Option<u32>,
+    /// 手動セーブスロット (spec 07 Phase D) が 1 つでも在るか (パッケージ削除時の確認に使う)。
+    has_slots: bool,
 }
 
 /// localStorage 由来のパス列について、各 `package.yaml` の manifest を読み一覧 view を返す。
 /// entry は解決しない (一覧は title/description だけ要る、campaign パッケージも一覧には出す)。
 #[tauri::command]
 async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<PackageEntry> {
-    let root = repo_root();
     paths
         .into_iter()
         .map(|p| {
-            let dir = if Path::new(&p).is_absolute() {
-                PathBuf::from(&p)
-            } else {
-                root.join(&p)
-            };
+            let dir = resolve_pkg_dir(&p);
             // オートセーブの有無 (spec 07 Phase C)。読めない/版不一致は「続き無し」扱い (寛容)。
-            let autosave_turn = autosave_path(&app, &normalize_path(&dir))
+            let autosave_turn = autosave_path(&app, &dir)
                 .and_then(|sp| load_session(&sp).ok())
                 .map(|s| s.state.turn);
+            // 手動スロット (Phase D) の有無 (存在チェックのみ = 5 本 parse しない)。
+            let has_slots = (1..=SAVE_SLOTS)
+                .any(|n| slot_save_path(&app, &dir, n).is_some_and(|sp| sp.exists()));
             match read_manifest(&dir) {
                 Ok(m) => {
                     // 単発シナリオも campaign-entry も playable (new_game が entry を分岐)。
@@ -756,6 +838,7 @@ async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Package
                         playable,
                         error: None,
                         autosave_turn,
+                        has_slots,
                     }
                 }
                 Err(e) => PackageEntry {
@@ -765,31 +848,35 @@ async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Package
                     playable: false,
                     error: Some(e.to_string()),
                     autosave_turn: None,
+                    has_slots,
                 },
             }
         })
         .collect()
 }
 
-/// パッケージのオートセーブを削除する (一覧から外す時の孤児セーブ掃除)。
-/// セーブは `app_data/saves/<パスのハッシュ>.yaml` のファイルなので、localStorage の一覧から
-/// パスを消すだけでは残り続けて溜まる。frontend が削除確認の上で呼ぶ。
-/// 削除したら true、元々無ければ false (どちらも成功)。
+/// パッケージのセーブ (autosave + 手動スロット全部) を削除する (一覧から外す時の孤児掃除)。
+/// セーブは `app_data/saves/` のファイルなので、localStorage の一覧からパスを消すだけでは
+/// 残り続けて溜まる。frontend が削除確認の上で呼ぶ。
+/// 1 つでも削除したら true、元々無ければ false (どちらも成功)。
 #[tauri::command]
 fn delete_autosave(app: tauri::AppHandle, package_path: String) -> Result<bool, String> {
-    let root = repo_root();
-    let dir = if Path::new(&package_path).is_absolute() {
-        PathBuf::from(&package_path)
-    } else {
-        root.join(&package_path)
-    };
-    let save_path = autosave_path(&app, &normalize_path(&dir))
-        .ok_or("アプリデータフォルダを解決できない")?;
-    if save_path.exists() {
-        std::fs::remove_file(&save_path).map_err(|e| format!("セーブの削除に失敗: {e}"))?;
-        return Ok(true);
+    let dir = resolve_pkg_dir(&package_path);
+    let mut targets: Vec<PathBuf> = Vec::new();
+    targets.push(autosave_path(&app, &dir).ok_or("アプリデータフォルダを解決できない")?);
+    for n in 1..=SAVE_SLOTS {
+        if let Some(p) = slot_save_path(&app, &dir, n) {
+            targets.push(p);
+        }
     }
-    Ok(false)
+    let mut removed = false;
+    for p in targets {
+        if p.exists() {
+            std::fs::remove_file(&p).map_err(|e| format!("セーブの削除に失敗: {e}"))?;
+            removed = true;
+        }
+    }
+    Ok(removed)
 }
 
 /// LLM 接続設定の view (設定ダイアログの AIモデルタブ用)。ローカル app ゆえ api_key も返す
@@ -1352,9 +1439,7 @@ async fn new_game(
     Ok(view)
 }
 
-/// オートセーブから再開する (spec 07 Phase C)。パッケージは content 参照から再ロード
-/// (骨格の単一真実源)、正本 state と語りの継続性 (chronicle/last_narration/pending_*) は
-/// セーブから復元する。campaign は途中モジュール + campaign_memory も復元。
+/// オートセーブから再開する (spec 07 Phase C)。実体は [`restore_session`]。
 #[tauri::command]
 async fn resume_game(
     app: tauri::AppHandle,
@@ -1362,19 +1447,32 @@ async fn resume_game(
     lang: Option<String>,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<GameView, String> {
+    let save_path = autosave_path(&app, &resolve_pkg_dir(&package_path))
+        .ok_or("アプリデータフォルダを解決できない")?;
+    restore_session(&app, package_path, &save_path, lang, session.inner()).await
+}
+
+/// セーブファイルから session を復元する共通部 (オートセーブ resume / 手動スロット load)。
+/// パッケージは content 参照から再ロード (骨格の単一真実源)、正本 state と語りの継続性
+/// (chronicle/last_narration/pending_*/synopsis) はセーブから復元する。campaign は途中
+/// モジュール + campaign_memory も復元。
+///
+/// **`GameSession` を丸ごと差し替える** — LLM は毎ターン messages を state/chronicle/synopsis
+/// から新規構築する (持続会話は無い) ので、プレイ中にロードしても前のプレイの記憶は構造的に
+/// 残らない (次ターンから GM はロードされた記憶だけを読み直す)。
+/// 以後のオートセーブ書き先は常に autosave パス — ロード元スロットは上書きされない (凍結点)。
+async fn restore_session(
+    app: &tauri::AppHandle,
+    package_path: String,
+    load_from: &Path,
+    lang: Option<String>,
+    session: &SharedSession,
+) -> Result<GameView, String> {
     // セーブを先に読む (campaign の途中モジュール指定が open_package に要る)。
-    let root = repo_root();
-    let dir0 = if Path::new(&package_path).is_absolute() {
-        PathBuf::from(&package_path)
-    } else {
-        root.join(&package_path)
-    };
-    let save_path =
-        autosave_path(&app, &normalize_path(&dir0)).ok_or("アプリデータフォルダを解決できない")?;
-    let save = load_session(&save_path).map_err(|e| e.to_string())?;
+    let save = load_session(load_from).map_err(|e| e.to_string())?;
 
     let (pkg_dir, scenario, campaign, current_module, manifest, lint_warnings) =
-        open_package(&app, &package_path, save.module.as_ref())?;
+        open_package(app, &package_path, save.module.as_ref())?;
     let lore = load_lore(&pkg_dir.join("memoria")).map_err(|e| e.to_string())?;
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
     let summarizer = LlmConfig::summary_from_env(&config)
@@ -1428,6 +1526,8 @@ async fn resume_game(
         },
     };
 
+    // オートセーブの書き先 (ロード元がスロットでも常に autosave パス = スロットは凍結点のまま)。
+    let autosave = autosave_path(app, &pkg_dir);
     *session.lock().await = Some(GameSession {
         state,
         scenario,
@@ -1442,7 +1542,7 @@ async fn resume_game(
         current_module,
         campaign_memory: save.campaign_memory,
         manifest,
-        save_path: Some(save_path),
+        save_path: autosave,
         package_path,
         synopsis: save.synopsis,
         summarizer,
@@ -1453,6 +1553,97 @@ async fn resume_game(
         },
     });
     Ok(view)
+}
+
+/// 現在の session を SessionSave (正本 + 語りの継続性) へスナップショットする。
+/// オートセーブ (play_turn) と手動スロット (save_slot) の共通部 — 同じ器を書く。
+fn session_save_of(sess: &GameSession) -> SessionSave {
+    SessionSave {
+        version: SAVE_VERSION,
+        content: SavedContent::Package { path: sess.package_path.clone() },
+        package_version: sess.manifest.version.clone(),
+        module: sess.campaign.is_some().then(|| sess.current_module.clone()),
+        state: sess.state.clone(),
+        campaign_memory: sess.campaign_memory.clone(),
+        history: sess.history.clone(),
+        last_narration: sess.last_narration.clone(),
+        pending_checks: sess.pending_checks.clone(),
+        pending_lore: sess.pending_lore.clone(),
+        synopsis: sess.synopsis.clone(),
+    }
+}
+
+// =============================================================================
+// 手動セーブスロット (spec 07 Phase D) — 「気に入ったシーンから何度でもやり直す」
+// =============================================================================
+
+/// 手動セーブスロットの一覧 (5 本、空きも含む)。
+/// `package_path` 省略時は**プレイ中 session のパッケージ** (セーブモード = 保存先の真実は
+/// session が握る — ヘッダーの選択を後から変えても保存先はプレイ中のゲーム)。
+/// 指定時はそのパッケージ (ロードモード = ヘッダーで選択中のパッケージ、「続きから」と同じ意味論)。
+#[tauri::command]
+async fn list_save_slots(
+    app: tauri::AppHandle,
+    package_path: Option<String>,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<Vec<SlotView>, String> {
+    let pkg_dir = match package_path {
+        Some(p) => resolve_pkg_dir(&p),
+        None => session
+            .lock()
+            .await
+            .as_ref()
+            .map(|s| s.package_root.clone())
+            .ok_or("ゲームが開始されていません")?,
+    };
+    Ok((1..=SAVE_SLOTS).map(|n| slot_view(&app, &pkg_dir, n)).collect())
+}
+
+/// 現在のプレイ状態を手動スロットへ保存する。autosave と同じ器 (SessionSave) をスロット名で
+/// 書くだけ — autosave が「最新進捗」、スロットは「気に入ったシーンの凍結点」(ロードしても
+/// 上書きされないので、同じ場面を何度でもロールプレイし直せる)。
+#[tauri::command]
+async fn save_slot(
+    app: tauri::AppHandle,
+    slot: u8,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<SlotView, String> {
+    if !(1..=SAVE_SLOTS).contains(&slot) {
+        return Err(format!("スロットは 1〜{SAVE_SLOTS} です"));
+    }
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let path = slot_save_path(&app, &sess.package_root, slot)
+        .ok_or("アプリデータフォルダを解決できない")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("セーブフォルダの作成に失敗: {e}"))?;
+    }
+    let save = session_save_of(sess);
+    let pkg_root = sess.package_root.clone();
+    drop(guard);
+    save_session(&path, &save).map_err(|e| e.to_string())?;
+    Ok(slot_view(&app, &pkg_root, slot))
+}
+
+/// 手動スロットから再開する。実体は [`restore_session`] (resume_game と同経路) —
+/// `GameSession` を丸ごと差し替えるので、プレイ中でも前のプレイは忘れられ、GM は次ターンから
+/// ロードされた state/chronicle/あらすじだけを読み直す (LLM に持続会話は無い)。
+/// ロード時に autosave は書かない (「眺めるだけロード」が最新進捗を壊さない —
+/// autosave が動くのはロード後の最初の受理ターンから)。
+#[tauri::command]
+async fn load_slot(
+    app: tauri::AppHandle,
+    package_path: String,
+    slot: u8,
+    lang: Option<String>,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<GameView, String> {
+    if !(1..=SAVE_SLOTS).contains(&slot) {
+        return Err(format!("スロットは 1〜{SAVE_SLOTS} です"));
+    }
+    let path = slot_save_path(&app, &resolve_pkg_dir(&package_path), slot)
+        .ok_or("アプリデータフォルダを解決できない")?;
+    restore_session(&app, package_path, &path, lang, session.inner()).await
 }
 
 /// あらすじ圧縮ジョブを実行する (spec 10)。成功 = complete / 失敗 = abandon (非致命 —
@@ -1729,19 +1920,7 @@ async fn play_turn(
     // 却下では書かない (state 無傷 = セーブも不変)。失敗は警告のみ (救済機構が本体を殺さない)。
     if view.accepted {
         if let Some(path) = sess.save_path.clone() {
-            let save = SessionSave {
-                version: SAVE_VERSION,
-                content: SavedContent::Package { path: sess.package_path.clone() },
-                package_version: sess.manifest.version.clone(),
-                module: sess.campaign.is_some().then(|| sess.current_module.clone()),
-                state: sess.state.clone(),
-                campaign_memory: sess.campaign_memory.clone(),
-                history: sess.history.clone(),
-                last_narration: sess.last_narration.clone(),
-                pending_checks: sess.pending_checks.clone(),
-                pending_lore: sess.pending_lore.clone(),
-                synopsis: sess.synopsis.clone(),
-            };
+            let save = session_save_of(sess);
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -1797,6 +1976,9 @@ pub fn run() {
             resume_game,
             play_turn,
             list_packages,
+            list_save_slots,
+            save_slot,
+            load_slot,
             get_llm_config,
             set_llm_config,
             get_summary_llm_config,
@@ -1913,6 +2095,45 @@ mod tests {
             "展開先に package.yaml がある"
         );
         assert!(!installed.title.is_empty(), "manifest の title が読めている");
+    }
+
+    /// 【セーブスロット PoC (2026-07-16, spec 07 Phase D)】ファイル名は安定で、
+    /// 5 スロットは互いに・オートセーブとも衝突しない (同フォルダ同居の前提)。
+    #[test]
+    fn save_file_names_are_stable_and_slots_distinct_from_autosave() {
+        use super::{package_save_stem, save_file_name, SAVE_SLOTS};
+        let stem = package_save_stem(Path::new(r"D:\pkgs\houkago"));
+        assert_eq!(
+            stem,
+            package_save_stem(Path::new(r"D:\pkgs\houkago")),
+            "同一パスは常に同じ stem (プロセス/バージョン非依存)"
+        );
+        assert_ne!(
+            stem,
+            package_save_stem(Path::new(r"D:\pkgs\escape")),
+            "別パッケージは別 stem"
+        );
+        let auto = save_file_name(&stem, None);
+        let slots: Vec<String> =
+            (1..=SAVE_SLOTS).map(|n| save_file_name(&stem, Some(n))).collect();
+        assert!(!slots.contains(&auto), "スロットはオートセーブと衝突しない");
+        let uniq: std::collections::BTreeSet<&String> = slots.iter().collect();
+        assert_eq!(uniq.len(), slots.len(), "{SAVE_SLOTS} スロットは互いに別ファイル");
+        assert!(auto.ends_with(".yaml") && slots.iter().all(|s| s.ends_with(".yaml")));
+    }
+
+    /// 【セーブスロット PoC】一覧の語り冒頭 (snippet) は 60 字で切り (char 境界安全 =
+    /// 日本語で panic しない)、literal `\n` も実改行も空白へ畳む (1 行表示)。
+    #[test]
+    fn narration_snippet_truncates_at_char_boundary_and_flattens_newlines() {
+        use super::narration_snippet;
+        let long = "あ".repeat(100);
+        let s = narration_snippet(&long);
+        assert_eq!(s.chars().count(), 61, "60 字 + …");
+        assert!(s.ends_with('…'));
+        assert_eq!(narration_snippet("一行目\\n二行目"), "一行目 二行目", "literal \\n は空白へ");
+        assert_eq!(narration_snippet("一行目\n二行目"), "一行目 二行目", "実改行も空白へ");
+        assert_eq!(narration_snippet("短い"), "短い", "短文はそのまま (… なし)");
     }
 
     /// 【`..` 畳み】asset protocol が拒否する `..` をパスから除去する (403 の原因対策)。

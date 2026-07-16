@@ -1,6 +1,6 @@
 # 07. セーブ / ロード — セッションの器を file にする
 
-Status: **Done（Phase A+B+C 実装済。査読 3 点はユーザー確定: app data dir / 選択時自動提示 / autosave のみ）** / 2026-07-04
+Status: **Done（Phase A+B+C 実装済 2026-07-04。Phase D 手動スロット実装済 2026-07-16 — ユーザー要望「気に入ったシーンから何度でもやり直す」）**
 Scope: 進行中のセッション（正本 state + 語りの継続性）を 1 file に保存し、後から再開できる
 ようにする。動機は実プレイの実害: Gemini 長セッション（~1h, 2〜300 円分）が provider 側の
 エラー（quota / 変形応答, failures.md #34）で打ち切られると全て失われる。
@@ -73,7 +73,30 @@ pending_lore: [ ... ]           # 発火済み recall の持ち越し (MemoryFra
     `GameView.resumed {turn, last_narration, warnings}` で開幕ログに「── 続きから (turn N) ──」+
     前回までの語り + 版不一致警告を表示
   - **手動スロットは Phase D 送り**（まず「消失しない」を守る）
-- **Phase D（将来）**: 手動セーブスロット・セーブ一覧 UI・メタ表示（ターン数/場所/日時）。
+- **Phase D（✅実装済 2026-07-16、ユーザー要望）**: 手動セーブスロット（GUI）—
+  動機 = **気に入ったシーン（ロマンス等）を何度もロールプレイし直したい**。autosave（最新進捗
+  1 本・受理ターン毎上書き）だけでは「あの場面に戻る」ができない → スロット = 任意時点の凍結点。
+  - **器は追加ゼロ**: autosave と同じ `SessionSave` を別ファイル名へ書くだけ。
+    `app_data_dir/saves/<パッケージパスの FNV-1a>_slot{1..5}.yaml`（autosave `<hash>.yaml` と
+    同フォルダ・非衝突）。パッケージ別 5 スロット。
+  - **UI**: ヘッダーの「続きから」と「新しいゲーム」の間に「セーブ」「ロード」ボタン。
+    どちらも 5 スロットのリストダイアログ（`SaveSlotDialog`）を開き、クリックで保存/再開。
+    メタ表示 = turn + 保存日時（file mtime、locale 表示）+ 直前の語りの冒頭（シーン識別の手がかり）。
+    上書きセーブとプレイ中ロードは confirm。
+  - **Tauri command 3 つ**: `list_save_slots`（package_path 省略時 = プレイ中 session の
+    パッケージ = セーブ先の真実は session が握る。指定時 = ヘッダー選択中 = ロード用）/
+    `save_slot`（生きた session をスナップショット — autosave と共通の `session_save_of`）/
+    `load_slot`（`resume_game` と共通の `restore_session` — `GameSession` を**丸ごと差し替え**）。
+  - **LLM のリセットは構造が保証**: ターンループは毎ターン messages を state/chronicle/synopsis
+    から新規構築する（LLM に持続会話は無い）ので、session 差し替え = 次ターンから GM はロード
+    された記憶だけを読み直す。プレイ中ロードでも前のプレイの記憶は残りようがない。
+  - **ロード後の autosave 書き先は常に autosave パス**（ロード元スロットは以後のプレイで
+    上書きされない = 凍結点のまま何度でも戻れる）。ロード時に autosave は書かない
+    （「眺めるだけロード」で最新進捗を破壊しない — autosave が動くのは次の受理ターンから）。
+  - **孤児掃除**: `delete_autosave` がスロットも一括処分（`list_packages` が `has_slots` を
+    返し、パッケージ削除時の確認にスロットの有無も含める）。
+  - PoC: `save_file_names_are_stable_and_slots_distinct_from_autosave` /
+    `narration_snippet_truncates_at_char_boundary_and_flattens_newlines`。
 
 ## スコープ外
 

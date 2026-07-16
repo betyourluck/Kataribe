@@ -11,6 +11,7 @@ import type {
   InstalledPackage,
   SynopsisView,
   LogLineView,
+  SlotView,
 } from "../types/api";
 
 // アセット絶対パス → asset:// URL のメモ化 (convertFileSrc を毎回呼ばない。spec 01 小論点2)。
@@ -195,6 +196,8 @@ export interface PackageEntry {
   error: string | null;
   // オートセーブが在ればその時点のターン数 (「続きから (turn N)」ボタンの提示素)。無ければ null。
   autosave_turn: number | null;
+  // 手動セーブスロット (spec 07 Phase D) が 1 つでも在るか (削除確認に使う)。
+  has_slots: boolean;
 }
 
 // localStorage からパス一覧を読む (壊れていれば同梱既定にフォールバック)。
@@ -241,8 +244,13 @@ interface GameState {
   audioVolume: number;
   // ミュート (true なら音を出さない)。サウンド設定。
   audioMuted: boolean;
-  // 選択中パッケージのパス。
+  // コンボリストで選択中のパッケージのパス (次に開始/ロードする対象)。
   packagePath: string;
+  // いま実際にプレイ中のゲームのパッケージパス (session の真実)。コンボリストの選択
+  // (packagePath) とは独立 — 選択だけ切り替えても動かない。セーブはこのゲームに対して行う
+  // ので、packagePath がこれと食い違う間はセーブを無効化する (保存先の取り違え防止)。
+  // プレイ前は空。new_game/resume/load_slot が applyGameView で確定させる。
+  activePackagePath: string;
   // localStorage が保持するパッケージフォルダのパス一覧。
   packagePaths: string[];
   // 前回追加したパッケージの親フォルダ (参照ダイアログの初期ディレクトリ)。無ければ空。
@@ -281,7 +289,13 @@ interface GameState {
   compacting: boolean;
   // backend がエピローグ生成中 (epilogue-writing イベント、spec 11)。同じくローディング文言用。
   writingEpilogue: boolean;
+  // 自前の確認ダイアログ (WebView2 の window.confirm は tauri://localhost の URL を出すため自作)。
+  // null なら非表示。askConfirm() がこれをセットし、ConfirmDialog が OK/キャンセルで解決する。
+  confirmDialog: { message: string; confirmLabel: string } | null;
 }
+
+// 確認ダイアログの解決子 (Pinia state に関数を持たせず、モジュールローカルで保持)。
+let confirmResolver: ((ok: boolean) => void) | null = null;
 
 export const useGameStore = defineStore("game", {
   state: (): GameState => {
@@ -304,6 +318,7 @@ export const useGameStore = defineStore("game", {
       audioVolume: loadAudioVolume(),
       audioMuted: loadAudioMuted(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
+      activePackagePath: "",
       packagePaths: paths,
       lastPackageParent: loadLastPackageParent(),
       packages: [],
@@ -323,6 +338,7 @@ export const useGameStore = defineStore("game", {
       recentLog: [],
       compacting: false,
       writingEpilogue: false,
+      confirmDialog: null,
     };
   },
 
@@ -369,6 +385,26 @@ export const useGameStore = defineStore("game", {
   },
 
   actions: {
+    // 自前の確認ダイアログを開き、ユーザーの選択 (OK=true / キャンセル=false) を Promise で返す。
+    // WebView2 の window.confirm は本文に tauri://localhost を混ぜてしまうので、これで置き換える。
+    // 二重呼び出し (前の確認が未解決) は前をキャンセル扱いで畳んでから開く。
+    askConfirm(message: string, confirmLabel?: string): Promise<boolean> {
+      if (confirmResolver) {
+        confirmResolver(false);
+        confirmResolver = null;
+      }
+      this.confirmDialog = { message, confirmLabel: confirmLabel ?? t("confirm.ok") };
+      return new Promise<boolean>((resolve) => {
+        confirmResolver = resolve;
+      });
+    },
+    // ConfirmDialog のボタンから呼ぶ。ダイアログを閉じて Promise を解決する。
+    resolveConfirm(ok: boolean) {
+      this.confirmDialog = null;
+      confirmResolver?.(ok);
+      confirmResolver = null;
+    },
+
     // 開発者モードの現在値を backend (プロセス env) から取り直す (起動時)。
     async refreshDevMode() {
       try {
@@ -530,17 +566,17 @@ export const useGameStore = defineStore("game", {
 
     // パスを一覧から外す。
     async removePackage(path: string) {
-      // オートセーブは app_data/saves のファイルなので、一覧からパスを消すだけでは孤児として
-      // 残り続ける。セーブがあるパッケージなら削除するか確認する (キャンセル = セーブは残す
-      // = パスを再追加すれば「続きから」が復活する)。
+      // セーブ (autosave + 手動スロット) は app_data/saves のファイルなので、一覧からパスを
+      // 消すだけでは孤児として残り続ける。セーブがあるパッケージなら削除するか確認する
+      // (キャンセル = セーブは残す = パスを再追加すれば「続きから」もスロットも復活する)。
       const entry = this.packages.find((p) => p.path === path);
-      if (entry?.autosave_turn != null) {
+      if (entry?.autosave_turn != null || entry?.has_slots) {
         const title = entry.title || path;
-        if (
-          window.confirm(
-            t("store.deleteSaveConfirm", { title, turn: entry.autosave_turn }),
-          )
-        ) {
+        const msg =
+          entry.autosave_turn != null
+            ? t("store.deleteSaveConfirm", { title, turn: entry.autosave_turn })
+            : t("store.deleteSlotsConfirm", { title });
+        if (await this.askConfirm(msg, t("store.deleteConfirmOk"))) {
           try {
             await invoke("delete_autosave", { packagePath: path });
           } catch (e) {
@@ -722,6 +758,9 @@ export const useGameStore = defineStore("game", {
     applyGameView(view: GameView, path: string) {
       this.started = true;
       this.packagePath = path;
+      // このゲームが「プレイ中の真実」。以後コンボリストを別へ切り替えても動かない
+      // (セーブはこのパスに対して有効。packagePath がこれと食い違えばセーブは無効化)。
+      this.activePackagePath = path;
       this.title = view.title;
       this.state = view.state;
       this.background = assetUrl(view.background);
@@ -777,6 +816,53 @@ export const useGameStore = defineStore("game", {
         this.applyGameView(view, path);
       } catch (e) {
         this.error = String(e);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    // --- 手動セーブスロット (spec 07 Phase D) ---
+
+    // スロット一覧を取得する。forSave=true はプレイ中 session のパッケージ (保存先の真実は
+    // backend session が握る)、false はヘッダーで選択中のパッケージ (「続きから」と同じ意味論)。
+    async listSlots(forSave: boolean): Promise<SlotView[]> {
+      return await invoke<SlotView[]>("list_save_slots", {
+        packagePath: forSave ? null : this.packagePath,
+      });
+    },
+
+    // 現在のプレイ状態をスロットへ保存する (上書き確認はダイアログ側)。成功なら更新後の SlotView。
+    async saveToSlot(slot: number): Promise<SlotView | null> {
+      try {
+        const v = await invoke<SlotView>("save_slot", { slot });
+        this.logToast = t("store.slotSaved", { slot });
+        // スロットが立った可能性があるので一覧の has_slots を取り直す (削除確認の材料)。
+        this.refreshPackages();
+        return v;
+      } catch (e) {
+        this.logToast = t("store.slotSaveFailed", { error: String(e) });
+        return null;
+      }
+    },
+
+    // スロットからロードして再開する。backend が GameSession を丸ごと差し替える =
+    // プレイ中でも前のプレイは忘れられ、GM は次ターンからロードされた記憶だけを読み直す。
+    async loadSlot(slot: number): Promise<boolean> {
+      if (!this.packagePath) return false;
+      this.loading = true;
+      this.error = null;
+      try {
+        const lang = localStorage.getItem("kataribe.lang") || null;
+        const view = await invoke<GameView>("load_slot", {
+          packagePath: this.packagePath,
+          slot,
+          lang,
+        });
+        this.applyGameView(view, this.packagePath);
+        return true;
+      } catch (e) {
+        this.error = String(e);
+        return false;
       } finally {
         this.loading = false;
       }

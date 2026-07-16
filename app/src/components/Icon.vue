@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "play";
   size?: number;
 }>();
 </script>
@@ -55,11 +55,11 @@ defineProps<{
       <circle cx="12" cy="12" r="5" />
       <circle cx="12" cy="12" r="1" />
     </template>
-    <!-- ロード (続きから): 開いたフォルダ + 取り出す矢印 -->
+    <!-- ロード (手動スロット): トレイから↑ (データを取り出す) -->
     <template v-else-if="name === 'load'">
-      <path d="M4 20h13a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2h-6l-2-3H5a2 2 0 0 0-2 2v10a2 2 0 0 0 1 2Z" />
-      <path d="M12 17v-5" />
-      <path d="M9.5 14.5 12 12l2.5 2.5" />
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 8l5-5 5 5" />
+      <path d="M12 3v12" />
     </template>
     <!-- 新規作成 (新しいゲーム): 書類 + プラス -->
     <template v-else-if="name === 'new'">
@@ -81,6 +81,16 @@ defineProps<{
     <!-- 参照 (フォルダを選ぶ): 閉じたフォルダ -->
     <template v-else-if="name === 'folder'">
       <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </template>
+    <!-- セーブ (手動スロット): トレイに↓ (データをしまう) -->
+    <template v-else-if="name === 'save'">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M12 15V3" />
+    </template>
+    <!-- 続きから: 再生 (▶) -->
+    <template v-else-if="name === 'play'">
+      <path d="M7 4l13 8-13 8Z" />
     </template>
     <!-- 削除: ゴミ箱 -->
     <template v-else-if="name === 'trash'">

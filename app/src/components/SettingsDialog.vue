@@ -160,13 +160,13 @@ function saveDraft() {
 }
 
 // [🗑] 選択中プロファイルを削除する (確認あり)。.env には触れない。
-function deleteProfile() {
+async function deleteProfile() {
   const p = profiles.value.find((x) => x.id === selectedProfileId.value);
   if (!p) {
     llmStatus.value = t("settings.status.selectToDelete");
     return;
   }
-  if (!window.confirm(t("settings.status.confirmDelete", { name: p.name }))) return;
+  if (!(await game.askConfirm(t("settings.status.confirmDelete", { name: p.name }), t("store.deleteConfirmOk")))) return;
   profiles.value = profiles.value.filter((x) => x.id !== p.id);
   saveAiProfiles(profiles.value);
   selectedProfileId.value = "";

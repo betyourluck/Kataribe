@@ -17,6 +17,8 @@ import { t } from "./i18n";
 import TitleBar from "./components/TitleBar.vue";
 import PackageDialog from "./components/PackageDialog.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
+import SaveSlotDialog from "./components/SaveSlotDialog.vue";
+import ConfirmDialog from "./components/ConfirmDialog.vue";
 import ConversationLog from "./components/ConversationLog.vue";
 import StatePanel from "./components/StatePanel.vue";
 import ActionInput from "./components/ActionInput.vue";
@@ -25,6 +27,8 @@ import Icon from "./components/Icon.vue";
 const game = useGameStore();
 const showSettings = ref(false);
 const showPackages = ref(false);
+// 手動セーブスロットのダイアログ (spec 07 Phase D)。null = 非表示。
+const slotDialog = ref<"save" | "load" | null>(null);
 
 // ログ保存/フォルダ操作の一時トースト。store.logToast をこの ref が数秒だけ映して消す。
 const toast = ref("");
@@ -43,6 +47,13 @@ watch(
 // 選択中パッケージのオートセーブ (spec 07 Phase C)。在れば「続きから (turn N)」を提示する。
 const selectedAutosaveTurn = computed(
   () => game.packages.find((p) => p.path === game.packagePath)?.autosave_turn ?? null,
+);
+
+// コンボリストの選択がプレイ中のゲームと食い違うとき、セーブは無効化する。
+// (セーブは「今プレイ中のゲーム」に対する操作。選択だけ別へ変えた状態で押すと、
+//  保存先=プレイ中のゲーム / ロード一覧=選択中のゲーム で食い違い混乱する。)
+const saveMismatch = computed(
+  () => game.started && game.packagePath !== game.activePackagePath,
 );
 
 // ループ BGM の <audio> 要素。store.bgm (場所の BGM) を src に流し、音量はミュート/音量設定に追従。
@@ -152,6 +163,27 @@ onMounted(() => {
           :aria-label="t('app.resumeAria')"
           @click="game.resumeGame()"
         >
+          <Icon name="play" :size="18" />
+        </button>
+        <!-- セーブ: プレイ中の状態を手動スロットへ (spec 07 Phase D)。プレイ前 or 一覧の選択が
+             プレイ中のゲームと食い違うときは無効 (保存先の取り違え防止)。 -->
+        <button
+          :disabled="game.loading || !game.started || saveMismatch"
+          class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
+          :title="saveMismatch ? t('app.saveSlotsMismatch') : t('app.saveSlots')"
+          :aria-label="t('app.saveSlots')"
+          @click="slotDialog = 'save'"
+        >
+          <Icon name="save" :size="18" />
+        </button>
+        <!-- ロード: 選択中パッケージのスロットから再開 (プレイ中でも前のプレイを置き換える)。 -->
+        <button
+          :disabled="game.loading"
+          class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
+          :title="t('app.loadSlots')"
+          :aria-label="t('app.loadSlots')"
+          @click="slotDialog = 'load'"
+        >
           <Icon name="load" :size="18" />
         </button>
         <!-- 新しいゲーム: 通常は枠なし (アイコンのみ)、hover で従来の箱が浮かぶ。 -->
@@ -195,6 +227,10 @@ onMounted(() => {
     <!-- ダイアログ (TitleBar のボタンから開く) -->
     <PackageDialog v-if="showPackages" @close="showPackages = false" />
     <SettingsDialog v-if="showSettings" @close="showSettings = false" />
+    <!-- 手動セーブスロット (ヘッダーのセーブ/ロードボタンから開く。spec 07 Phase D) -->
+    <SaveSlotDialog v-if="slotDialog" :mode="slotDialog" @close="slotDialog = null" />
+    <!-- 自前の確認ダイアログ (window.confirm 置き換え。store.askConfirm が開く) -->
+    <ConfirmDialog />
 
     <!-- ログ保存などの一時トースト (右下に数秒) -->
     <transition name="toast">

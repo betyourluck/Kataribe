@@ -132,6 +132,19 @@ export interface LogLineView {
   summary: string;
 }
 
+/** 手動セーブスロット一覧の 1 項目 (spec 07 Phase D)。exists=false は空きスロット。 */
+export interface SlotView {
+  /** スロット番号 (1..=5)。 */
+  slot: number;
+  exists: boolean;
+  /** セーブ時点のターン数 (空きなら 0)。 */
+  turn: number;
+  /** 保存日時 (epoch ms)。locale 表示は frontend の責務。無ければ null。 */
+  saved_at_ms: number | null;
+  /** 直前の語りの冒頭 (シーン識別の手がかり)。 */
+  snippet: string;
+}
+
 /** セーブから再開したとき開幕ログへ出す情報。 */
 export interface ResumeView {
   /** 再開時点のターン数。 */

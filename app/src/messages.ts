@@ -31,9 +31,32 @@ export const messages = {
       selectToStart: "パッケージを選んで開始",
       resumeTitle: "続きから (turn {turn})",
       resumeAria: "続きから",
+      saveSlots: "セーブ (スロットへ保存)",
+      saveSlotsMismatch:
+        "一覧で別のゲームを選択中です（セーブはプレイ中のゲームにのみできます。ロードで切り替えるか、選択を戻してください）",
+      loadSlots: "ロード (スロットから再開)",
       newGame: "新しいゲーム",
       emptyHint:
         "パッケージを選んで「新しいゲーム」を押すと、忘れない・矛盾しない GM が物語を始めます。",
+    },
+    slots: {
+      saveTitle: "セーブ — スロットを選択",
+      loadTitle: "ロード — スロットを選択",
+      slot: "スロット {n}",
+      empty: "（空き）",
+      loading: "読み込み中……",
+      close: "閉じる",
+      overwriteConfirm: "スロット {slot}（turn {turn}）を上書きしますか？",
+      overwriteOk: "上書き",
+      loadConfirm:
+        "現在のプレイを中断してロードしますか？\n進行中の内容はロードした状態に置き換わります（GM はロードした記憶だけを読み直します）。",
+      loadOk: "ロード",
+      saveNote: "スロットは上書きされない凍結点です。気に入ったシーンを保存して、何度でもやり直せます。",
+      loadNote: "ロード後の自動保存は「続きから」に書かれ、スロットはそのまま残ります。",
+    },
+    confirm: {
+      ok: "OK",
+      cancel: "キャンセル",
     },
     action: {
       placeholder: "行動を入力…（Enter で送信 / Shift+Enter で改行）",
@@ -293,8 +316,13 @@ export const messages = {
       openSiteFailed: "サイトを開けませんでした: {error}",
       folderPickFailed: "フォルダの選択に失敗しました: {error}",
       deleteSaveConfirm:
-        "「{title}」のセーブデータ (turn {turn}) も削除しますか？\nキャンセル: セーブは残ります (パスを再追加すれば続きから遊べます)",
+        "「{title}」のセーブデータ (turn {turn}・セーブスロット含む) も削除しますか？\nキャンセル: セーブは残ります (パスを再追加すれば続きから遊べます)",
+      deleteSlotsConfirm:
+        "「{title}」のセーブスロットも削除しますか？\nキャンセル: セーブは残ります (パスを再追加すればロードできます)",
       deleteSaveFailed: "セーブの削除に失敗: {error}",
+      slotSaved: "スロット {slot} にセーブしました",
+      slotSaveFailed: "セーブに失敗: {error}",
+      deleteConfirmOk: "削除",
       noLogToSave: "保存するログがありません",
       logHeaderDate: "保存日時",
       logSaved: "ログを保存しました: {path}",
@@ -333,9 +361,32 @@ export const messages = {
       selectToStart: "Choose a package to start",
       resumeTitle: "Continue (turn {turn})",
       resumeAria: "Continue",
+      saveSlots: "Save (to a slot)",
+      saveSlotsMismatch:
+        "A different game is selected in the list — you can only save the game you're currently playing (load it, or reselect the current game).",
+      loadSlots: "Load (from a slot)",
       newGame: "New game",
       emptyHint:
         "Pick a package and press “New game” — a GM that never forgets or contradicts will begin the story.",
+    },
+    slots: {
+      saveTitle: "Save — choose a slot",
+      loadTitle: "Load — choose a slot",
+      slot: "Slot {n}",
+      empty: "(empty)",
+      loading: "Loading…",
+      close: "Close",
+      overwriteConfirm: "Overwrite slot {slot} (turn {turn})?",
+      overwriteOk: "Overwrite",
+      loadConfirm:
+        "Stop the current play and load?\nThe current progress will be replaced by the loaded state (the GM will re-read only the loaded memories).",
+      loadOk: "Load",
+      saveNote: "Slots are frozen snapshots that are never overwritten by autosave — keep favorite scenes and replay them any time.",
+      loadNote: "After loading, autosave keeps writing to “Continue”; the slot itself stays intact.",
+    },
+    confirm: {
+      ok: "OK",
+      cancel: "Cancel",
     },
     action: {
       placeholder: "Type an action…  (Enter to send / Shift+Enter for a newline)",
@@ -597,8 +648,13 @@ export const messages = {
       openSiteFailed: "Couldn't open the site: {error}",
       folderPickFailed: "Folder selection failed: {error}",
       deleteSaveConfirm:
-        "Also delete the save data for “{title}” (turn {turn})?\nCancel: the save is kept (re-add the path to continue later).",
+        "Also delete the save data for “{title}” (turn {turn}, including save slots)?\nCancel: the saves are kept (re-add the path to continue later).",
+      deleteSlotsConfirm:
+        "Also delete the save slots for “{title}”?\nCancel: the saves are kept (re-add the path to load them later).",
       deleteSaveFailed: "Failed to delete the save: {error}",
+      slotSaved: "Saved to slot {slot}",
+      slotSaveFailed: "Save failed: {error}",
+      deleteConfirmOk: "Delete",
       noLogToSave: "No log to save",
       logHeaderDate: "Saved at",
       logSaved: "Log saved: {path}",
