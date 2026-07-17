@@ -512,6 +512,11 @@ impl LlmClient {
             }
             Err(e) => return Err(e),
         };
+        // 安全フィルタ等のブロックは 200 + 空応答で返る — 理由を「空の応答」に潰さず surface
+        // (非一過性 = 同じ内容の再送では回復しない。あらすじ要約の恒久失敗を診断可能にする)。
+        if let Some(reason) = gemini::block_reason(&raw) {
+            return Err(LlmError::Blocked { reason });
+        }
         let seq = self.call_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(gemini::decode(raw, seq))
     }

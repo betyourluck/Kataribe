@@ -1242,6 +1242,46 @@ mod tests {
         assert_eq!(gemini::decode(cut, 0).finish, canonical::Finish::Length);
     }
 
+    /// 【ブロック理由の surface (2026-07-18 実プレイ発見)】Gemini は安全フィルタで弾いた時も
+    /// **200 + 空応答**で返す — 従来 decode は promptFeedback.blockReason を deserialize すら
+    /// せず、候補段の finishReason (SAFETY/RECITATION 等) も Other に潰していたため、何で
+    /// 弾かれても一律「LLM が空の応答を返した」になり診断不能だった (あらすじ要約の恒久失敗)。
+    /// プロンプト段 / 候補段の両方から理由を拾い、Blocked (非一過性 = 同じ内容の再送では
+    /// 回復しない) として surface する。本文か functionCall が在る応答・MAX_TOKENS は対象外。
+    #[test]
+    fn gemini_block_reason_surfaces_safety_and_prompt_feedback() {
+        // プロンプト段: promptFeedback.blockReason (candidates 自体が無い)。
+        let p = client::decode_gemini_body(
+            r#"{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}"#.to_string(),
+        )
+        .unwrap();
+        assert_eq!(gemini::block_reason(&p).as_deref(), Some("PROHIBITED_CONTENT"));
+
+        // 候補段: 本文ゼロ + finishReason=SAFETY。
+        let c = client::decode_gemini_body(
+            r#"{"candidates":[{"finishReason":"SAFETY"}]}"#.to_string(),
+        )
+        .unwrap();
+        assert_eq!(gemini::block_reason(&c).as_deref(), Some("SAFETY"));
+
+        // 本文がある応答 (STOP)・思考使い切り (MAX_TOKENS) はブロックではない
+        // (後者は EmptyResponse 一過性昇格 = 再抽選の管轄、Phase D)。
+        let ok = client::decode_gemini_body(
+            r#"{"candidates":[{"content":{"parts":[{"text":"了解"}]},"finishReason":"STOP"}]}"#
+                .to_string(),
+        )
+        .unwrap();
+        assert!(gemini::block_reason(&ok).is_none());
+        let cut = client::decode_gemini_body(
+            r#"{"candidates":[{"finishReason":"MAX_TOKENS"}]}"#.to_string(),
+        )
+        .unwrap();
+        assert!(gemini::block_reason(&cut).is_none());
+
+        // Blocked は非一過性 (リトライで回復しない = 無駄な再送をしない)。
+        assert!(!LlmError::Blocked { reason: "SAFETY".into() }.is_transient());
+    }
+
     // --- OpenAI 互換経路のキャッシュ計測 + xAI sticky routing (#45) ------------------
 
     /// 【互換 usage のパース】OpenAI/xAI/Gemini 互換の `usage.prompt_tokens_details.cached_tokens`

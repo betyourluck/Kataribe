@@ -30,6 +30,13 @@ pub enum LlmError {
     #[error("LLM が空の応答を返した")]
     EmptyResponse,
 
+    /// プロバイダが応答をブロックした (Gemini は安全フィルタ/規約でも **200 + 空応答**で
+    /// 返すため、理由を捨てると一律「空の応答」になり診断不能 — あらすじ要約の恒久失敗の真因
+    /// が見えなかった)。理由 (SAFETY/RECITATION/PROHIBITED_CONTENT 等) を surface する。
+    /// 同じ内容の再送では回復しないので非一過性。
+    #[error("プロバイダが応答をブロックした (理由: {reason}) — 内容が安全フィルタ/利用規約に触れた可能性")]
+    Blocked { reason: String },
+
     /// tool-use を強制したのに tool_calls もフェンス JSON も得られなかった。
     #[error("構造化出力が得られなかった (tool_call 不在かつ content も JSON でない)")]
     NoStructuredOutput,

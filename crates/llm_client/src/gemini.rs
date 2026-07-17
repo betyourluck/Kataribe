@@ -369,6 +369,17 @@ pub(crate) struct GenerateContentResponse {
     pub candidates: Vec<Candidate>,
     #[serde(default)]
     pub usage_metadata: Option<UsageMetadata>,
+    /// プロンプト段のブロック (candidates 自体が返らない)。安全フィルタでも 200 で返るので
+    /// これを読まないと「空の応答」に潰れる。
+    #[serde(default)]
+    pub prompt_feedback: Option<PromptFeedback>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptFeedback {
+    #[serde(default)]
+    pub block_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -415,6 +426,32 @@ pub(crate) struct UsageMetadata {
     pub candidates_token_count: u64,
     #[serde(default)]
     pub cached_content_token_count: u64,
+}
+
+/// 応答がプロバイダのブロックで空か判定し、理由を返す (純関数)。
+///
+/// 二段で拾う: ①プロンプト段 = `promptFeedback.blockReason` (candidates 自体が無い) /
+/// ②候補段 = 本文も functionCall も無い候補の `finishReason` (SAFETY/RECITATION 等)。
+/// STOP/MAX_TOKENS は対象外 — 前者の空は素の EmptyResponse、後者は思考使い切り
+/// (empty-response 防御 Phase D の一過性再抽選) の管轄で、ブロックと混ぜない。
+pub(crate) fn block_reason(resp: &GenerateContentResponse) -> Option<String> {
+    if let Some(reason) = resp.prompt_feedback.as_ref().and_then(|f| f.block_reason.clone()) {
+        return Some(reason);
+    }
+    let c = resp.candidates.first()?;
+    let has_payload = c.content.as_ref().is_some_and(|content| {
+        content
+            .parts
+            .iter()
+            .any(|p| p.function_call.is_some() || p.text.as_deref().is_some_and(|t| !t.trim().is_empty()))
+    });
+    if has_payload {
+        return None;
+    }
+    match c.finish_reason.as_deref() {
+        None | Some("STOP") | Some("MAX_TOKENS") => None,
+        Some(other) => Some(other.to_string()),
+    }
 }
 
 /// Gemini ネイティブ応答 → canonical (decode 純関数)。

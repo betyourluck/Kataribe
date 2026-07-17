@@ -1067,3 +1067,24 @@ PoC: `synopsis_note_suppresses_spontaneous_reminiscence_but_protects_recall` (Re
 【一般化】**注入テキストの role/位置を昇格させる最適化は、内容の salience を静かに変える —
 キャッシュ最適化の behavior 検証は「読めているか」だけでなく「読みすぎていないか」も対で見る**。
 禁止規律は列挙した違反しか縛らない: 矛盾・再演・過剰言及は別チャネル。
+
+### 61. Gemini のブロックは「200 + 空応答」— decode が理由を捨てると恒久失敗が診断不能になる (llm_client)
+【観察 (2026-07-18, ユーザー実プレイ)】あらすじ要約 (summarizer=Gemini) が「LLM が空の応答を
+返した」で失敗し続け、あらすじが作られないまま。コンソールの警告だけでは何が悪いのか分からない。
+【真因 (構造)】Gemini は安全フィルタ/規約で弾いた場合も **HTTP 200 + 空応答**で返す。ブロックの
+理由は二段にある — ①プロンプト段 `promptFeedback.blockReason` (candidates 自体が無い) /
+②候補段 `finishReason` (SAFETY/RECITATION/PROHIBITED_CONTENT 等、本文ゼロ)。従来 decode は
+①を **deserialize すらせず**、②を Other に潰していたため、全ブロックが一律 EmptyResponse に
+縮退していた。しかも EmptyResponse は一過性 (再抽選対象) 扱い — ブロックは内容起因で決定論なので
+リトライは無駄撃ち、遷移契機の凍結リトライ (同一範囲・拡張禁止) と組むと**恒久失敗ループ**になる。
+【解】`gemini::block_reason` (純関数・二段判定、本文/functionCall が在る応答と STOP/MAX_TOKENS は
+対象外=Phase D 再抽選の管轄と混ぜない) + `LlmError::Blocked{reason}` (**非一過性**) を新設、
+`gemini_complete` が decode 前に弾く。synopsis-failed トースト (2026-07-18 同日実装) に理由が
+そのまま載る = リリースビルドでも「SAFETY で弾かれている」まで見える。PoC:
+`gemini_block_reason_surfaces_safety_and_prompt_feedback` (Red→Green)。
+【一般化】**「エラーは status code で来る」という直観はプロバイダ方言 — ブロックを 200 で返す
+プロバイダでは、空応答の内訳 (素の空 / 思考使い切り / ブロック) を分類してからエラー型に落とす。
+分類を潰すと「回復しうる失敗 (再抽選)」と「回復しない失敗 (内容起因)」の区別が消え、リトライ設計が
+壊れる** (#52/#55/#58/#59 と同族のプロバイダ方言 + #58 の「一次ソースの意味論も検証対象」の応答版)。
+【残課題】ブロックが恒久なら同一範囲の凍結リトライは永遠に失敗する — K 回失敗で mechanical_join
+(LLM フリー) へフォールバックし「あらすじが必ず作られる」を構造保証する案は未実装 (起票候補)。
