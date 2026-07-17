@@ -825,6 +825,30 @@ mod tests {
         assert!(prompt::synopsis_note(&[]).is_empty(), "空なら注入しない");
     }
 
+    /// 【あらすじの salience 規律 (2026-07-18 実プレイ発見)】system role 化で synopsis の
+    /// 権威が上がり、Grok が過去章を語りに織り込みすぎる過強調が出た。従来の規律は
+    /// 「矛盾するな」「再演するな」の 2 つだけで自発的な過剰言及を縛っていない。
+    /// 抑止 (求められない限り回想・引用しない) と保護 (尋ねられたら正確に参照 =
+    /// 検証済みの想起を殺さない) を対で固定する。
+    #[test]
+    fn synopsis_note_suppresses_spontaneous_reminiscence_but_protects_recall() {
+        let synopsis = vec![SynopsisEntry {
+            upto_turn: 10,
+            title: "村の章".into(),
+            text: "村で狼を退けた。".into(),
+        }];
+        let note = prompt::synopsis_note(&synopsis);
+        assert!(note.contains("背景であって主題ではない"), "salience 規律: あらすじは背景: {note}");
+        assert!(
+            note.contains("求められない限り") && note.contains("回想・引用しない"),
+            "抑止: 自発的な過剰言及の禁止: {note}"
+        );
+        assert!(
+            note.contains("尋ねたとき") && note.contains("正確に参照"),
+            "保護: 求めに応じた想起は殺さない: {note}"
+        );
+    }
+
     /// 【二層注入 (spec 08-A) = 60 ターンの序盤想起】長編で予算から溢れ「完全に忘れて」いた
     /// 序盤の出来事 (T3 で銀の鍵を入手) が、終盤 (T60 相当) の関連する行動
     /// (「銀の鍵を使う」) をクエリに retrieval され「(関連)」として再掲される。

@@ -1777,7 +1777,11 @@ async fn load_slot(
 /// あらすじ圧縮ジョブを実行する (spec 10)。成功 = complete / 失敗 = abandon (非致命 —
 /// あふれ契機は次ターン再計算、遷移契機は範囲凍結で同一リトライ)。
 /// 要約は SUMMARY_LLM_* の専用 client、無ければ GM の client を共用する。
-async fn run_synopsis_job(sess: &mut GameSession, job: &SynopsisJob) {
+/// 失敗は `synopsis-failed` イベントで frontend にも通知する (リリースビルドは
+/// コンソールが無く eprintln だけでは一般ユーザーが気づけない — 恒久失敗 =
+/// 規約違反等で永遠にあらすじが作られない事態を可視化する)。
+async fn run_synopsis_job(app: &tauri::AppHandle, sess: &mut GameSession, job: &SynopsisJob) {
+    use tauri::Emitter;
     let req = sess.synopsis.build_request(&sess.history, job);
     let result = match &sess.summarizer {
         Some(s) => s.summarize(&req).await,
@@ -1787,6 +1791,7 @@ async fn run_synopsis_job(sess: &mut GameSession, job: &SynopsisJob) {
         Ok(text) => sess.synopsis.complete(job, &text),
         Err(e) => {
             eprintln!("[警告] あらすじ要約に失敗 (プレイは続行し後で再試行): {e}");
+            let _ = app.emit("synopsis-failed", e.to_string());
             sess.synopsis.abandon(job);
         }
     }
@@ -1995,7 +2000,7 @@ async fn play_turn(
                 let from_title = sess.scenario.title.clone();
                 if let Some(job) = sess.synopsis.on_transition(&sess.history, &from_title) {
                     let _ = app.emit("synopsis-compacting", ());
-                    run_synopsis_job(sess, &job).await;
+                    run_synopsis_job(&app, sess, &job).await;
                     ran_transition_job = true;
                 }
                 sess.current_module = adv.module_id;
@@ -2042,7 +2047,7 @@ async fn play_turn(
     if view.accepted && !ran_transition_job {
         if let Some(job) = sess.synopsis.next_job(&sess.history) {
             let _ = app.emit("synopsis-compacting", ());
-            run_synopsis_job(sess, &job).await;
+            run_synopsis_job(&app, sess, &job).await;
         }
     }
     // spec 10: このターンの差分を view に載せる (あらすじは append-only ゆえ frontend は push のみ)。

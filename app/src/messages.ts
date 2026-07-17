@@ -338,6 +338,8 @@ export const messages = {
       logHeaderDate: "保存日時",
       logSaved: "ログを保存しました: {path}",
       saveFailed: "保存失敗: {error}",
+      synopsisFailed:
+        "⚠ あらすじの生成に失敗しました（プレイは続行・次のターンで自動再試行）: {error}",
       openFolderFailed: "フォルダを開けません: {error}",
       resumeMarker: "── 続きから (turn {turn}) ──",
       chapterEndNamed: "結末「{goal}」",
@@ -681,6 +683,8 @@ export const messages = {
       logHeaderDate: "Saved at",
       logSaved: "Log saved: {path}",
       saveFailed: "Save failed: {error}",
+      synopsisFailed:
+        "⚠ Synopsis generation failed (play continues; auto-retried next turn): {error}",
       openFolderFailed: "Couldn't open the folder: {error}",
       resumeMarker: "── Continued (turn {turn}) ──",
       chapterEndNamed: "the ending “{goal}”",

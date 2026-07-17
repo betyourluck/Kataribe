@@ -119,6 +119,12 @@ onMounted(() => {
   listen("epilogue-writing", () => {
     game.writingEpilogue = true;
   });
+  // あらすじ生成の失敗通知 (spec 10)。リリースビルドはコンソールが無いので、
+  // トーストで可視化する (恒久失敗 = 規約違反等で永遠にあらすじが無いまま、を防ぐ)。
+  // プレイは続行され次の受理ターンで自動再試行される。
+  listen<string>("synopsis-failed", (ev) => {
+    game.logToast = t("store.synopsisFailed", { error: ev.payload });
+  });
 });
 </script>
 
