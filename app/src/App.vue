@@ -44,6 +44,23 @@ watch(
   },
 );
 
+// 右ペインの幅ドラッグ。パネルは画面右端に接するので 幅 = 画面幅 − ポインタ X。
+// pointermove/up を window に張り、capture で外れても追従させる (ドラッグ中の即時反映)。
+function startPanelResize(e: PointerEvent) {
+  e.preventDefault();
+  const onMove = (ev: PointerEvent) => game.setPanelWidth(window.innerWidth - ev.clientX);
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+  };
+  document.body.style.userSelect = "none"; // ドラッグ中のテキスト選択を抑止
+  document.body.style.cursor = "col-resize";
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
 // 選択中パッケージのオートセーブ (spec 07 Phase C)。在れば「続きから (turn N)」を提示する。
 const selectedAutosaveTurn = computed(
   () => game.packages.find((p) => p.path === game.packagePath)?.autosave_turn ?? null,
@@ -229,6 +246,18 @@ onMounted(() => {
         <ActionInput />
       </main>
 
+      <!-- 右ペインの幅可変ツマミ。ドラッグで StatePanel の幅を変える (localStorage 永続)。
+           パネルは常に画面右端に接するので 幅 = 画面幅 − ポインタ X。 -->
+      <div
+        class="panel-resizer shrink-0"
+        role="separator"
+        aria-orientation="vertical"
+        :aria-label="t('app.resizePanel')"
+        :title="t('app.resizePanel')"
+        @pointerdown="startPanelResize"
+        @dblclick="game.setPanelWidth(256)"
+      ></div>
+
       <StatePanel />
     </div>
 
@@ -264,5 +293,18 @@ onMounted(() => {
 .toast-leave-to {
   opacity: 0;
   transform: translateY(8px);
+}
+
+/* 右ペインの幅可変ツマミ。細い当たり判定 + hover/ドラッグでハイライト。ダブルクリックで既定幅に戻る。 */
+.panel-resizer {
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background-color 0.15s ease;
+  touch-action: none; /* pointer ドラッグを妨げない (スクロールに奪われない) */
+}
+.panel-resizer:hover,
+.panel-resizer:active {
+  background: rgb(var(--ember) / 0.7);
 }
 </style>

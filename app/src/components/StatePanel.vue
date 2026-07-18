@@ -67,7 +67,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 </script>
 
 <template>
-  <aside class="w-64 shrink-0 border-l border-ash bg-ink/60 text-sm flex">
+  <aside
+    class="shrink-0 border-l border-ash bg-ink/60 text-sm flex"
+    :style="{ width: game.panelWidth + 'px' }"
+  >
     <!-- 縦タブ rail: 全体スクロールを避けるため 2 枚に分ける (進行 / 状態)。 -->
     <!-- rail は背景・罫線なし (透明)、タブは普段半透明で控えめに。 -->
     <nav class="w-7 shrink-0 flex flex-col items-stretch pt-2 gap-0.5">

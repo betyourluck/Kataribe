@@ -36,6 +36,7 @@ export const messages = {
         "一覧で別のゲームを選択中です（セーブはプレイ中のゲームにのみできます。ロードで切り替えるか、選択を戻してください）",
       loadSlots: "ロード (スロットから再開)",
       newGame: "新しいゲーム",
+      resizePanel: "ドラッグで右ペインの幅を調整（ダブルクリックで既定に戻す）",
       emptyHint:
         "パッケージを選んで「新しいゲーム」を押すと、忘れない・矛盾しない GM が物語を始めます。",
     },
@@ -381,6 +382,7 @@ export const messages = {
         "A different game is selected in the list — you can only save the game you're currently playing (load it, or reselect the current game).",
       loadSlots: "Load (from a slot)",
       newGame: "New game",
+      resizePanel: "Drag to resize the right panel (double-click to reset)",
       emptyHint:
         "Pick a package and press “New game” — a GM that never forgets or contradicts will begin the story.",
     },

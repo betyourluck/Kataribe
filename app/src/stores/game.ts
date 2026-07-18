@@ -101,6 +101,15 @@ function loadBeatBgOpacity(): number {
   return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 40;
 }
 
+// 右ペイン (状態パネル) の幅 px。ドラッグハンドルで可変・localStorage 永続。
+const PANEL_WIDTH_KEY = "kataribe.panelWidth";
+export const PANEL_WIDTH_MIN = 200;
+export const PANEL_WIDTH_MAX = 640;
+function loadPanelWidth(): number {
+  const v = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+  return Number.isFinite(v) && v >= PANEL_WIDTH_MIN && v <= PANEL_WIDTH_MAX ? v : 256; // 既定 w-64
+}
+
 // 会話ログのテキスト保存先フォルダ (空 = backend の既定 app_data_dir/logs)。
 const LOG_DIR_KEY = "kataribe.logDir";
 function loadLogDir(): string {
@@ -241,6 +250,8 @@ interface GameState {
   msgShadow: number;
   // ビート (✦) / 想起 (┊) ブロックの黒背景の濃さ 0..100 (0=なし)。表示設定。
   beatBgOpacity: number;
+  // 右ペイン (状態パネル) の幅 px。ドラッグハンドルで可変。
+  panelWidth: number;
   // 音量 0..100 (BGM/SE 共通)。サウンド設定。
   audioVolume: number;
   // ミュート (true なら音を出さない)。サウンド設定。
@@ -318,6 +329,7 @@ export const useGameStore = defineStore("game", {
       msgColor: loadMsgColor(),
       msgShadow: loadMsgShadow(),
       beatBgOpacity: loadBeatBgOpacity(),
+      panelWidth: loadPanelWidth(),
       audioVolume: loadAudioVolume(),
       audioMuted: loadAudioMuted(),
       packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
@@ -485,6 +497,12 @@ export const useGameStore = defineStore("game", {
     setBgBrightness(v: number) {
       this.bgBrightness = Math.max(0, Math.min(100, Math.round(v)));
       localStorage.setItem(BG_BRIGHTNESS_KEY, String(this.bgBrightness));
+    },
+
+    // 右ペインの幅を設定 (ドラッグ中に即時反映 + localStorage 永続化)。範囲でクランプ。
+    setPanelWidth(px: number) {
+      this.panelWidth = Math.max(PANEL_WIDTH_MIN, Math.min(PANEL_WIDTH_MAX, Math.round(px)));
+      localStorage.setItem(PANEL_WIDTH_KEY, String(this.panelWidth));
     },
 
     // 本文フォントを設定 (即時反映 + localStorage 永続化)。表示設定タブから呼ぶ。
