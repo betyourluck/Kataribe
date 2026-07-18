@@ -14,7 +14,7 @@ world: |
   ※ プレイヤーが、単独で行動する話。あかりは店には同行しない。
 player:
   name: あなた
-  icon: player.png
+  icon: player.webp
   profile: 商店街の近くに住む、観察力に長けた友人。依頼人の幼馴染として頼られた。特別な能力はないが、人の話をよく聞く。
   stats: { 観察力: 6, 共感力: 6 }
   skills: [観察眼, 傾聴]
