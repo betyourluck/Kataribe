@@ -104,6 +104,9 @@ cast_vote op で並べること** (voter にその NPC の id、target に投票
 さらに**〔秘匿:本人未知〕と注記された属性は当人すら知らない** — 当人にも明かすな (本人視点の \
 自覚・独白・気配としても描くな)。その属性が引き起こす効果は、**原因を伏せて現象だけ**を描け \
 (盤面のトリガーが明かすまで、当人は自分に何が起きているか知らないままである)。\n\
+- **〔秘匿〕と注記されたフラグ・数値は、プレイヤーの画面に出ていない裏の状態である** \
+(隠し進行・裏の好感度など)。あなたは追うために知っているが、その値・真偽を地の文で明示するな — \
+**その状態が引き起こす現象だけ**を描き、原因 (フラグ/数値) は伏せよ。\n\
 - **summary には、このターンの経緯 1 行 (誰が何をして何が起きたか、確定した事実だけ) を毎ターン \
 書くこと。** これは以後のターンの『これまでの経緯』としてあなた自身に引き継がれる記憶になる — \
 書かなければ経緯は忘れられる。物語的な修辞は不要、事実の記録に徹する \
@@ -281,7 +284,9 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
     let usable: std::collections::BTreeSet<_> = scenario
         .usable_flags()
         .into_iter()
-        .filter(|f| !scenario.hidden_flags.contains(f))
+        // 帳簿 (internal_flags) も秘匿 (hidden_flags) も set_flag 語彙には出さない
+        // (前者は触らせない内部変数、後者は GM に casually 立てさせない秘密)。
+        .filter(|f| !scenario.hidden_flags.contains(f) && !scenario.internal_flags.contains(f))
         .collect();
     if !usable.is_empty() {
         s.push_str(
@@ -336,15 +341,23 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
             .collect::<Vec<_>>()
             .join(" / ")
     };
-    // 立っているフラグ。帳簿フラグ (hidden_flags) は出さず (hidden_stats と同じ扱い)、
+    // 立っているフラグ。internal_flags (engine 帳簿) は GM からも隠す。hidden_flags
+    // (プレイヤー非表示の秘密) は 〔秘匿〕注記付きで GM に見せる (明かすな規律は GM_SYSTEM)。
     // 表示名 (flag_titles) があれば添える (id は ops 用にそのまま残す)。
     let flags: Vec<String> = state
         .flags
         .iter()
-        .filter(|(k, v)| **v && !scenario.hidden_flags.contains(*k))
-        .map(|(k, _)| match scenario.flag_titles.get(k).filter(|t| !t.trim().is_empty()) {
-            Some(title) => format!("{k}（{}）", title.trim()),
-            None => k.clone(),
+        .filter(|(k, v)| **v && !scenario.internal_flags.contains(*k))
+        .map(|(k, _)| {
+            let base = match scenario.flag_titles.get(k).filter(|t| !t.trim().is_empty()) {
+                Some(title) => format!("{k}（{}）", title.trim()),
+                None => k.clone(),
+            };
+            if scenario.hidden_flags.contains(k) {
+                format!("{base}〔秘匿〕")
+            } else {
+                base
+            }
         })
         .collect();
     let flags = if flags.is_empty() { "なし".to_string() } else { flags.join(", ") };
@@ -356,11 +369,18 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
             .entities
             .iter()
             .map(|(eid, stats)| {
-                // 内部用の帳簿 stat (hidden_stats) は提示しない (タイマー/カウンタの露出防止)。
+                // internal_stats (engine 帳簿) は GM からも隠す。hidden_stats (プレイヤー非表示の
+                // 秘密) は 〔秘匿〕注記付きで GM に見せる (明かすな規律は GM_SYSTEM)。
                 let kv = stats
                     .iter()
-                    .filter(|(k, _)| !scenario.hidden_stats.contains(*k))
-                    .map(|(k, v)| format!("{k}={v}"))
+                    .filter(|(k, _)| !scenario.internal_stats.contains(*k))
+                    .map(|(k, v)| {
+                        if scenario.hidden_stats.contains(k) {
+                            format!("{k}={v}〔秘匿〕")
+                        } else {
+                            format!("{k}={v}")
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{eid}: {kv}")

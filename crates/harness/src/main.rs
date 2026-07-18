@@ -599,10 +599,13 @@ fn stats_line(state: &GameState, scenario: &Scenario) -> String {
             .entities
             .iter()
             .map(|(eid, stats)| {
-                // 内部用の帳簿 stat (hidden_stats) は表示しない。
+                // プレイヤー向け表示なので hidden_stats (GM は見る秘密) も internal_stats
+                // (engine 帳簿) も両方隠す。
                 let kv = stats
                     .iter()
-                    .filter(|(k, _)| !scenario.hidden_stats.contains(*k))
+                    .filter(|(k, _)| {
+                        !scenario.hidden_stats.contains(*k) && !scenario.internal_stats.contains(*k)
+                    })
                     .map(|(k, v)| format!("{k}={v}"))
                     .collect::<Vec<_>>()
                     .join(", ");

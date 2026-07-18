@@ -797,12 +797,15 @@ fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> St
             stats: {
                 // authored 宣言順 (YAML の記述順) で並べる。実行時 GameState は BTreeMap で
                 // 順序を持たないので、Scenario::stat_order (initial_stats/CharacterDef.stats の
-                // 記述順) を参照する。hidden_stats (帳簿) は状態パネルに出さない。
+                // 記述順) を参照する。プレイヤー UI からは hidden_stats (GM は見る秘密) も
+                // internal_stats (engine 帳簿) も両方隠す (プレイヤーから見れば同一 = 非表示)。
                 let m = state.entities.get(id);
                 let order = scenario.stat_order(id);
+                let ui_hidden =
+                    |k: &String| scenario.hidden_stats.contains(k) || scenario.internal_stats.contains(k);
                 let mut out: Vec<StatView> = Vec::new();
                 for k in &order {
-                    if scenario.hidden_stats.contains(k) {
+                    if ui_hidden(k) {
                         continue;
                     }
                     if let Some(v) = m.and_then(|m| m.get(k)) {
@@ -812,7 +815,7 @@ fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> St
                 // 宣言に無い runtime stat (role_assignment の帳簿等) は末尾に (BTreeMap 順で安定)。
                 if let Some(m) = m {
                     for (k, v) in m {
-                        if !order.contains(k) && !scenario.hidden_stats.contains(k) {
+                        if !order.contains(k) && !ui_hidden(k) {
                             out.push(StatView { key: k.clone(), value: *v });
                         }
                     }
@@ -889,8 +892,11 @@ fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> St
         flags: state
             .flags
             .iter()
-            // 帳簿フラグ (hidden_flags) は UI にも出さない (hidden_stats と同じ扱い)。
-            .filter(|(k, v)| **v && !scenario.hidden_flags.contains(*k))
+            // プレイヤー UI からは hidden_flags (GM は見る秘密) も internal_flags (engine 帳簿) も
+            // 両方隠す (プレイヤーから見れば同一 = 非表示)。
+            .filter(|(k, v)| {
+                **v && !scenario.hidden_flags.contains(*k) && !scenario.internal_flags.contains(*k)
+            })
             .map(|(k, _)| {
                 // 真化ターン (正本) と chronicle (経緯ログ) を join して「何をして立ったか」を出す。
                 let turn = state.flag_turns.get(k).copied();

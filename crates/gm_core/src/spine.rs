@@ -474,6 +474,8 @@ pub enum ScenarioError {
     FlagTitleUndeclared { flag: FlagKey },
     /// `hidden_flags` のキーが `allowed_flags` に宣言されていない (幻フラグの秘匿)。
     HiddenFlagUndeclared { flag: FlagKey },
+    /// `internal_flags` のキーが `allowed_flags` に宣言されていない (幻フラグの帳簿指定)。
+    InternalFlagUndeclared { flag: FlagKey },
     /// トリガーの `set_attribute` が宣言されていない属性キーに書こうとしている (幻属性遮断)。
     /// player は `initial_attributes`、NPC は `CharacterDef::attributes` でキーを宣言する。
     AttributeKeyUndeclared {
@@ -642,12 +644,21 @@ pub struct Scenario {
     /// `allowed_flags` 宣言必須 ([`Scenario::validate`] が幻フラグへの表示名を弾く)。
     #[serde(default)]
     pub flag_titles: BTreeMap<FlagKey, String>,
-    /// **表示から隠すフラグ** (`hidden_stats` のフラグ版)。タイマーの armed フラグ (`x_done` 等)
-    /// のような**変数として使う帳簿フラグ**を、提示層 (UI フラグ一覧 / `state_brief` /
-    /// 語彙節) が一切出さない宣言。engine 非使用・非検証 — gate/トリガーの評価は不変で効く。
-    /// キーは `allowed_flags` 宣言必須。
+    /// **プレイヤーには隠すが GM は見る秘密のフラグ** (`hidden_attributes` のフラグ版、2026-07-19
+    /// 命名整理)。裏で進む真相・隠し進行のような**プレイヤー UI に出したくないが GM は追う**フラグ。
+    /// 提示層の扱い: プレイヤー UI = 出さない / `state_brief` = **〔秘匿〕注記付きで GM に見せる** /
+    /// set_flag 語彙節 = 出さない (GM に casually 立てさせない)。GM_SYSTEM が「〔秘匿〕は明かすな」を
+    /// 刷り込む。engine 非使用・非検証 — gate/トリガーの評価は不変。キーは `allowed_flags` 宣言必須。
+    /// (「GM にも見せない engine 帳簿」は [`Self::internal_flags`]。)
     #[serde(default)]
     pub hidden_flags: BTreeSet<FlagKey>,
+    /// **GM もプレイヤーも見ない engine 内部の帳簿フラグ** (タイマーの armed フラグ `x_done` 等、
+    /// 2026-07-19 命名整理で `hidden_flags` の旧義を分離)。**変数として使う**フラグを全提示層
+    /// (UI フラグ一覧 / `state_brief` / 語彙節) が一切出さない宣言。engine 非使用・非検証 —
+    /// gate/トリガーの評価は不変で効く。キーは `allowed_flags` 宣言必須。
+    /// (「プレイヤーには隠すが GM は見る秘密」は [`Self::hidden_flags`]。)
+    #[serde(default)]
+    pub internal_flags: BTreeSet<FlagKey>,
     /// 役職のランダム割り当て (spec 06 Phase A)。宣言があれば [`Self::initial_state`] が
     /// 専用ストリームで shuffle して配る。詳細は [`RoleAssignment`]。
     #[serde(default)]
@@ -675,12 +686,20 @@ pub struct Scenario {
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
     pub initial_stats: IndexMap<StatKey, i64>,
-    /// **表示から隠す stat キー** (内部用の帳簿 stat。spec 04 追補)。タイマー (`record_turn` の刻み) や
-    /// repeatable カウンタのような engine 内部値を、提示層 (UI の状態パネル / prompt の state_brief / CLI) が
-    /// この集合のキーで skip する。**engine は使わない提示ヒント** (キーの正本性には影響しない・非検証)。
-    /// 全 entity に効く (どの entity のこのキーの stat も隠す)。
+    /// **プレイヤーには隠すが GM は見る秘密の数値** (2026-07-19 命名整理)。隠し好感度・裏の腐敗値の
+    /// ような**プレイヤー UI に出したくないが GM は追う**数値。提示層の扱い: UI の状態パネル = 出さない /
+    /// CLI = 出さない / prompt の `state_brief` = **〔秘匿〕注記付きで GM に見せる**。GM_SYSTEM が
+    /// 「〔秘匿〕は明かすな」を刷り込む。**engine は使わない提示ヒント** (非検証)。全 entity に効く。
+    /// (「GM にも見せない engine 帳簿」は [`Self::internal_stats`]。)
     #[serde(default)]
     pub hidden_stats: BTreeSet<StatKey>,
+    /// **GM もプレイヤーも見ない engine 内部の帳簿 stat** (タイマー `record_turn` の刻みや repeatable
+    /// カウンタ、2026-07-19 命名整理で `hidden_stats` の旧義を分離)。engine 内部値を全提示層
+    /// (UI の状態パネル / prompt の state_brief / CLI) が skip する。**engine は使わない提示ヒント**
+    /// (非検証・キーは開集合ゆえ宣言不要)。全 entity に効く。
+    /// (「プレイヤーには隠すが GM は見る秘密」は [`Self::hidden_stats`]。)
+    #[serde(default)]
+    pub internal_stats: BTreeSet<StatKey>,
     /// `"player"` の初期スキル糖衣 (閉世界宣言)。NPC は [`CharacterDef::skills`]。
     #[serde(default)]
     pub initial_skills: BTreeSet<SkillId>,
@@ -985,6 +1004,13 @@ impl Scenario {
         for flag in &self.hidden_flags {
             if !self.allowed_flags.contains(flag) {
                 errs.push(ScenarioError::HiddenFlagUndeclared { flag: flag.clone() });
+            }
+        }
+        // 帳簿宣言 (internal_flags) も同様 (幻フラグの帳簿指定を弾く)。internal_stats は
+        // hidden_stats と同じく無検証 (stat キーは開集合ゆえ宣言不要)。
+        for flag in &self.internal_flags {
+            if !self.allowed_flags.contains(flag) {
+                errs.push(ScenarioError::InternalFlagUndeclared { flag: flag.clone() });
             }
         }
         // 属性の閉世界: トリガーの set_attribute は宣言済みキーにしか書けない (幻属性遮断)。

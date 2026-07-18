@@ -2521,6 +2521,44 @@ goal: { kind: always }
         );
     }
 
+    /// 【internal_* の宣言整合 (2026-07-19 命名整理)】`internal_flags`/`internal_stats` は
+    /// 「GM もプレイヤーも見ない engine 内部の帳簿」。internal_flags のキーは allowed_flags 宣言必須
+    /// (hidden_flags と同型)、internal_stats は無検証 (hidden_stats と同型 = stat キーは開集合)。
+    #[test]
+    fn internal_flags_and_stats_parse_and_validate() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [timer_armed, visible_flag]
+internal_flags: [timer_armed]
+internal_stats: [timer_stamp]
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "宣言済みの帳簿は健全: {:?}", sc.validate());
+        assert!(sc.internal_flags.contains("timer_armed"));
+        assert!(sc.internal_stats.contains("timer_stamp"), "internal_stats は無検証で任意キー可");
+
+        let bad = r#"
+title: t
+start: room
+allowed_flags: [real]
+internal_flags: [ghost]
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(bad).unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::InternalFlagUndeclared { flag } if flag == "ghost")),
+            "未宣言フラグの帳簿指定を validate が弾く: {:?}",
+            sc.validate()
+        );
+    }
+
     /// 【表示名の宣言整合】`flag_titles` の幻フラグは validate が load 時に弾く (flag_hints と同型)。
     #[test]
     fn validate_rejects_undeclared_flag_title() {

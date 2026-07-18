@@ -1145,14 +1145,14 @@ mod tests {
         assert!(!prompt::is_truthy("false") && !prompt::is_truthy("") && !prompt::is_truthy("0"));
     }
 
-    /// 【内部 stat の秘匿 (spec 04 追補)】hidden_stats に挙げた帳簿 stat (タイマー等) は
-    /// state_brief の能力値行に出ない (主人公の可視ステータスを汚さない)。
+    /// 【内部 stat の秘匿 (spec 04 追補 → 2026-07-19 命名整理)】タイマー等の engine 帳簿 stat は
+    /// `internal_stats` で GM の state_brief からも隠す (主人公の可視ステータスも GM prompt も汚さない)。
     #[test]
-    fn state_brief_hides_hidden_stats() {
+    fn state_brief_hides_internal_stats() {
         let sc = Scenario::from_yaml(concat!(
             "title: t\nstart: room\n",
             "initial_stats: { hp: 10, x_turn: 0 }\n",
-            "hidden_stats: [x_turn]\n",
+            "internal_stats: [x_turn]\n",
             "goal: { kind: always }\n",
             "locations:\n  room: { description: d, items: {}, exits: [] }\n"
         ))
@@ -1160,7 +1160,7 @@ mod tests {
         let s = sc.initial_state(1);
         let sb = prompt::state_brief(&s, &sc);
         assert!(sb.contains("hp=10"), "可視 stat は出る");
-        assert!(!sb.contains("x_turn"), "内部タイマー stat は隠れる: {sb}");
+        assert!(!sb.contains("x_turn"), "内部タイマー stat は GM からも隠れる: {sb}");
     }
 
     /// 【主人公の認識】world / protagonist が scenario_brief に surface され、GM_SYSTEM が
@@ -1265,38 +1265,69 @@ mod tests {
     /// 「立っている状態」にも scenario_brief の語彙節にも出ない (提示層が一切出さない =
     /// `hidden_stats` と同じ扱い)。gate/トリガーの評価は不変で効く。
     #[test]
-    fn hidden_flags_are_skipped_by_prompt_layers() {
+    fn flag_and_stat_visibility_internal_vs_hidden_split() {
+        // 命名整理 (2026-07-19): 可視性を二軸に分けた。
+        // internal_* = GM もプレイヤーも見ない engine 帳簿 (タイマー/カウンタ)。
+        // hidden_*   = プレイヤー UI には出ないが GM は 〔秘匿〕注記付きで見る (裏の秘密・隠し進行、
+        //              明かすなの規律を GM_SYSTEM が刷り込む)。どちらも set_flag 語彙には出さない。
         let sc = Scenario::from_yaml(concat!(
             "title: t\nstart: room\n",
-            "allowed_flags: [x_done, 知った_合図]\n",
-            "hidden_flags: [x_done]\n",
-            "flag_hints: { 知った_合図: 合図を教わったら立てる }\n",
+            "allowed_flags: [timer_armed, secret_progress, open_flag]\n",
+            "internal_flags: [timer_armed]\n",
+            "hidden_flags: [secret_progress]\n",
+            "initial_stats: { hp: 10 }\n",
+            "internal_stats: [timer_stamp]\n",
+            "hidden_stats: [corruption]\n",
             "locations:\n  room: { description: d, items: {}, exits: [] }\n",
             "goal: { kind: always }\n"
         ))
         .unwrap();
-        // 語彙節: 見えるフラグは列挙され、隠しフラグは出ない。
-        let brief = prompt::scenario_brief(&sc);
-        assert!(brief.contains("知った_合図"), "見えるフラグは語彙に出る: {brief}");
-        assert!(!brief.contains("x_done"), "隠しフラグは語彙に出ない: {brief}");
 
-        // state_brief: 両方 true でも隠しフラグは「立っている状態」に出ない。
+        // 語彙節: 通常フラグだけ。internal も hidden も set_flag 語彙には出さない。
+        let brief = prompt::scenario_brief(&sc);
+        assert!(brief.contains("open_flag"), "通常フラグは語彙に出る: {brief}");
+        assert!(!brief.contains("timer_armed"), "internal は語彙に出ない: {brief}");
+        assert!(
+            !brief.contains("secret_progress"),
+            "hidden も語彙に出ない (GM に casually 立てさせない): {brief}"
+        );
+
+        // state_brief: フラグ 3 種を true + stat を entities に置く。
         let mut s = sc.initial_state(1);
+        {
+            let e = s.entities.entry("player".into()).or_default();
+            e.insert("timer_stamp".into(), 3);
+            e.insert("corruption".into(), 7);
+        }
         gm_core::apply(
             &mut s,
             &sc,
             &gm_core::StateDelta::new(
                 "",
                 vec![
-                    StateOp::SetFlag { key: "x_done".into(), value: true },
-                    StateOp::SetFlag { key: "知った_合図".into(), value: true },
+                    StateOp::SetFlag { key: "timer_armed".into(), value: true },
+                    StateOp::SetFlag { key: "secret_progress".into(), value: true },
+                    StateOp::SetFlag { key: "open_flag".into(), value: true },
                 ],
             ),
         )
         .unwrap();
         let sb = prompt::state_brief(&s, &sc);
-        assert!(sb.contains("知った_合図"), "見えるフラグは載る: {sb}");
-        assert!(!sb.contains("x_done"), "隠しフラグは載らない: {sb}");
+
+        // フラグ: internal は GM から隠す / hidden は 〔秘匿〕付き / 通常は素で見せる。
+        assert!(!sb.contains("timer_armed"), "internal_flags は GM から隠す: {sb}");
+        assert!(sb.contains("secret_progress〔秘匿〕"), "hidden_flags は 〔秘匿〕付きで GM に見せる: {sb}");
+        assert!(sb.contains("open_flag"), "通常フラグは素で見せる: {sb}");
+
+        // 数値: internal は隠す / hidden は 〔秘匿〕付き。
+        assert!(!sb.contains("timer_stamp"), "internal_stats は GM から隠す: {sb}");
+        assert!(sb.contains("corruption=7〔秘匿〕"), "hidden_stats は 〔秘匿〕付きで GM に見せる: {sb}");
+
+        // GM_SYSTEM: 〔秘匿〕はフラグ・数値にも及ぶ「明かすな」の規律を持つ。
+        assert!(
+            prompt::GM_SYSTEM.contains("〔秘匿〕と注記されたフラグ・数値"),
+            "秘匿規律がフラグ・数値に及ぶ"
+        );
     }
 
     /// 【投票の prompt 接地 (spec 06 Phase D)】engine が CastVote を受理できても、GM が
