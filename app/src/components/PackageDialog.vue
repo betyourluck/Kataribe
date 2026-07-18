@@ -111,7 +111,7 @@ function totalPages(): number {
                 <span v-if="p.error" class="shrink-0 rounded bg-red-900/60 px-1.5 text-xs text-red-200">{{ t("packages.loadFailed") }}</span>
               </div>
               <div class="text-xs text-parchment/45 truncate">{{ p.path }}</div>
-              <div v-if="p.description && !p.error" class="text-xs text-parchment/60 mt-0.5">{{ p.description }}</div>
+              <div v-if="p.description && !p.error" class="text-xs text-parchment/60 mt-0.5 desc-clamp">{{ p.description }}</div>
               <div v-if="p.error" class="text-xs text-red-300/80 mt-0.5">{{ p.error }}</div>
             </div>
             <button
@@ -235,7 +235,16 @@ function totalPages(): number {
                   <span class="mx-1.5">·</span>{{ fmtSize(p.file_size) }}
                   <span class="mx-1.5">·</span>{{ p.uploader_display_name }}
                 </div>
-                <div v-if="p.description" class="text-xs text-parchment/60 mt-0.5">{{ p.description }}</div>
+                <!-- 説明は 2 行でクランプ (長文でカードが縦長になるのを防ぐ)。全文は書庫の詳細ページで。 -->
+                <div v-if="p.description" class="text-xs text-parchment/60 mt-0.5 desc-clamp">{{ p.description }}</div>
+                <button
+                  type="button"
+                  class="text-xs text-ember/80 hover:text-ember underline mt-0.5"
+                  :title="t('packages.viewOnSiteTitle')"
+                  @click="game.openSitePackagePage(p.id)"
+                >
+                  {{ t("packages.viewOnSite") }} ↗
+                </button>
               </div>
               <button
                 class="shrink-0 rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
@@ -274,3 +283,13 @@ function totalPages(): number {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 説明文の 2 行クランプ — 文字数切りは表示幅で行数が揺れるので行数で切る。 */
+.desc-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+</style>

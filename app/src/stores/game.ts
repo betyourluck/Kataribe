@@ -469,6 +469,18 @@ export const useGameStore = defineStore("game", {
       }
     },
 
+    // 書庫のパッケージ詳細ページを既定ブラウザで開く (説明の全文・レビューはサイト側で読む)。
+    // 開くのは常にユーザー登録の siteUrl 起点 — id はパス成分として encode し origin を変えられない。
+    async openSitePackagePage(id: string) {
+      try {
+        await invoke("open_external_url", {
+          url: `${this.siteUrl}/packages/${encodeURIComponent(id)}`,
+        });
+      } catch (e) {
+        this.logToast = t("store.openSiteFailed", { error: String(e) });
+      }
+    },
+
     // 背景の明るさを設定 (即時反映 + localStorage 永続化)。グラフィック設定タブから呼ぶ。
     setBgBrightness(v: number) {
       this.bgBrightness = Math.max(0, Math.min(100, Math.round(v)));
