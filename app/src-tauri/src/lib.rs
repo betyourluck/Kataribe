@@ -10,6 +10,7 @@
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
 mod site;
+mod update;
 
 use std::path::{Component, Path, PathBuf};
 
@@ -965,6 +966,11 @@ struct PackageEntry {
 /// entry は解決しない (一覧は title/description だけ要る、campaign パッケージも一覧には出す)。
 #[tauri::command]
 async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<PackageEntry> {
+    // spec 17 rev2 A-3: 更新スワップのクラッシュ残骸を掃除 (tmp 削除 / .bak 自動復旧)。
+    // 書庫取得物の置き場 (app_data/packages) だけを走査する (repo 同梱・手動配置は触らない)。
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        update::cleanup_leftovers(&data_dir.join("packages"));
+    }
     paths
         .into_iter()
         .map(|p| {
@@ -1219,6 +1225,10 @@ struct RemotePackage {
     /// 作者が納本時に自己申告する対応 Kataribe バージョン (例 "v0.2.0")。未申告なら None
     /// (Option ゆえ古い版の書庫や未申告パッケージでも deserialize は通る)。
     kataribe_version: Option<String>,
+    /// 配布物 (正規化済み zip) の sha256 (spec 17 機構②)。install 時の一致検証と
+    /// 更新検知の一次ソース。未対応の古い書庫/自前サーバは None (更新検知は静かに無効)。
+    #[serde(default)]
+    sha256: Option<String>,
 }
 
 /// 書庫の一覧応答 (items + ページネーション)。
@@ -1379,18 +1389,24 @@ async fn install_site_package(
     app: tauri::AppHandle,
     site_url: String,
     id: String,
+    sha256: Option<String>,
 ) -> Result<InstalledPackage, String> {
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("アプリデータ置き場を解決できません: {e}"))?;
-    install_from_site(&site_url, &id, &data_dir).await
+    install_from_site(&site_url, &id, sha256.as_deref(), &data_dir).await
 }
 
 /// install_site_package の本体 (Tauri 非依存 = 実サーバ相手の統合テストが書ける)。
+/// `expected_sha256` はサーバ申告 (一覧の `RemotePackage.sha256`、spec 17 rev2 A-1) —
+/// Some なら受信バイト列の自前計算と一致検証し、不一致は DL 破損として中止する
+/// (壊れた基準を SourceMeta に記録すると更新検知が恒常的に狂うため)。None (古い書庫) は
+/// 検証なしで自前計算値を記録する。
 async fn install_from_site(
     site_url: &str,
     id: &str,
+    expected_sha256: Option<&str>,
     data_dir: &Path,
 ) -> Result<InstalledPackage, String> {
     let base = normalize_site_url(site_url)?;
@@ -1437,6 +1453,22 @@ async fn install_from_site(
         return Err(e);
     }
 
+    // --- 受信バイト列の指紋 (spec 17 rev2 A-1) ---
+    // サーバ申告 (一覧の sha256) と一致検証してから基準として採用する。不一致 = DL 破損。
+    let content_hash = match update::sha256_file(&tmp) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("ダウンロードの検証に失敗: {e}"));
+        }
+    };
+    if let Some(expected) = expected_sha256 {
+        if !expected.eq_ignore_ascii_case(&content_hash) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err("ダウンロードが破損しています (ハッシュ不一致)。もう一度お試しください".to_string());
+        }
+    }
+
     // --- 検証 + 展開 (同期 IO/CPU なので blocking プールへ) ---
     let tmp2 = tmp.clone();
     let pk2 = packages_dir.clone();
@@ -1448,10 +1480,33 @@ async fn install_from_site(
 
     // --- 受領側検証の入口: manifest が読めるか (深い検証は new_game 時の validate) ---
     match read_manifest(&installed) {
-        Ok(m) => Ok(InstalledPackage {
-            path: installed.to_string_lossy().into_owned(),
-            title: m.title,
-        }),
+        Ok(m) => {
+            // --- 出所メタ (spec 17 機構①): 更新検知・編集検知の基準をフォルダ自身に記録。
+            // 書けなくてもパッケージは使える (更新だけ効かない) = 非致命の警告どまり。
+            match update::tree_hash(&installed) {
+                Ok(tree) => {
+                    let meta = update::SourceMeta {
+                        site_url: base.clone(),
+                        id: id.to_string(),
+                        version: (!m.version.trim().is_empty()).then(|| m.version.clone()),
+                        content_hash,
+                        tree_hash: tree,
+                        installed_at_unix: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                    };
+                    if let Err(e) = update::write_source_meta(&installed, &meta) {
+                        eprintln!("[警告] 出所メタを書けませんでした (更新検知は無効): {e}");
+                    }
+                }
+                Err(e) => eprintln!("[警告] tree_hash を計算できませんでした (更新検知は無効): {e}"),
+            }
+            Ok(InstalledPackage {
+                path: installed.to_string_lossy().into_owned(),
+                title: m.title,
+            })
+        }
         Err(e) => {
             // パッケージとして読めない配布物は据え置かない (一覧の恒久エラー行を作らない)。
             let _ = std::fs::remove_dir_all(&installed);
@@ -2272,7 +2327,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let installed = super::install_from_site(&base, &id, &data_dir)
+        let installed = super::install_from_site(&base, &id, None, &data_dir)
             .await
             .expect("DL→検証→展開→manifest 読みが通る");
         assert!(
@@ -2280,6 +2335,16 @@ mod tests {
             "展開先に package.yaml がある"
         );
         assert!(!installed.title.is_empty(), "manifest の title が読めている");
+        // spec 17 Phase A: 書庫取得物には出所メタが書かれ、tree_hash が現状と一致する
+        // (install 直後 = 編集なし)。
+        let meta = crate::update::read_source_meta(Path::new(&installed.path))
+            .expect("出所メタが書かれている");
+        assert!(!meta.content_hash.is_empty());
+        assert_eq!(
+            meta.tree_hash,
+            crate::update::tree_hash(Path::new(&installed.path)).unwrap(),
+            "install 直後の tree_hash は再計算と一致 (編集なし)"
+        );
     }
 
     /// 【セーブスロット PoC (2026-07-16, spec 07 Phase D)】ファイル名は安定で、

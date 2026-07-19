@@ -677,9 +677,13 @@ export const useGameStore = defineStore("game", {
       this.installingId = id;
       this.remoteError = null;
       try {
+        // spec 17 A-1: サーバ申告の sha256 を expected として渡す (DL 破損の一致検証 +
+        // 出所メタの基準)。一覧に無ければ null (古い書庫 = 検証なしで従来どおり)。
+        const expected = this.remote?.items.find((p) => p.id === id)?.sha256 ?? null;
         const installed = await invoke<InstalledPackage>("install_site_package", {
           siteUrl: this.siteUrl,
           id,
+          sha256: expected,
         });
         this.addPackage(installed.path);
         return installed;

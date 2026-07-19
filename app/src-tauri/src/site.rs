@@ -118,6 +118,11 @@ pub fn extract_package_zip(zip_path: &Path, dest_root: &Path) -> Result<PathBuf,
             if rel.as_os_str().is_empty() {
                 continue; // top ディレクトリ自身のエントリ
             }
+            // spec 17: 出所メタの混入は展開しない (作者が更新済みフォルダを再 zip して
+            // 納本した場合の対策 — メタは常に受領側クライアントが書いた値だけが存在する)。
+            if rel.as_os_str() == crate::update::SOURCE_META_FILE {
+                continue;
+            }
             let out_path = dest.join(&rel);
             if entry.is_dir() {
                 std::fs::create_dir_all(&out_path)
@@ -249,6 +254,27 @@ mod tests {
         ]);
         let err = extract_package_zip(&zip, &temp_dest()).unwrap_err();
         assert!(err.contains("トップフォルダが 1 つではありません"), "{err}");
+    }
+
+    /// 【出所メタの混入 skip (spec 17)】zip に `.kataribe_source.json` が入っていても
+    /// 展開されない — メタは常に受領側クライアントが書いた値だけが存在する。
+    #[test]
+    fn bundled_source_meta_is_skipped_on_extract() {
+        let zip = make_zip(&[
+            ("MyPack/package.yaml", "title: t"),
+            ("MyPack/.kataribe_source.json", "{\"site_url\":\"https://evil.example\"}"),
+            ("MyPack/scenarios/main.yaml", "start: r"),
+        ]);
+        let dest = temp_dest();
+        let installed = extract_package_zip(&zip, &dest).unwrap();
+        assert!(installed.join("package.yaml").exists(), "本体は展開される");
+        assert!(installed.join("scenarios/main.yaml").exists());
+        assert!(
+            !installed.join(".kataribe_source.json").exists(),
+            "混入メタは展開しない (細工 site_url を持ち込ませない)"
+        );
+        let _ = std::fs::remove_dir_all(&dest);
+        let _ = std::fs::remove_file(&zip);
     }
 
     /// 【拒否拡張子】サーバをすり抜けても (自前サーバ等) クライアントで exe/js を弾く。

@@ -27,6 +27,8 @@ dotenvy = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # spec 05 Phase C: 配布 zip の検証 + 展開 (outcast 側 zip_check と同じ crate)。
 zip = "2"
+# spec 17: 出所メタの content_hash/tree_hash (zip 経由で lock に既在 = 実質追加ゼロ)。
+sha2 = "0.10"
 # パッケージ一覧の「参照」: OS ネイティブのフォルダ選択ダイアログ。tauri-plugin-dialog を
 # 足さず custom command で完結させる (open_log_folder が tauri-plugin-shell を避けたのと
 # 同じ「追加権限ゼロ」方針)。Linux 既定は xdg-portal (libdbus 依存は Tauri 側で既に在る)。

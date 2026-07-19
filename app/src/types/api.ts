@@ -298,6 +298,8 @@ export interface RemotePackage {
   review_count: number;
   /** 作者が納本時に自己申告する対応 Kataribe バージョン (例 "v0.2.0")。未申告なら null。 */
   kataribe_version: string | null;
+  /** 配布物 (正規化済み zip) の sha256 (spec 17)。未対応の書庫は null/欠落。 */
+  sha256?: string | null;
 }
 
 /** 書庫の一覧応答 (items + ページネーション)。 */

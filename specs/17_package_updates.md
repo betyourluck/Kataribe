@@ -1,6 +1,15 @@
 # 17. パッケージ更新 — 配布サイト取得物の更新検知と上書き取得
 
-Status: **Draft rev2（査読反映済・実装可）** / 2026-07-19
+Status: **rev2 査読反映済・Phase 0+A 実装済（2026-07-19）— B (outcast) / C (結線) / D (e2e) が残** / 2026-07-19
+
+> Phase 0+A 実装メモ (2026-07-19): data_contract `package_updates` 節を凍結。app に
+> `update.rs`（SourceMeta / sha256_file / tree_hash / cleanup_leftovers）、install 経路に
+> expected sha256 一致検証（不一致で中止）+ 出所メタ書き込み（tree_hash 込み・書けなくても
+> 非致命）、extract に混入メタ skip、`list_packages` 冒頭に残骸掃除（app_data/packages のみ
+> 走査）。`RemotePackage.sha256: Option` + frontend が install に expected を受け渡し。
+> `installed_at` は unix 秒に変更（chrono 依存を足さない・表示は提示層が locale 変換 —
+> rev2 からの唯一の意図的乖離）。PoC 5 本 Red 相当→Green（sha256 固定ベクトル / tree_hash
+> 決定論+除外 / メタ roundtrip+破損 None / 掃除 3 分岐 / 混入 skip）。app backend 19 green。
 
 > rev2 (2026-07-19): 査読 A×5 (実装を止める矛盾)・B×5 (決定論性の欠落)・C (未決への推奨) を
 > 全反映。A-1 配信バイト列と DB sha256 の対応を契約に凍結 + install 時のサーバ申告検証 /
