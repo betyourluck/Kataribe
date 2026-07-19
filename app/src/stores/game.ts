@@ -9,11 +9,27 @@ import type {
   CharacterView,
   RemoteList,
   InstalledPackage,
+  StatRollView,
   SynopsisView,
   LogLineView,
   SlotView,
   MapView,
 } from "../types/api";
+
+// d100 ロールアンダーの成功度 (spec 16) の表示ラベル。内部 id は英語 (ログ検索・セーブ安定)、
+// 表示はこの言語表で差し替え可能。未知 id は素通し (前方互換)。
+export function degreeLabel(degree: string): string {
+  const key = `log.degree${degree.charAt(0).toUpperCase()}${degree.slice(1)}`;
+  const label = t(key);
+  return label === key ? degree : label;
+}
+
+// 可変量ダイス (roll_stat) の監査行 (spec 16): 「player SAN -4 (1d6=4)」。
+export function statRollLine(sr: StatRollView): string {
+  const bonus = sr.bonus !== 0 ? (sr.bonus > 0 ? `+${sr.bonus}` : `${sr.bonus}`) : "";
+  const amount = sr.amount >= 0 ? `+${sr.amount}` : `${sr.amount}`;
+  return `${sr.entity} ${sr.key} ${amount} (${sr.count}d${sr.sides}${bonus}=${sr.rolls.join("+")})`;
+}
 
 // アセット絶対パス → asset:// URL のメモ化 (convertFileSrc を毎回呼ばない。spec 01 小論点2)。
 const assetUrlCache = new Map<string, string>();
@@ -710,12 +726,23 @@ export const useGameStore = defineStore("game", {
             break;
           case "checks":
             for (const c of e.checks) {
+              // percentile (degree あり) はロールアンダー書式 (spec 16)。
+              if (c.degree) {
+                lines.push(
+                  `🎯 ${t("log.checkLabel", { entity: c.entity, stat: c.stat })}: d100=${c.roll} ${c.success ? "≤" : ">"} ${c.dc} → ${degreeLabel(c.degree)}`,
+                );
+                if (c.narration) lines.push(c.narration);
+                continue;
+              }
               const mod = c.modifier >= 0 ? `+${c.modifier}` : `${c.modifier}`;
               lines.push(
                 `🎯 ${t("log.checkLabel", { entity: c.entity, stat: c.stat })}: 1d${c.sides}(${c.roll})${mod} = ${c.total} (DC ${c.dc}) → ${c.success ? t("log.success") : t("log.fail")}`,
               );
               if (c.narration) lines.push(c.narration);
             }
+            break;
+          case "statrolls":
+            for (const sr of e.stat_rolls) lines.push(`🎲 ${statRollLine(sr)}`);
             break;
           case "reject":
             lines.push(t("log.rejectHeader", { attempts: e.attempts }));
@@ -918,6 +945,10 @@ export const useGameStore = defineStore("game", {
             this.log.push({ kind: "checks", checks: turn.checks });
             // challenge の結末効果音を one-shot 再生 (受理ターンのみ。ビート SE と同経路)。
             for (const c of turn.checks) this.playSe(assetUrl(c.sound));
+          }
+          // 可変量ダイス (spec 16): 「SAN -4 (1d6=4)」の監査行。
+          if (turn.stat_rolls.length) {
+            this.log.push({ kind: "statrolls", stat_rolls: turn.stat_rolls });
           }
           for (const b of turn.beats) {
             // narration も recalled も無い「効果のみ」の発火はログに出さない (裸の ✦ を防ぐ)。

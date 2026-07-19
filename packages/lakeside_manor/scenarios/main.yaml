@@ -1,0 +1,76 @@
+# 湖畔の洋館 — percentile 様式 (spec 16) のドッグフード。
+# 動線: 玄関 → 書斎で日記を見つける (目星 check_under を GM が即興で振る想定) →
+# 日記を読んで found_diary → 地下室が開く → 祭壇で SAN チェック (1/1d6) →
+# 真相 goal / SAN 0 なら発狂 goal。
+title: 湖畔の洋館
+start: entrance_hall
+check_style: percentile
+
+allowed_flags: [found_diary, truth_witnessed]
+flag_hints:
+  found_diary: 書斎で湖山の日記を見つけて読んだら立てる
+flag_rules:
+  found_diary: { kind: location_is, at: study }
+flag_titles:
+  found_diary: 湖山の日記
+  truth_witnessed: 湖底の真実
+
+locations:
+  entrance_hall:
+    title: 玄関ホール
+    description: 埃をかぶったシャンデリア。呼び鈴を鳴らしても、誰も出ない。扉は開いていた。
+    exits:
+      - to: study
+  study:
+    title: 書斎
+    description: 書架が壁を埋める。机の上だけが不自然に整頓され、抽斗が半開きになっている。
+    exits:
+      - to: entrance_hall
+      - to: cellar
+        gate: { kind: flag_is, key: found_diary, value: true }
+  cellar:
+    title: 地下室
+    description: 湿った石段の先。壁一面に螺旋の紋様が刻まれ、中央に黒い水を湛えた祭壇がある。
+    exits:
+      - to: study
+
+challenges:
+  altar_gaze:
+    resolution: percentile
+    description: 祭壇の黒い水を覗き込む正気度ロール (SAN)
+    stat: SAN
+    requires: { kind: location_is, at: cellar }
+    on_success:
+      flag: truth_witnessed
+      narration: 水面の奥に、湖山が「向こう側」へ渡った理由を見た。理解はできたが、忘れられない。
+      effects:
+        - { op: adjust_stat, key: SAN, delta: -1 }
+    on_failure:
+      flag: truth_witnessed
+      narration: 見てはならないものを見た。悲鳴が地下室に反響し、しばらく自分のものだと気づけなかった。
+      effects:
+        - { op: roll_stat, key: SAN, count: 1, sides: 6, negate: true }
+    on_fumble:
+      flag: truth_witnessed
+      narration: 水面がこちらを覗き返した。心の底が抜け落ちる。
+      effects:
+        - { op: roll_stat, key: SAN, count: 1, sides: 10, negate: true }
+
+goals:
+  - id: truth_ending
+    title: 真相
+    hint: 洋館を調べ、湖山の身に起きたことを突き止めよう
+    when: { kind: flag_is, key: truth_witnessed, value: true }
+    narration: |
+      夜明け前、あなたは洋館を後にした。湖山がどこへ行ったのか、口にできる形では誰にも話せない。
+      だが、あなたは知ってしまった。
+    epilogue_prompt: |
+      調査員のその後を短く。目撃した真実が日常にどんな影を落とすか、
+      SAN の残量 (高ければ気丈に・低ければ危うく) を踏まえて余韻を。
+  - id: madness_ending
+    title: 発狂
+    hint: 正気を使い果たすとここで終わる
+    when: { kind: stat_at_most, entity: player, key: SAN, value: 0 }
+    narration: |
+      翌朝、湖畔で発見されたあなたは、螺旋の紋様を指でなぞり続けていたという。
+      洋館の扉は、もう二度と開かなかった。

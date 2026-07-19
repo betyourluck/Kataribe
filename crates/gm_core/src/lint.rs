@@ -163,6 +163,7 @@ fn op_samples() -> Vec<StateOp> {
         StateOp::Move { to: "l".into() },
         StateOp::RequestRoll { sides: 6, dc: 3 },
         StateOp::Check { entity: e(), stat: "s".into(), sides: 20, dc: 10 },
+        StateOp::CheckUnder { entity: e(), key: "s".into() },
         StateOp::AttemptChallenge { entity: e(), challenge: "c".into() },
         StateOp::AdjustStat { entity: e(), key: "s".into(), delta: 1 },
         StateOp::ScaleStat { entity: e(), key: "s".into(), num: 1, den: 1 },
@@ -170,6 +171,7 @@ fn op_samples() -> Vec<StateOp> {
         StateOp::SetAttribute { entity: e(), key: "a".into(), value: "v".into() },
         StateOp::RecordTurn { entity: e(), key: "s".into() },
         StateOp::SetPresence { entity: e(), present: true },
+        StateOp::RollStat { entity: e(), key: "s".into(), count: 1, sides: 6, bonus: 0, negate: false },
         StateOp::CastVote { voter: e(), target: e() },
         StateOp::ResolveVote,
     ]
@@ -186,6 +188,7 @@ fn _op_exhaustive_guard(op: &StateOp) {
         | StateOp::Move { .. }
         | StateOp::RequestRoll { .. }
         | StateOp::Check { .. }
+        | StateOp::CheckUnder { .. }
         | StateOp::AttemptChallenge { .. }
         | StateOp::AdjustStat { .. }
         | StateOp::ScaleStat { .. }
@@ -193,6 +196,7 @@ fn _op_exhaustive_guard(op: &StateOp) {
         | StateOp::SetAttribute { .. }
         | StateOp::RecordTurn { .. }
         | StateOp::SetPresence { .. }
+        | StateOp::RollStat { .. }
         | StateOp::CastVote { .. }
         | StateOp::ResolveVote => {}
     }

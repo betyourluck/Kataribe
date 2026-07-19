@@ -268,6 +268,13 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
                 (None, Some(stat)) => format!("{stat} 判定"),
                 (None, None) => "運 (能力に依らない)".to_string(),
             };
+            // percentile challenge はロールアンダーである旨を明示 (spec 16 — 「低いほど良い」を
+            // 加算式の癖で読み違えさせない)。
+            let basis = if c.resolution == gm_core::Resolution::Percentile {
+                format!("{basis} — d100 ロールアンダー (技能値以下で成功)")
+            } else {
+                basis
+            };
             // 前提条件 (requires) があれば明示 — 満たすまでこの挑戦は選べない。
             let req = match &c.requires {
                 Some(g) => format!("【前提: {}】", gate_brief(g)),
@@ -275,6 +282,18 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
             };
             s.push_str(&format!("- {label} (id: {id}): {basis}{req}\n"));
         }
+    }
+    // 判定様式 (spec 16)。percentile 盤面では check_under の意味論を接地する — schema 入替
+    // (見せない) と対の「読み方」の接地。GM_SYSTEM は盤面非依存の const を保つ (全盤面に
+    // percentile 文言を撒かない)。scenario_brief はセッション内安定 = prompt caching も不変。
+    if scenario.check_style == gm_core::CheckStyle::Percentile {
+        s.push_str(
+            "\n## 判定様式 (この盤面は d100 ロールアンダー)\n\
+             技能判定は check_under op で行う (1d100 を振り、その技能の現在値**以下**なら成功 — \
+             **出目は低いほど良い**)。成功度 (クリティカル/イクストリーム/ハード/成功/失敗/\
+             ファンブル) はエンジンが決める。加算式の check は**この盤面では使うな**。\
+             DC を自分で決めてはならない — 目標値は技能の現在値そのものである。\n",
+        );
     }
     // 使えるフラグの語彙 (spec 03 の拡張)。LLM が set_flag してよいフラグ = allowed − authored 専権
     // (トリガー効果/challenge 帰結が立てるフラグは見せない = 先取り set_flag の誘惑を作らない)。
@@ -884,6 +903,18 @@ pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
         （差が大きいほど決定的・鮮やかに、僅差なら辛うじて・紙一重に、大失敗/大成功なら劇的に）。\n",
     );
     for c in checks {
+        // percentile (spec 16): degree が「どのくらい良かったか」を担う (margin の代替)。
+        // 表示は d100=出目 ≤/> 目標値 → 成功度 (ロールアンダー = 低いほど良い)。
+        if let Some(degree) = &c.degree {
+            let label = degree_label_ja(degree);
+            let rel = if c.success { "≤" } else { ">" };
+            s.push_str(&format!(
+                "- {} の「{}」判定: d100={} {rel} 目標値{} → {label}（成功度に応じた強さで因果を語れ。\
+                 クリティカル/ファンブルは劇的に、イクストリーム/ハードは鮮やかに、僅差は紙一重に）\n",
+                c.entity, c.stat, c.roll, c.dc
+            ));
+            continue;
+        }
         let mark = if c.success { "成功" } else { "失敗" };
         let margin = c.total - c.dc as i64;
         let gap = if margin >= 0 {
@@ -901,6 +932,19 @@ pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
         ));
     }
     s
+}
+
+/// 成功度 (degree) の日本語表示 (spec 16 決定 1: 内部 id は英語・表示は差し替え可能な
+/// 言語表。初期値は公式日本語版に馴染むカタカナ)。prompt/CLI が共用する。
+pub fn degree_label_ja(degree: &str) -> &'static str {
+    match degree {
+        "critical" => "クリティカル",
+        "extreme" => "イクストリーム成功",
+        "hard" => "ハード成功",
+        "regular" => "成功",
+        "fumble" => "ファンブル",
+        _ => "失敗",
+    }
 }
 
 /// 却下された時に LLM へ戻す修正指示。構造化理由を `lang` でレンダリングして見せ、

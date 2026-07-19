@@ -142,6 +142,21 @@ struct CheckView {
     /// authored challenge の結末効果音の絶対パス (frontend が convertFileSrc で URL 化 → one-shot 再生)。
     /// 無ければ None (未指定 or 解決失敗)。
     sound: Option<String>,
+    /// d100 ロールアンダー判定の成功度 (spec 16)。critical/extreme/hard/regular/failure/fumble
+    /// の機械 id (表示は frontend の言語表)。加算式判定は None。
+    degree: Option<String>,
+}
+
+/// 可変量ダイス (`roll_stat`) の監査 view (spec 16)。「SAN -4 (1d6=4)」の素材。
+#[derive(Serialize)]
+struct StatRollView {
+    entity: String,
+    key: String,
+    count: u32,
+    sides: u32,
+    bonus: i64,
+    rolls: Vec<u32>,
+    amount: i64,
 }
 
 /// 発火した反応ビート + recall された伏線 (語りに織り込む素材)。
@@ -239,6 +254,8 @@ struct TurnView {
     narration: String,
     rolls: Vec<RollView>,
     checks: Vec<CheckView>,
+    /// 可変量ダイス (roll_stat) の監査記録 (spec 16)。
+    stat_rolls: Vec<StatRollView>,
     beats: Vec<BeatView>,
     attempts: u32,
     /// 却下時の理由 (session.lang で localize 済み)。
@@ -1511,7 +1528,10 @@ async fn new_game(
         .map(LlmClient::new)
         .transpose()
         .map_err(|e| e.to_string())?;
-    let client = LlmClient::new(config).map_err(|e| e.to_string())?;
+    let mut client = LlmClient::new(config).map_err(|e| e.to_string())?;
+    // 判定様式 (spec 16): 盤面が使わない判定 op を schema から落とす (percentile → check を
+    // 隠し check_under を出す / additive (既定) → 逆)。セッション開始時に一度だけ確定。
+    client.set_excluded_ops(harness::excluded_check_ops(&scenario));
 
     let seed = resolve_seed();
     eprintln!("[seed] {seed} (再現するには KATARIBE_SEED={seed})");
@@ -1613,7 +1633,9 @@ async fn restore_session(
         .map(LlmClient::new)
         .transpose()
         .map_err(|e| e.to_string())?;
-    let client = LlmClient::new(config).map_err(|e| e.to_string())?;
+    let mut client = LlmClient::new(config).map_err(|e| e.to_string())?;
+    // 判定様式 (spec 16): new_game と同じくセッション開始時に確定。
+    client.set_excluded_ops(harness::excluded_check_ops(&scenario));
 
     // 版不一致は警告のみ (typo 修正でセーブを全滅させない。壊れは engine の閉世界却下が守る)。
     let mut warnings = Vec::new();
@@ -1845,6 +1867,7 @@ async fn play_turn(
             summary,
             rolls,
             checks,
+            stat_rolls,
             fired,
             attempts,
             rejected,
@@ -1908,6 +1931,19 @@ async fn play_turn(
                         .then(|| resolve_asset(&sess.package_root, AssetKind::Audios, &c.sound))
                         .flatten()
                         .map(|p| p.to_string_lossy().into_owned()),
+                    degree: c.degree.clone(),
+                })
+                .collect();
+            let stat_roll_views: Vec<StatRollView> = stat_rolls
+                .iter()
+                .map(|sr| StatRollView {
+                    entity: sr.entity.clone(),
+                    key: sr.key.clone(),
+                    count: sr.count,
+                    sides: sr.sides,
+                    bonus: sr.bonus,
+                    rolls: sr.rolls.clone(),
+                    amount: sr.amount,
                 })
                 .collect();
             // 次ターンの語りに還流する判定結果を持ち越す。
@@ -1927,6 +1963,7 @@ async fn play_turn(
                     })
                     .collect(),
                 checks: check_views,
+                stat_rolls: stat_roll_views,
                 beats,
                 attempts,
                 reasons: Vec::new(),
@@ -1956,6 +1993,7 @@ async fn play_turn(
             narration: String::new(),
             rolls: Vec::new(),
             checks: Vec::new(),
+            stat_rolls: Vec::new(),
             beats: Vec::new(),
             attempts,
             reasons: last_reasons.iter().map(|r| r.localize(sess.lang)).collect(),
@@ -2012,6 +2050,9 @@ async fn play_turn(
                 sess.current_module = adv.module_id;
                 sess.scenario = adv.scenario;
                 sess.state = adv.state;
+                // 判定様式は遷移先モジュールに従う (spec 16。schema はどのみち scenario_brief と
+                // 一緒に変わるのでキャッシュ影響は遷移時のみ)。
+                sess.client.set_excluded_ops(harness::excluded_check_ops(&sess.scenario));
                 // 新モジュール = 新しい情景。継続文脈・伏線・判定の持ち越しをリセット。
                 sess.last_narration = String::new();
                 sess.pending_lore.clear();

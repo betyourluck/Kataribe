@@ -75,6 +75,19 @@ export interface CheckView {
   narration: string;
   /** authored challenge の結末効果音の絶対パス (convertFileSrc で URL 化 → one-shot 再生)。無ければ null。 */
   sound: string | null;
+  /** d100 ロールアンダー判定の成功度 (spec 16)。critical/extreme/hard/regular/failure/fumble。加算式は null。 */
+  degree: string | null;
+}
+
+/** 可変量ダイス (roll_stat) の監査記録 (spec 16)。「SAN -4 (1d6=4)」の素材。 */
+export interface StatRollView {
+  entity: string;
+  key: string;
+  count: number;
+  sides: number;
+  bonus: number;
+  rolls: number[];
+  amount: number;
 }
 
 export interface BeatView {
@@ -213,6 +226,8 @@ export interface TurnView {
   narration: string;
   rolls: RollView[];
   checks: CheckView[];
+  /** 可変量ダイス (roll_stat) の監査記録 (spec 16)。 */
+  stat_rolls: StatRollView[];
   beats: BeatView[];
   attempts: number;
   reasons: string[];
@@ -258,6 +273,7 @@ export type LogEntry =
   | { kind: "beat"; narration: string; recalled: string[]; expanded?: boolean }
   | { kind: "rolls"; rolls: RollView[] }
   | { kind: "checks"; checks: CheckView[] }
+  | { kind: "statrolls"; stat_rolls: StatRollView[] }
   | { kind: "reject"; reasons: string[]; attempts: number }
   // 自己修復 (GM が筋を通すまでの試行) — 既定で畳み、⚠ アイコンのみ表示。expanded で展開。
   | { kind: "selfrepair"; attempts: number; reasons: string[][]; expanded?: boolean }

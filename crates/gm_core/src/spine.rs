@@ -410,6 +410,12 @@ pub struct ChallengeDef {
     /// LLM への提示文 (どんな行動の判定か。`scenario_brief` に出して GM に選ばせる)。
     #[serde(default)]
     pub description: String,
+    /// 判定様式 (spec 16)。`additive` (既定) = 従来の `1d{sides}+stat >= dc` /
+    /// `percentile` = 1d100 を目標値 (stat 現在値 + modifiers) **以下**で成功、成功度
+    /// (degree) をエンジンが計算。percentile では `stat` 必須・`sides`/`dc` は書かない
+    /// (validate が形を保証)。フラットフィールド (tier の `natural` と同流儀)。
+    #[serde(default)]
+    pub resolution: Resolution,
     /// **判定主体の authored 固定** (任意)。`Some` なら op の `entity` を**上書き**して、
     /// この entity の stat で振る (LLM が entity を省略/誤指定しても正しい主体で判定される —
     /// 実測: LLM は既定で player を主体にするため、NPC の stat を使う challenge が
@@ -428,18 +434,65 @@ pub struct ChallengeDef {
     /// `None` なら能力に依らない純粋ダイス (修正値 0、運試し)。`Some` なら 1d{sides}+stat修正。
     #[serde(default)]
     pub stat: Option<StatKey>,
+    /// additive のダイス面数。**serde default 0** (spec 16 で percentile が省略できるように) —
+    /// additive で 0 は load 時 `ChallengeShapeInvalid` (従来の必須性を validate で保証)。
+    #[serde(default)]
     pub sides: u32,
+    /// additive の難易度。percentile では書かない (validate `PercentileChallengeShape`)。
+    #[serde(default)]
     pub dc: u32,
-    /// 通常成功 (`total >= dc`) の帰結 (フラグ + 結末ナレーション、いずれも任意)。`flag` は `allowed_flags` 宣言必須。
+    /// 通常成功の帰結 (フラグ + 結末ナレーション、いずれも任意)。`flag` は `allowed_flags` 宣言必須。
+    /// percentile では regular 以上の成功の受け皿 (degree 別スロットのフォールバック終点)。
     #[serde(default)]
     pub on_success: Option<ChallengeOutcome>,
-    /// 通常失敗 (`total < dc`) の帰結 (フラグ + 結末ナレーション、いずれも任意)。`flag` は `allowed_flags` 宣言必須。
+    /// 通常失敗の帰結 (フラグ + 結末ナレーション、いずれも任意)。`flag` は `allowed_flags` 宣言必須。
+    /// percentile では fumble のフォールバックも兼ねる。
     #[serde(default)]
     pub on_failure: Option<ChallengeOutcome>,
+    /// degree=critical の帰結 (percentile 専用・任意)。フォールバック連鎖:
+    /// critical は on_critical → on_extreme → on_hard → on_success の順で最初に在るものを使う。
+    #[serde(default)]
+    pub on_critical: Option<ChallengeOutcome>,
+    /// degree=extreme の帰結 (percentile 専用・任意。extreme は on_extreme → on_hard → on_success)。
+    #[serde(default)]
+    pub on_extreme: Option<ChallengeOutcome>,
+    /// degree=hard の帰結 (percentile 専用・任意。hard は on_hard → on_success)。
+    #[serde(default)]
+    pub on_hard: Option<ChallengeOutcome>,
+    /// degree=fumble の帰結 (percentile 専用・任意。fumble は on_fumble → on_failure)。
+    #[serde(default)]
+    pub on_fumble: Option<ChallengeOutcome>,
     /// 極 (tier) の定義。キー = tier 名 (`crit_fail` 等)。自然出目の min/max で発火。
     /// 通常成否 (on_success/on_failure) と**併存**する。`CheckOutcome.tier` に surface する。
+    /// **percentile とは併用不可** (`TierWithPercentile` — 二重クリティカルの曖昧さを load 時に弾く)。
     #[serde(default)]
     pub tiers: BTreeMap<String, TierDef>,
+}
+
+/// challenge の判定様式 (spec 16)。フィールドレス enum = YAML は素の文字列 (`resolution: percentile`)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Resolution {
+    /// 従来の加算式: `1d{sides} + stat修正 >= dc` で成功 (大きいほど良い)。
+    #[default]
+    Additive,
+    /// d100 ロールアンダー: `1d100 <= 目標値 (stat + modifiers)` で成功 (低いほど良い)。
+    /// 成功度 (degree) をエンジンが計算する。
+    Percentile,
+}
+
+/// 盤面の判定様式スイッチ (spec 16)。engine の意味論には触れない**提示/語彙スイッチ** —
+/// percentile なら LLM の op 語彙 (schema) から加算式 `check` を除外し `check_under` を露出
+/// (additive では逆)、`scenario_brief` に「## 判定様式」節を接地する。engine は様式違いの
+/// op も却下しない (様式は規約であって整合性ではない — 二層目は整合性の破れにだけ使う)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStyle {
+    /// 加算式 (既定)。`check` を露出し `check_under` を隠す。
+    #[default]
+    Additive,
+    /// d100 ロールアンダー。`check_under` を露出し `check` を隠す。
+    Percentile,
 }
 
 /// シナリオの**静的整合性**の破れ。`scenarios/*.yaml` を load した直後に検査する
@@ -508,6 +561,18 @@ pub enum ScenarioError {
         threshold: u32,
         sides: u32,
     },
+    /// additive challenge の `sides` が 0 (spec 16 で serde default 化した従来必須フィールドの
+    /// 欠落 = 壊れた挑戦を実行経路に乗せない)。
+    ChallengeShapeInvalid { challenge: ChallengeId },
+    /// percentile challenge の形が不正 (spec 16): `stat` 欠落 / `sides`・`dc` の指定
+    /// (加算式との混同)。`detail` が何が悪いかを名指しする。
+    PercentileChallengeShape { challenge: ChallengeId, detail: String },
+    /// percentile challenge に `tiers` が併記されている (spec 16)。自然出目帯と degree の
+    /// 二重クリティカルは authored 意図が曖昧 — percentile の極は degree スロットで書く。
+    TierWithPercentile { challenge: ChallengeId },
+    /// trigger/challenge effects の `roll_stat` が `count == 0` か `sides == 0` (ゼロダイス)。
+    /// `origin` は `trigger:{id}` / `challenge:{id}` の形で場所を名指しする。
+    RollStatShapeInvalid { origin: String, key: StatKey },
     /// `role_assignment` の pool 人数合計と among の人数が一致しない (配りきれない/余る)。
     RoleAssignmentCountMismatch { pool_total: u32, among: usize },
     /// `role_assignment.among` にこのシナリオが知らない entity が居る (幻キャラへの配布)。
@@ -659,6 +724,10 @@ pub struct Scenario {
     /// (「プレイヤーには隠すが GM は見る秘密」は [`Self::hidden_flags`]。)
     #[serde(default)]
     pub internal_flags: BTreeSet<FlagKey>,
+    /// 盤面の判定様式 (spec 16、既定 additive)。percentile なら提示層が op 語彙を
+    /// check → check_under に入れ替え、「## 判定様式」を接地する。詳細は [`CheckStyle`]。
+    #[serde(default)]
+    pub check_style: CheckStyle,
     /// 役職のランダム割り当て (spec 06 Phase A)。宣言があれば [`Self::initial_state`] が
     /// 専用ストリームで shuffle して配る。詳細は [`RoleAssignment`]。
     #[serde(default)]
@@ -890,13 +959,44 @@ impl Scenario {
     pub fn validate(&self) -> Vec<ScenarioError> {
         let mut errs = Vec::new();
         for (cid, def) in &self.challenges {
-            // tier (極) と通常成否 (on_success/on_failure) が立てるフラグは全て allowed_flags 宣言必須。
+            // 判定様式の形 (spec 16): additive は sides 必須 (serde default 0 の欠落を弾く) /
+            // percentile は stat 必須・sides/dc 禁止 (加算式との混同を名指し)・tiers 禁止
+            // (自然出目帯と degree の二重クリティカルは authored 意図が曖昧)。
+            match def.resolution {
+                Resolution::Additive => {
+                    if def.sides == 0 {
+                        errs.push(ScenarioError::ChallengeShapeInvalid { challenge: cid.clone() });
+                    }
+                }
+                Resolution::Percentile => {
+                    if def.stat.is_none() {
+                        errs.push(ScenarioError::PercentileChallengeShape {
+                            challenge: cid.clone(),
+                            detail: "stat (目標値に使う技能) が必須".into(),
+                        });
+                    }
+                    if def.sides != 0 || def.dc != 0 {
+                        errs.push(ScenarioError::PercentileChallengeShape {
+                            challenge: cid.clone(),
+                            detail: "sides/dc は書かない (d100 と目標値=stat が様式で確定)".into(),
+                        });
+                    }
+                    if !def.tiers.is_empty() {
+                        errs.push(ScenarioError::TierWithPercentile { challenge: cid.clone() });
+                    }
+                }
+            }
+            // tier (極) と全帰結スロット (通常成否 + degree 別) が立てるフラグは allowed_flags 宣言必須。
             let outcome_flags = def
                 .tiers
                 .iter()
                 .filter_map(|(tname, tier)| tier.flag.as_ref().map(|f| (tname.as_str(), f)))
                 .chain(def.on_success.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_success", f)))
-                .chain(def.on_failure.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_failure", f)));
+                .chain(def.on_failure.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_failure", f)))
+                .chain(def.on_critical.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_critical", f)))
+                .chain(def.on_extreme.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_extreme", f)))
+                .chain(def.on_hard.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_hard", f)))
+                .chain(def.on_fumble.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_fumble", f)));
             for (label, flag) in outcome_flags {
                 if !self.allowed_flags.contains(flag) {
                     errs.push(ScenarioError::ChallengeFlagUndeclared {
@@ -919,17 +1019,20 @@ impl Scenario {
             }
             // at_most/at_least は threshold が必須かつ 1..=sides の範囲内であること
             // (欠落=無制限、範囲外=常時発火/絶対不発火の幻値。load 時に弾く)。min/max は threshold 不要。
-            for (tname, tier) in &def.tiers {
-                if matches!(tier.natural, Natural::AtMost | Natural::AtLeast) {
-                    // 欠落は 0 として報告 (1..=sides 外なので同じ経路で弾かれる)。
-                    let n = tier.threshold.unwrap_or(0);
-                    if n < 1 || n > def.sides {
-                        errs.push(ScenarioError::TierThresholdOutOfRange {
-                            challenge: cid.clone(),
-                            tier: tname.clone(),
-                            threshold: n,
-                            sides: def.sides,
-                        });
+            // percentile は tiers 自体を禁止済みなので additive のみ検査 (sides=0 での誤報を避ける)。
+            if def.resolution == Resolution::Additive {
+                for (tname, tier) in &def.tiers {
+                    if matches!(tier.natural, Natural::AtMost | Natural::AtLeast) {
+                        // 欠落は 0 として報告 (1..=sides 外なので同じ経路で弾かれる)。
+                        let n = tier.threshold.unwrap_or(0);
+                        if n < 1 || n > def.sides {
+                            errs.push(ScenarioError::TierThresholdOutOfRange {
+                                challenge: cid.clone(),
+                                tier: tname.clone(),
+                                threshold: n,
+                                sides: def.sides,
+                            });
+                        }
                     }
                 }
             }
@@ -940,7 +1043,11 @@ impl Scenario {
                 .values()
                 .map(|t| &t.effects)
                 .chain(def.on_success.as_ref().map(|o| &o.effects))
-                .chain(def.on_failure.as_ref().map(|o| &o.effects));
+                .chain(def.on_failure.as_ref().map(|o| &o.effects))
+                .chain(def.on_critical.as_ref().map(|o| &o.effects))
+                .chain(def.on_extreme.as_ref().map(|o| &o.effects))
+                .chain(def.on_hard.as_ref().map(|o| &o.effects))
+                .chain(def.on_fumble.as_ref().map(|o| &o.effects));
             for effects in effect_lists {
                 for op in effects {
                     match op {
@@ -967,6 +1074,13 @@ impl Scenario {
                                     key: key.clone(),
                                 });
                             }
+                        }
+                        // ゼロダイス (振れない/常に bonus だけ) は書き間違い — load 時に名指し。
+                        StateOp::RollStat { key, count, sides, .. } if *count == 0 || *sides == 0 => {
+                            errs.push(ScenarioError::RollStatShapeInvalid {
+                                origin: format!("challenge:{cid}"),
+                                key: key.clone(),
+                            });
                         }
                         _ => {}
                     }
@@ -1029,6 +1143,15 @@ impl Scenario {
                         errs.push(ScenarioError::AttributeKeyUndeclared {
                             trigger: trig.id.clone(),
                             entity: entity.clone(),
+                            key: key.clone(),
+                        });
+                    }
+                }
+                // 可変量ダイス (spec 16) のゼロダイスも load 時に名指し (challenge 側と同じ検査)。
+                if let StateOp::RollStat { key, count, sides, .. } = op {
+                    if *count == 0 || *sides == 0 {
+                        errs.push(ScenarioError::RollStatShapeInvalid {
+                            origin: format!("trigger:{}", trig.id),
                             key: key.clone(),
                         });
                     }

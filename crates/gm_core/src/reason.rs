@@ -80,6 +80,9 @@ pub enum RejectReason {
     /// 登場/退場 (set_presence) は LLM が提案できない (authored トリガーの専権)。
     /// キャラ勝手登場の捏造遮断 (SkillGrantNotAllowed と同型)。
     PresenceSetNotAllowed { entity: String },
+    /// 可変量ダイス (roll_stat) は LLM が提案できない (authored 専権、spec 16)。
+    /// ダメージ/SAN 減少の量の捏造遮断 (SkillGrantNotAllowed と同型)。
+    StatRollNotAllowed { entity: String, key: String },
     /// 譲渡先がこのシナリオに存在しない entity (幻のキャラには渡せない)。
     UnknownEntity { entity: String },
     /// 投票の voter/target が生存していない (死者は投票できず、されもしない)。
@@ -255,6 +258,9 @@ impl RejectReason {
             RejectReason::PresenceSetNotAllowed { entity } => {
                 format!("{entity} をその場で登場/退場させられない (登場は筋書きの出来事でのみ起きる)")
             }
+            RejectReason::StatRollNotAllowed { entity, key } => {
+                format!("{entity} の '{key}' をダイスで増減させられない (変化量のダイスは筋書きの出来事でのみ振られる。判定は check/check_under か挑戦で行え)")
+            }
             RejectReason::UnknownEntity { entity } => {
                 format!("'{entity}' はこのシナリオに存在しないので渡せない")
             }
@@ -334,6 +340,9 @@ impl RejectReason {
             }
             RejectReason::PresenceSetNotAllowed { entity } => {
                 format!("{entity} cannot enter or leave the scene on a whim (presence changes only through authored events)")
+            }
+            RejectReason::StatRollNotAllowed { entity, key } => {
+                format!("you cannot roll dice to change {entity}'s '{key}' (variable amounts are rolled only by authored events; use check/check_under or a challenge instead)")
             }
             RejectReason::UnknownEntity { entity } => {
                 format!("cannot give to '{entity}' because it does not exist in this scenario")

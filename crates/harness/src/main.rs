@@ -148,7 +148,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
     eprintln!("[接続] {} / model={}", config.base_url, config.model);
-    let client = LlmClient::new(config)?;
+    // mut: シナリオ確定後に判定様式 (spec 16) の除外 op を設定する。
+    let mut client = LlmClient::new(config)?;
 
     // --- シナリオ / キャンペーン / パッケージ / 再開 ---
     // `--campaign <path>` でキャンペーンモード、`--package <dir>` でパッケージモード
@@ -305,6 +306,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let lore = load_lore(&root.join("memoria"))?;
     eprintln!("[伏線] {} 件ロード", lore.len());
 
+    // 判定様式 (spec 16): 盤面が使わない判定 op を schema から落とす (GUI と同経路)。
+    // campaign 遷移時は遷移先モジュールで再設定する (mut のまま保持)。
+    client.set_excluded_ops(harness::excluded_check_ops(&scenario));
+
     // 初期 stat (HP/STR 等) をシナリオから読んで状態を作る。再開時はセーブの正本をそのまま使う。
     let mut state = match &resume_save {
         Some(save) => save.state.clone(),
@@ -417,6 +422,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 summary,
                 rolls,
                 checks,
+                stat_rolls,
                 fired,
                 attempts,
                 rejected,
@@ -445,12 +451,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let mark = if r.success { "成功" } else { "失敗" };
                     println!("  🎲 1d{} = {} (DC {}) → {mark}", r.sides, r.result, r.dc);
                 }
-                // 技能判定の結果 (出目+修正 vs DC)。次ターンの語りに還流する。
+                // 技能判定の結果。percentile (degree あり) はロールアンダー書式 (spec 16)。
                 for c in &checks {
+                    if let Some(degree) = &c.degree {
+                        let rel = if c.success { "≤" } else { ">" };
+                        println!(
+                            "  🎯 {} {} 判定: d100={} {rel} 目標値{} → {}",
+                            c.entity,
+                            c.stat,
+                            c.roll,
+                            c.dc,
+                            harness::prompt::degree_label_ja(degree)
+                        );
+                        continue;
+                    }
                     let mark = if c.success { "成功" } else { "失敗" };
                     println!(
                         "  🎯 {} {} 判定: 1d{}({}){:+} = {} (DC {}) → {mark}",
                         c.entity, c.stat, c.sides, c.roll, c.modifier, c.total, c.dc
+                    );
+                }
+                // 可変量ダイス (spec 16): 「SAN -4 (1d6=4)」— 出目まで監査可能に表示。
+                for sr in &stat_rolls {
+                    let dice: Vec<String> = sr.rolls.iter().map(|r| r.to_string()).collect();
+                    let bonus = if sr.bonus != 0 { format!("{:+}", sr.bonus) } else { String::new() };
+                    println!(
+                        "  🎲 {} {} {:+} ({}d{}{}={})",
+                        sr.entity,
+                        sr.key,
+                        sr.amount,
+                        sr.count,
+                        sr.sides,
+                        bonus,
+                        dice.join("+")
                     );
                 }
                 pending_checks = checks; // 次ターンへ持ち越し
@@ -508,6 +541,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     current_module = Some(adv.module_id);
                                     scenario = adv.scenario;
                                     state = adv.state;
+                                    // 判定様式は遷移先モジュールに従う (spec 16)。
+                                    client.set_excluded_ops(harness::excluded_check_ops(&scenario));
                                     pending_lore = Vec::new();
                                     pending_checks = Vec::new();
                                     last_narration = String::new(); // 新モジュール=新しい情景

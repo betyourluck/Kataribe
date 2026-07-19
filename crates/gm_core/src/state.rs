@@ -31,8 +31,14 @@ pub const PLAYER: &str = "player";
 /// これらは authored トリガーの効果 (`apply_ops` 直行) でのみ実行される。`emit_delta` の schema から
 /// これらを除外して LLM に**そもそも提案させない** (構造的遮断)。露出したままだと LLM が使い続け、
 /// 却下→再生成ループで詰まる (presence は物語で頻出ゆえ特に問題)。adjudicate の却下ケースと対応。
-pub const AUTHORED_ONLY_OPS: &[&str] =
-    &["grant_skill", "set_attribute", "record_turn", "set_presence", "resolve_vote"];
+pub const AUTHORED_ONLY_OPS: &[&str] = &[
+    "grant_skill",
+    "set_attribute",
+    "record_turn",
+    "set_presence",
+    "resolve_vote",
+    "roll_stat",
+];
 
 /// op/gate の `entity` 省略時に使う既定値 (serde default)。
 pub fn default_entity() -> EntityId {
@@ -283,10 +289,21 @@ pub enum StateOp {
         sides: u32,
         dc: u32,
     },
+    /// **d100 ロールアンダー即興判定** (spec 16)。エンジンが 1d100 を振り、目標値 = その entity の
+    /// stat 現在値、`roll <= 目標値` で成功。成功度 (degree: critical/extreme/hard/regular/
+    /// failure/fumble) もエンジンが決定論で計算する — LLM は出目も成功度も持てない。
+    /// 帰結は持たない (成否+degree の surface のみ。機械的帰結は authored challenge で書く)。
+    /// `key` (技能 stat) 未宣言は却下。`entity` 省略時は主人公。
+    CheckUnder {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        key: StatKey,
+    },
     /// authored challenge への挑戦。**LLM は challenge を「選ぶ」だけ** — 判定の stat/sides/dc も、
     /// 大失敗/大成功(tier)とその帰結フラグも、すべて [`crate::Scenario`] の authored 定義側にある
     /// (LLM は帰結を持てない＝閉世界)。engine が `1d{sides} + stat修正 vs dc` を振り、natural 値が
-    /// tier に該当すれば authored な帰結フラグを直書きする。未宣言 challenge は却下。`entity` 省略時は主人公。
+    /// tier に該当すれば authored な帰結フラグを直書きする (`resolution: percentile` なら
+    /// d100 ロールアンダー + degree 別帰結、spec 16)。未宣言 challenge は却下。`entity` 省略時は主人公。
     AttemptChallenge {
         #[serde(default = "default_entity")]
         entity: EntityId,
@@ -342,6 +359,22 @@ pub enum StateOp {
         #[serde(default = "default_entity")]
         entity: EntityId,
         present: bool,
+    },
+    /// **可変量ダイス** (spec 16)。エンジンが `count × d(sides) + bonus` を振り、`negate` に
+    /// 応じて ± を stat へ clamp 適用する (SAN 1d6 減少・1d8 ダメージ)。**authored 専権** —
+    /// LLM が提案すると `adjudicate` が却下する (ダメージ量の捏造遮断、GrantSkill と同型)。
+    /// trigger/challenge の effects は `apply_ops` 直行なので使える。出目は
+    /// [`crate::StatRollOutcome`] として surface (「SAN -4 (1d6=4)」)。`entity` 省略時は主人公。
+    RollStat {
+        #[serde(default = "default_entity")]
+        entity: EntityId,
+        key: StatKey,
+        count: u32,
+        sides: u32,
+        #[serde(default)]
+        bonus: i64,
+        #[serde(default)]
+        negate: bool,
     },
     /// **投票の意図** (spec 06 Phase C)。voter が target の処刑/襲撃に票を入れる。
     /// LLM 提案可 — ただし受理は「voter/target 生存 + `vote_rules` のいずれかに合致

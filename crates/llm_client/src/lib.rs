@@ -50,18 +50,26 @@ ops は構造化された要求のみで、エンジンが全件検証する。\
 /// `$ref` を実体に inline し `definitions`/`$schema` を落として**どのプロバイダでも自己完結**にする
 /// (Anthropic は $ref を解決できるが、Grok/OpenAI 厳格系は自己完結を要する。互換性の上位互換)。
 pub fn state_delta_schema() -> serde_json::Value {
+    // 既定 = additive 盤面: percentile 用の check_under を隠す (従来盤面は無風、spec 16)。
+    state_delta_schema_excluding(&["check_under"])
+}
+
+/// [`state_delta_schema`] の判定様式対応版 (spec 16)。`extra_banned` に盤面が使わない
+/// 判定 op (`check` / `check_under`) を渡すと AUTHORED_ONLY_OPS と合算で oneOf から落とす。
+pub fn state_delta_schema_excluding(extra_banned: &[&str]) -> serde_json::Value {
     let schema = schemars::schema_for!(StateDelta);
     let value = serde_json::to_value(schema).expect("schemars 生成スキーマは必ず JSON 化できる");
     let inlined = inline_schema_defs(&value);
-    filter_authored_only_ops(inlined)
+    filter_ops(inlined, extra_banned)
 }
 
-/// `ops` の oneOf から **authored 専権 op** ([`gm_core::AUTHORED_ONLY_OPS`]) を除く。
+/// `ops` の oneOf から **authored 専権 op** ([`gm_core::AUTHORED_ONLY_OPS`]) + 追加除外を除く。
 ///
-/// これらは LLM が提案しても `adjudicate` が必ず却下する (trigger 効果でのみ実行)。schema に残すと
+/// 専権 op は LLM が提案しても `adjudicate` が必ず却下する (trigger 効果でのみ実行)。schema に残すと
 /// LLM が使い続けて却下→再生成ループで詰まる (特に constrained decoding な Grok は grammar に含めて
 /// しまう)。除外すれば **LLM はそもそも提案できない** (Grok でも grammar に出ない=構造的遮断)。
-fn filter_authored_only_ops(mut schema: serde_json::Value) -> serde_json::Value {
+/// 追加除外 (spec 16) は判定様式スイッチ: 使わない様式の判定 op を同じ機構で隠す。
+fn filter_ops(mut schema: serde_json::Value, extra_banned: &[&str]) -> serde_json::Value {
     if let Some(variants) = schema
         .pointer_mut("/properties/ops/items/oneOf")
         .and_then(|v| v.as_array_mut())
@@ -74,7 +82,8 @@ fn filter_authored_only_ops(mut schema: serde_json::Value) -> serde_json::Value 
                 .and_then(|e| e.as_array())
                 .and_then(|a| a.first())
                 .and_then(|s| s.as_str());
-            !matches!(op, Some(name) if gm_core::AUTHORED_ONLY_OPS.contains(&name))
+            !matches!(op, Some(name)
+                if gm_core::AUTHORED_ONLY_OPS.contains(&name) || extra_banned.contains(&name))
         });
     }
     schema
@@ -145,12 +154,14 @@ impl LlmClient {
         &self,
         messages: Vec<ChatMessage>,
     ) -> Result<StateDelta, LlmError> {
+        // 判定様式 (spec 16): 盤面が使わない判定 op を schema から落とす (client 設定)。
+        let banned: Vec<&str> = self.excluded_ops().iter().map(|s| s.as_str()).collect();
         let delta = self
             .generate_structured::<StateDelta>(
                 messages,
                 EMIT_DELTA_TOOL,
                 EMIT_DELTA_DESCRIPTION,
-                state_delta_schema(),
+                state_delta_schema_excluding(&banned),
             )
             .await?;
         // narration は非検証ゆえ、漏れた tool-call マークアップを提示前に掃除する
@@ -280,6 +291,32 @@ mod tests {
         // LLM が使える代表 op は残る。
         for keep in ["add_item", "set_flag", "move", "adjust_stat", "check", "attempt_challenge"] {
             assert!(op_tags.iter().any(|t| t == keep), "提案可能な op '{keep}' は残す");
+        }
+        // 既定 (additive 盤面) では percentile 用 check_under を隠す (spec 16)。
+        assert!(!op_tags.iter().any(|t| t == "check_under"), "既定 schema に check_under は出ない");
+    }
+
+    /// 【spec 16: 判定様式による schema 入替】percentile 盤面 (excluding check) では
+    /// check_under が露出し加算式 check が消える — 使わない様式を構造的に混ぜさせない
+    /// (filter_authored_only_ops と同じ機構 = Grok の grammar からも消える)。
+    #[test]
+    fn schema_excluding_swaps_check_ops_by_style() {
+        let op_tags = |schema: &serde_json::Value| -> Vec<String> {
+            schema["properties"]["ops"]["items"]["oneOf"]
+                .as_array()
+                .expect("ops.items.oneOf は配列")
+                .iter()
+                .filter_map(|v| v["properties"]["op"]["enum"][0].as_str().map(String::from))
+                .collect()
+        };
+        // percentile 盤面: check を隠し check_under を出す。
+        let p = state_delta_schema_excluding(&["check"]);
+        let tags = op_tags(&p);
+        assert!(tags.iter().any(|t| t == "check_under"), "percentile は check_under を露出");
+        assert!(!tags.iter().any(|t| t == "check"), "percentile は加算式 check を隠す");
+        // 専権 op の除外は様式と独立に常に効く (roll_stat = 第6例も)。
+        for banned in gm_core::AUTHORED_ONLY_OPS {
+            assert!(!tags.iter().any(|t| t == banned), "'{banned}' は常に除外");
         }
     }
 

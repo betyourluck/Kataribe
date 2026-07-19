@@ -1,0 +1,15 @@
+# spec 16 のドッグフード盤面 — d100 ロールアンダー (percentile) 様式の最小探索もの。
+# check_under (目星/図書館の即興判定)・percentile challenge + roll_stat (SAN 1/1d6)・
+# stat_at_most goal (発狂エンド) を実 LLM プレイで踏むための盤面。
+title: 湖畔の洋館
+description: 消息を絶った蒐集家の洋館を訪ねる、ひと晩の探索譚。正気度が試される。
+author: Kataribe
+version: "0.1"
+entry: scenarios/main.yaml
+world: |
+  1920 年代風の湖畔の田舎町。電灯はまだ心許なく、夜は深い。
+  合理で説明のつかないものを見た者は、正気を少しずつ失っていく。
+player:
+  name: 調査員
+  profile: 行方不明になった蒐集家・湖山の旧友。手紙に導かれて洋館を訪れた。
+  stats: { HP: 10, SAN: 60, 目星: 60, 図書館: 50, 聞き耳: 40 }

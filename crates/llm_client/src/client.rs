@@ -93,6 +93,11 @@ pub struct LlmClient {
     /// spec 13: Gemini 明示キャッシュのセッションハンドル。fingerprint が現在の静的プレフィックスと
     /// 一致すれば reuse、違えば作り直す (campaign 遷移等)。失効時はクリアして full request へ透過。
     gemini_cache: Mutex<Option<gemini::CacheHandle>>,
+    /// 盤面の判定様式による **追加除外 op** (spec 16)。`check_style: percentile` の盤面は
+    /// `["check"]`、additive (既定) は `["check_under"]` — 使わない様式の判定 op を schema から
+    /// 落とし、LLM に様式を混ぜさせない (AUTHORED_ONLY_OPS の除外に合算)。セッション内不変
+    /// (new_game 時に確定) なので schema = 静的プレフィックス性は保たれる。
+    excluded_ops: Vec<String>,
 }
 
 impl LlmClient {
@@ -107,11 +112,25 @@ impl LlmClient {
             cache_stat: Mutex::new(CacheStat::default()),
             call_seq: std::sync::atomic::AtomicU64::new(0),
             gemini_cache: Mutex::new(None),
+            // 既定 = additive 盤面 (従来どおり)。percentile 判定 op は隠す。
+            excluded_ops: vec!["check_under".to_string()],
         })
     }
 
     pub fn config(&self) -> &LlmConfig {
         &self.config
+    }
+
+    /// 盤面の判定様式による追加除外 op を設定する (spec 16)。new_game でシナリオを読んだ
+    /// 呼び出し側 (app/CLI) が `check_style` から決める: percentile → `["check"]` /
+    /// additive → `["check_under"]`。セッション開始時に一度だけ呼ぶ (schema の安定性)。
+    pub fn set_excluded_ops(&mut self, ops: Vec<String>) {
+        self.excluded_ops = ops;
+    }
+
+    /// 現在の追加除外 op (schema 構築用)。
+    pub(crate) fn excluded_ops(&self) -> &[String] {
+        &self.excluded_ops
     }
 
     /// セッション識別子 (x-grok-conv-id に載せる値)。

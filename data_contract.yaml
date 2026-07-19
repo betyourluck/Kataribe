@@ -33,7 +33,8 @@ StateOp:                        # 内部タグ "op" 付き列挙
   - { op: move,         to: LocationId }
   - { op: request_roll, sides: u32, dc: u32 }   # 生のダイス。結果は書かない。エンジンが振って裁く
   - { op: check, entity: EntityId, stat: StatKey, sides: u32, dc: u32 }  # 技能判定。engine が 1d{sides}+stat修正 vs dc を裁定。stat 未宣言→却下。結果(CheckOutcome)は次ターンの語りに還流
-  - { op: attempt_challenge, entity: EntityId, challenge: ChallengeId }  # authored challenge への挑戦。LLM は challenge を「選ぶ」だけ(stat/sides/dc/tier/帰結flag は Scenario.challenges 側=author の専権)。大失敗/大成功(natural)で engine が帰結フラグを直書き→trigger 発火。未宣言 challenge→却下。fumble-as-trigger の核 (PoC-1)
+  - { op: check_under, entity: EntityId, key: StatKey }  # d100 ロールアンダー即興判定 (spec 16)。engine が 1d100 を振り目標値=stat 現在値、roll<=目標値で成功。成功度 degree (critical=01 常成功/extreme<=値/5/hard<=値/2/regular/failure/fumble=目標値<50 なら 96-100・>=50 なら 100 のみ。判定順 critical 先勝ち・整数除算) も engine が決定論計算。帰結は持たない (成否+degree の surface のみ)。stat 未宣言→却下 (UnknownStat)。check_style=percentile の盤面で schema 露出 (additive では check と入替)
+  - { op: attempt_challenge, entity: EntityId, challenge: ChallengeId }  # authored challenge への挑戦。LLM は challenge を「選ぶ」だけ(stat/sides/dc/tier/帰結flag は Scenario.challenges 側=author の専権)。大失敗/大成功(natural)で engine が帰結フラグを直書き→trigger 発火。未宣言 challenge→却下。fumble-as-trigger の核 (PoC-1)。resolution: percentile なら d100 ロールアンダー + degree 別帰結 (spec 16)
   # --- 数値ステータス: LLM は「意図」だけ提案、算術はエンジンが実行 (四則演算) ---
   # entity 省略時は "player"。clamp 境界は CharacterDef.stats の StatDecl(min/max)。
   - { op: adjust_stat,  entity: EntityId, key: StatKey, delta: i64 }          # 加減 (+/-): clamp(current + delta)
@@ -43,6 +44,7 @@ StateOp:                        # 内部タグ "op" 付き列挙
   - { op: set_attribute, entity: EntityId, key: AttrKey, value: string }  # 文字列属性の書き換え(クラス転職 等)。validate_ops は常に却下(クラス捏造遮断)、apply_ops(trigger effects)のみ実行。未宣言キーは load 時 validate で弾く
   - { op: record_turn,  entity: EntityId, key: StatKey }  # 現在ターンを stat に刻む(タイムスタンプ)。validate_ops は常に却下(タイマー詐称遮断)、apply_ops(trigger effects)のみ実行。生値で書く(clamp なし)。Gate::turns_since と対で遅延イベント
   - { op: set_presence, entity: EntityId, present: bool }  # 画面上の登場(true)/退場(false)。validate_ops は常に却下(キャラ勝手登場の捏造遮断)、apply_ops(trigger effects)のみ実行。GameState.present_overrides に書き transition で持ち越す(spec 04)
+  - { op: roll_stat, entity: EntityId, key: StatKey, count: u32, sides: u32, bonus: i64, negate: bool }  # 可変量ダイス (spec 16)。engine が count×d(sides)+bonus を振り negate に応じて ± を stat へ clamp 適用 (SAN 1d6 減少・1d8 ダメージ)。validate_ops は常に却下 (StatRollNotAllowed=ダメージ量捏造遮断、AUTHORED_ONLY_OPS 第6例)、apply_ops(trigger/challenge effects)のみ実行。出目は rolls に surface (「SAN -4 (1d6=4)」)。本流 RNG・apply 時確定 (帰結非射影は spec 09 準拠)。count/sides=0 は load 時 RollStatShapeInvalid
 
 # --- 裁定の不変条件 (engine::adjudicate / apply が守る掟) --------------------
 adjudication:
@@ -57,6 +59,8 @@ adjudication:
   move:       "現在地から to への exit が無い / exit.gate 未達 → Reject"
   request_roll:"LLMは結果を主張できない (op構造上不可能)。面数<1 → Reject"
   check:      "技能判定。stat 未宣言→Reject(UnknownStat) / 面数<1→Reject。engine が 1d{sides}+stat修正 を振り total>=dc で成否判定。LLMは出目も合計も詐称できない (CheckOutcome を返す)"
+  check_under: "d100 ロールアンダー即興判定 (spec 16)。stat 未宣言→Reject(UnknownStat)。engine が 1d100 と degree を決定論計算 (LLM は出目も成功度も持てない)。帰結なし=成否 surface のみ。CheckOutcome{sides:100, roll, total:roll, dc:目標値, degree:Some}"
+  roll_stat:  "可変量ダイス (spec 16)。validate_ops は常に Reject(StatRollNotAllowed=ダメージ量の捏造遮断)。apply_ops(trigger/challenge effects) のみ実行 = AUTHORED_ONLY_OPS 第6例。goal 判定は apply 完了後の呼び出し側評価なので「1d6 減少→SAN<=0→発狂 goal」は同一ターンに damage→goal の順で成立"
   attempt_challenge: "未宣言 challenge→Reject(UnknownChallenge=幻チャレンジ遮断) / challenge.stat を挑戦 entity が未宣言→Reject(UnknownStat)。apply 時に engine が authored 定義から 1d{sides}+stat を振り、natural が tier(min/max)該当なら帰結 flag を**直書き**(flag_rules gate 迂回=authored 効果, trigger effects と同型)。tier も flag も LLM 経路に無い=帰結を LLM が持てない (#23/#24 の双対)"
   adjust_stat:"entity が未宣言の stat を持つ → Reject (未宣言の stat は作れない)"
   scale_stat: "未宣言キー → Reject / den=0 (ゼロ除算) → Reject。LLMは /0 でエンジンを壊せない"
@@ -88,6 +92,7 @@ Scenario:
   flag_turns: "GameState.flag_turns: {FlagKey: u32} (2026-07-03)。フラグが true に真化したターンを apply 末尾の差分で一括記録 (op/トリガー/challenge 帰結の全経路捕捉)。セーブ対象・transition は生き残ったフラグ分のみ持ち越し。app が chronicle の該当ターン要約と join し FlagView.cause「何をして立ったか」を UI (hover) に出す"
   hidden_flags: [FlagKey]           # プレイヤーには隠すが GM は見る秘密のフラグ (hidden_attributes のフラグ版、2026-07-19 命名整理で旧義を internal_flags に分離)。裏で進む真相・隠し進行など。プレイヤー UI=出さない / state_brief=〔秘匿〕注記付きで GM に見せる (GM_SYSTEM が「明かすな」を刷り込み) / set_flag 語彙節=出さない (GM に casually 立てさせない)。engine 非使用・非検証 = gate/トリガー評価は不変。キーは allowed_flags 必須 (validate HiddenFlagUndeclared)
   internal_flags: [FlagKey]         # GM もプレイヤーも見ない engine 内部の帳簿フラグ (タイマーの armed フラグ x_done 等、2026-07-19。旧 hidden_flags の帳簿用途を分離)。変数として使うフラグを提示層 3 経路 (UI フラグ一覧 / state_brief / 語彙節) が一切出さない。engine 非使用・非検証。キーは allowed_flags 必須 (validate InternalFlagUndeclared)
+  check_style: additive|percentile  # 判定様式スイッチ (spec 16, 既定 additive)。percentile なら LLM の op 語彙 (schema) から加算式 check を除外し check_under を露出 (additive では逆 = 構造的に混ぜさせない)、scenario_brief に「## 判定様式」節を接地。**engine は却下しない** (様式は規約であって整合性ではない — 二層目は整合性の破れにだけ使う)。schema は scenario 依存になるがセッション内安定 = prompt caching 不変
   role_assignment: RoleAssignment?  # 役職のランダム割り当て (spec 06 Phase A, 2026-07-03)
   secret_attributes: [AttrKey]      # ゲーム的秘匿情報の属性キー (spec 06 Phase B, 2026-07-03)。hidden_* (全提示層から隠す帳簿) とは別軸の宛先別可視性: GM=全員分 (state_brief が〔秘匿〕注記付きで surface、演じ分け規律は GM_SYSTEM が刷り込み) / プレイヤー UI=本人分のみ (app state_view が NPC 分を DTO 段階で落とす=ネタバレ衛生) / 登場人物どうし=不可 (prompt 規律)。engine 非解釈 = gate/トリガー評価は不変。キーは initial_attributes / CharacterDef.attributes / role_assignment.key のいずれかで宣言必須 (validate SecretAttributeUndeclared)
   hidden_attributes: [AttrKey]      # 当人にも見えない属性キー (呪い・自覚のない正体等, 2026-07-08)。secret (本人分は見える=人狼の自役職) より一段強い秘匿: プレイヤー UI=本人分ごと落とす (app state_view が全 entity 分を DTO 段階で除外) / GM=全員分 (state_brief が〔秘匿:本人未知〕注記で surface、GM_SYSTEM が「当人にも明かすな・効果は原因を伏せて現象だけ描く」を刷り込み)。engine 非解釈 = gate/トリガー評価は不変。宣言必須は secret と同じ (validate HiddenAttributeUndeclared)
@@ -139,19 +144,24 @@ ChallengeDef:
   description: "LLM への提示文 (どんな行動の判定か)。scenario_brief の『## 挑戦』に出して GM に attempt_challenge で選ばせる"
   requires: "Option<Gate>。挑める前提条件。Some で偽なら attempt_challenge を却下(ChallengeLocked)=挑戦の解禁/封鎖。『導師に会うまで秘奥義に挑めない』等。scenario_brief に【前提: ...】で surface。None なら常に挑める"
   modifiers: "[ChallengeMod]。条件付き有利/不利。when(Gate)が真の分だけ bonus を出目合計に加算(合算)。『導師の教えで +5』『傷で −3』等。tier(極)は素の出目で見るので無影響"
-  stat:   "Option<StatKey>。修正に使う stat (挑戦 entity が宣言済みのこと)。**省略可** — None なら能力に依らない純粋ダイス(修正0=運試し)、Some なら 1d{sides}+stat修正"
-  sides:  "u32。ダイス面数 (sides:20 = 1d20、1〜20 が出る)"
-  dc:     "u32。難易度(目標値)。total(出目+修正)>=dc で成功。dc が大きいほど難しい"
-  on_success: "Option<ChallengeOutcome>。通常成功(total>=dc)の帰結(フラグ+結末ナレーション、任意)。『ダイス→フラグ』を作り when:all で読める"
-  on_failure: "Option<ChallengeOutcome>。通常失敗(total<dc)の帰結(フラグ+結末ナレーション、任意)"
-  tiers:  "{ tier名: TierDef }。極(大失敗/大成功)の定義。on_success/on_failure と併存。tier名は CheckOutcome.tier に surface"
+  resolution: "additive(既定)|percentile (spec 16)。additive=従来の 1d{sides}+stat>=dc / percentile=1d100 を目標値(stat 現在値+modifiers)以下で成功、degree (critical/extreme/hard/regular/failure/fumble) を engine が計算。フラットフィールド (tier natural と同流儀)"
+  stat:   "Option<StatKey>。修正に使う stat (挑戦 entity が宣言済みのこと)。additive では**省略可** — None なら能力に依らない純粋ダイス(修正0=運試し)、Some なら 1d{sides}+stat修正。percentile では**必須** (目標値に使う)"
+  sides:  "u32 (serde default 0, spec 16)。additive のダイス面数 (sides:20 = 1d20)。additive で 0 は load 時 ChallengeShapeInvalid (従来の必須性を validate で保証)。percentile では書かない (書くと PercentileChallengeShape)"
+  dc:     "u32 (serde default 0, spec 16)。additive の難易度。total(出目+修正)>=dc で成功。percentile では書かない (書くと PercentileChallengeShape)"
+  on_success: "Option<ChallengeOutcome>。通常成功の帰結(フラグ+結末ナレーション、任意)。『ダイス→フラグ』を作り when:all で読める。percentile では regular 以上の成功の受け皿 (degree 別スロットが無い時のフォールバック)"
+  on_failure: "Option<ChallengeOutcome>。通常失敗の帰結(フラグ+結末ナレーション、任意)。percentile では fumble のフォールバックも兼ねる"
+  on_critical: "Option<ChallengeOutcome> (percentile 専用, spec 16)。degree=critical の帰結。フォールバック連鎖: critical は on_critical→on_extreme→on_hard→on_success の順で最初に在るスロットを使う"
+  on_extreme: "Option<ChallengeOutcome> (percentile 専用)。degree=extreme の帰結 (extreme は on_extreme→on_hard→on_success)"
+  on_hard: "Option<ChallengeOutcome> (percentile 専用)。degree=hard の帰結 (hard は on_hard→on_success)"
+  on_fumble: "Option<ChallengeOutcome> (percentile 専用)。degree=fumble の帰結 (fumble は on_fumble→on_failure)"
+  tiers:  "{ tier名: TierDef }。極(大失敗/大成功)の定義。on_success/on_failure と併存。tier名は CheckOutcome.tier に surface。**percentile とは併用不可** (TierWithPercentile=二重クリティカルの曖昧さを load 時に弾く。percentile の極は degree スロットで書く)"
 ChallengeOutcome:
   flag: "Option<FlagKey>。engine が直書きする帰結フラグ。allowed_flags 宣言必須"
   narration: "authored 結末ナレーション(任意)。CheckOutcome.narration に載り**毎回・同ターン**に出る(非 latch=繰り返す失敗も毎回語れる/フラグ無しでも語れる)。失敗を LLM 任せにせず必ず描きたい時に使う"
   sound: "authored 結末効果音のアセット ID(audios/ 配下・任意, 2026-07-09)。CheckOutcome.sound に載り**毎回・同ターン**に one-shot 再生。engine 非解釈の不透明 string(narration と同列)。tier の sound があれば優先、無ければ通常成否の sound。素の Check は空"
 ChallengeMod:
   when:  "Gate(純粋述語)。真ならこの修正が乗る。flag/stat/attribute/skill/all/any どれでも"
-  bonus: "i64。出目合計に加える値(負も可=ペナルティ)。apply 時に when を評価して合算"
+  bonus: "i64。additive=出目合計に加える / percentile=**目標値に加える** (「技能値+10 相当」。bonus 正=有利の意味論を両様式で一致させる。原典のボーナス/ペナルティダイスは extra tens die 方式で分布が異なる近似 — 将来対応はここに dice: bonus|penalty を足す, spec 16 決定2)。apply 時に when を評価して合算"
 TierDef:
   natural: "Min|Max。発火する自然出目(修正前の素の roll)の極。sides 相対(Max は d6→6/d20→20)=die サイズ非依存。リテラル(20等)で端を焼かない"
   flag:    "任意。該当時に engine が直書きする帰結フラグ。allowed_flags 宣言必須(Scenario::validate が load 時に弾く)。flag 無しの tier は認識だけ(語り用)"

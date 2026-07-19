@@ -31,6 +31,21 @@ pub struct RollOutcome {
     pub success: bool,
 }
 
+/// 可変量ダイス ([`StateOp::RollStat`]) の監査記録 (spec 16)。
+/// 「SAN -4 (1d6=4)」を提示層が組み立てる素材 — 出目まで再現・監査可能。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatRollOutcome {
+    pub entity: String,
+    pub key: String,
+    pub count: u32,
+    pub sides: u32,
+    pub bonus: i64,
+    /// 各ダイスの素の出目 (count 個)。
+    pub rolls: Vec<u32>,
+    /// stat に適用された符号付きの変化量 (negate 込み・clamp 前の意図量)。
+    pub amount: i64,
+}
+
 /// 技能判定の結果。`1d{sides} + modifier` を振り `total >= dc` で成否。LLM は出目も合計も持てない。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckOutcome {
@@ -54,6 +69,12 @@ pub struct CheckOutcome {
     /// `audios/` から解決し one-shot 再生する。無ければ空文字。
     #[serde(default)]
     pub sound: String,
+    /// d100 ロールアンダー判定の成功度 (spec 16)。`critical`/`extreme`/`hard`/`regular`/
+    /// `failure`/`fumble` の機械 id (表示は提示層の言語表で変換)。加算式判定・旧セーブは `None`。
+    /// percentile では `total`=出目 / `dc`=実効目標値 / `modifier`=目標値への修正合算、と
+    /// 既存フィールドの意味が変わる (表示は degree の有無で書式分岐)。
+    #[serde(default)]
+    pub degree: Option<String>,
 }
 
 /// 発火したトリガー (Phase C)。`narration` は語りへ注入する指示。
@@ -80,8 +101,58 @@ pub struct ApplyOutcome {
     pub rolls: Vec<RollOutcome>,
     /// この適用で行われた技能判定の結果。次ターンの語りに還流する。
     pub checks: Vec<CheckOutcome>,
+    /// 可変量ダイス (`roll_stat`) の監査記録 (spec 16)。「SAN -4 (1d6=4)」の素材。
+    pub stat_rolls: Vec<StatRollOutcome>,
     /// この適用で発火した反応ビート (authored 順・連鎖含む)。語りに注入する。
     pub fired: Vec<FiredTrigger>,
+}
+
+/// d100 ロールアンダーの成功度 (spec 16 の凍結ルール・CoC7 準拠)。純関数。
+///
+/// 判定順は **critical 先勝ち** (`01` は常に成功 — 現行定義では fumble 帯と交差しないが、
+/// 将来拡張でもこの原則が壊れない順序を固定する)。fumble は**有効目標値**基準
+/// (v1 = stat + modifiers。将来「ハード成功要求」等を足す場合もその実効値で `< 50` を見る)。
+/// 目標値 0 以下でも `01` は critical 成功を保証する。整数除算 (端数切り捨て = 原典どおり)。
+pub fn percentile_degree(roll: u32, target: i64) -> (&'static str, bool) {
+    if roll == 1 {
+        return ("critical", true);
+    }
+    if roll == 100 || (target < 50 && roll >= 96) {
+        return ("fumble", false);
+    }
+    let r = i64::from(roll);
+    if r <= target / 5 {
+        ("extreme", true)
+    } else if r <= target / 2 {
+        ("hard", true)
+    } else if r <= target {
+        ("regular", true)
+    } else {
+        ("failure", false)
+    }
+}
+
+/// percentile challenge の degree → 帰結スロット解決 (spec 16 のフォールバック連鎖)。
+/// 上位成功は自分のスロット → 無ければ次段 (critical → extreme → hard → on_success /
+/// fumble → on_failure)。`apply_ops` と `guaranteed_challenge_effects` が共有する
+/// (適用と射影の乖離を構造的に防ぐ — spec 09 と同じ原則)。
+fn resolve_degree_slot<'a>(
+    def: &'a crate::spine::ChallengeDef,
+    degree: &str,
+) -> Option<&'a crate::spine::ChallengeOutcome> {
+    match degree {
+        "critical" => def
+            .on_critical
+            .as_ref()
+            .or(def.on_extreme.as_ref())
+            .or(def.on_hard.as_ref())
+            .or(def.on_success.as_ref()),
+        "extreme" => def.on_extreme.as_ref().or(def.on_hard.as_ref()).or(def.on_success.as_ref()),
+        "hard" => def.on_hard.as_ref().or(def.on_success.as_ref()),
+        "regular" => def.on_success.as_ref(),
+        "fumble" => def.on_fumble.as_ref().or(def.on_failure.as_ref()),
+        _ => def.on_failure.as_ref(),
+    }
 }
 
 /// 唯一の裁定者。**`state` を一切変更しない純粋関数**。
@@ -157,17 +228,45 @@ fn validate_ops(
 /// 両帰結が同じフラグを立てる場合の set_flag。tier は加算的で outcome 効果を打ち消さないため
 /// 交差の健全性に影響しない (tier 限定の効果は共通でないので入らない)。片側が None なら空。
 fn guaranteed_challenge_effects(def: &crate::spine::ChallengeDef) -> Vec<StateOp> {
+    // 2 帰結の多重集合の厳密交差 (順序保存は左側基準)。
+    fn intersect_effects(a: &[StateOp], b: &[StateOp]) -> Vec<StateOp> {
+        let mut pool: Vec<&StateOp> = b.iter().collect();
+        let mut out: Vec<StateOp> = Vec::new();
+        for e in a {
+            if let Some(i) = pool.iter().position(|p| *p == e) {
+                pool.remove(i);
+                out.push(e.clone());
+            }
+        }
+        out
+    }
+    if def.resolution == crate::spine::Resolution::Percentile {
+        // percentile: 6 degree すべての解決先スロットで交差する (どの出目でも必ず起きるもの
+        // だけが確定扱いできる)。どれか 1 つでもスロット無し (=その degree は効果ゼロ) なら空。
+        const DEGREES: [&str; 6] = ["critical", "extreme", "hard", "regular", "failure", "fumble"];
+        let mut slots = Vec::with_capacity(6);
+        for d in DEGREES {
+            match resolve_degree_slot(def, d) {
+                Some(o) => slots.push(o),
+                None => return Vec::new(),
+            }
+        }
+        let mut out: Vec<StateOp> = slots[0].effects.clone();
+        for o in &slots[1..] {
+            out = intersect_effects(&out, &o.effects);
+        }
+        // 全スロットが同じフラグを立てる場合のみ確定 set_flag。
+        if let Some(f0) = slots[0].flag.as_ref() {
+            if slots.iter().all(|o| o.flag.as_ref() == Some(f0)) {
+                out.push(StateOp::SetFlag { key: f0.clone(), value: true });
+            }
+        }
+        return out;
+    }
     let (Some(s), Some(f)) = (&def.on_success, &def.on_failure) else {
         return Vec::new();
     };
-    let mut pool: Vec<&StateOp> = f.effects.iter().collect();
-    let mut out: Vec<StateOp> = Vec::new();
-    for e in &s.effects {
-        if let Some(i) = pool.iter().position(|p| *p == e) {
-            pool.remove(i);
-            out.push(e.clone());
-        }
-    }
+    let mut out = intersect_effects(&s.effects, &f.effects);
     if let (Some(sf), Some(ff)) = (&s.flag, &f.flag) {
         if sf == ff {
             out.push(StateOp::SetFlag { key: sf.clone(), value: true });
@@ -303,6 +402,21 @@ fn validate_op(
                     reasons.push(RejectReason::UnknownStat { entity: entity.clone(), key: stat.clone() });
                 }
             }
+            StateOp::CheckUnder { entity, key } => {
+                // d100 ロールアンダー (spec 16)。面数は様式で固定 (100) なので検証は stat 宣言のみ
+                // (幻技能で判定できない。目標値=stat 現在値はエンジンが apply 時に読む)。
+                if !scenario.knows_stat(entity, key) {
+                    reasons.push(RejectReason::UnknownStat { entity: entity.clone(), key: key.clone() });
+                }
+            }
+            StateOp::RollStat { entity, key, .. } => {
+                // 可変量ダイスは authored 専権 (spec 16) — LLM がダメージ/SAN 減少の量を
+                // 自分で振る経路を作らない。trigger/challenge effects は apply_ops 直行。
+                reasons.push(RejectReason::StatRollNotAllowed {
+                    entity: entity.clone(),
+                    key: key.clone(),
+                });
+            }
             StateOp::AttemptChallenge { entity, challenge } => {
                 // 閉世界: 宣言された challenge にしか挑めない (幻チャレンジ遮断)。
                 match scenario.challenge(challenge) {
@@ -332,7 +446,9 @@ fn validate_op(
                                 });
                             }
                         }
-                        if def.sides < 1 {
+                        // 面数は additive のみの概念 (percentile は d100 固定・sides=0 が正、
+                        // 形の整合は load 時 validate が保証済み — spec 16)。
+                        if def.resolution == crate::spine::Resolution::Additive && def.sides < 1 {
                             reasons.push(RejectReason::DiceSidesInvalid);
                         }
                     }
@@ -453,7 +569,7 @@ fn check_taboos(
     }
     let mut projected = state.clone();
     // clone への射影 (dice/jud定 は捨て、taboo 評価のためだけに state を進める)。
-    apply_ops(&mut projected, scenario, delta, &mut Vec::new(), &mut Vec::new());
+    apply_ops(&mut projected, scenario, delta, &mut Vec::new(), &mut Vec::new(), &mut Vec::new());
     for (eid, def) in &scenario.characters {
         for taboo in &def.taboos {
             if !taboo.eval(state) && taboo.eval(&projected) {
@@ -485,10 +601,11 @@ pub fn apply(
 
     let mut rolls = Vec::new();
     let mut checks = Vec::new();
-    apply_ops(state, scenario, delta, &mut rolls, &mut checks);
+    let mut stat_rolls = Vec::new();
+    apply_ops(state, scenario, delta, &mut rolls, &mut checks, &mut stat_rolls);
     state.turn += 1;
     // 反応ビート (禁忌の双対)。受理・適用済みの実 state に対して発火判定する。
-    let fired = fire_triggers(state, scenario, &mut rolls, &mut checks);
+    let fired = fire_triggers(state, scenario, &mut rolls, &mut checks, &mut stat_rolls);
 
     // このターンに true へ真化したフラグへ「立ったターン」を刻む。差分方式なので
     // op / トリガー効果 / challenge 帰結のどの経路で立っても漏れなく捕捉される。
@@ -502,7 +619,7 @@ pub fn apply(
         state.flag_turns.insert(key, state.turn);
     }
 
-    Ok(ApplyOutcome { rolls, checks, fired })
+    Ok(ApplyOutcome { rolls, checks, stat_rolls, fired })
 }
 
 /// 受理・適用後の `state` に対し、発火条件 `when` が真でまだ発火していないトリガーを発火させる。
@@ -521,6 +638,7 @@ fn fire_triggers(
     scenario: &Scenario,
     rolls: &mut Vec<RollOutcome>,
     checks: &mut Vec<CheckOutcome>,
+    stat_rolls: &mut Vec<StatRollOutcome>,
 ) -> Vec<FiredTrigger> {
     let mut fired = Vec::new();
     // この apply (settle) 内で発火済みの id。repeatable も含め settle 内は高々 1 回 → 停止保証。
@@ -534,7 +652,7 @@ fn fire_triggers(
 
         // 効果は authored・信頼済なので validate せず原子適用する。
         let effect_delta = StateDelta::new(String::new(), t.effects.clone());
-        apply_ops(state, scenario, &effect_delta, rolls, checks);
+        apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls);
 
         fired_this_settle.insert(t.id.clone());
         if !t.repeatable {
@@ -629,6 +747,7 @@ fn apply_ops(
     delta: &StateDelta,
     rolls: &mut Vec<RollOutcome>,
     checks: &mut Vec<CheckOutcome>,
+    stat_rolls: &mut Vec<StatRollOutcome>,
 ) {
     for op in &delta.ops {
         if apply_deterministic_op(state, scenario, op) {
@@ -661,12 +780,93 @@ fn apply_ops(
                     tier: None, // 素の判定は極を持たない (tier は authored challenge の専権)。
                     narration: String::new(), // 素の Check は authored 結末文を持たない (LLM が次ターンに語る)。
                     sound: String::new(),     // 素の Check は authored 効果音を持たない。
+                    degree: None,             // 加算式は成功度を持たない (spec 16)。
+                });
+            }
+            StateOp::CheckUnder { entity, key } => {
+                // d100 ロールアンダー即興判定 (spec 16)。目標値 = stat 現在値。
+                // 出目も成功度もエンジンが決める (LLM は主張できない)。帰結は持たない。
+                let roll = state.rng.roll(100);
+                let target = state.stat_of(entity, key);
+                let (degree, success) = percentile_degree(roll, target);
+                checks.push(CheckOutcome {
+                    entity: entity.clone(),
+                    stat: key.clone(),
+                    sides: 100,
+                    roll,
+                    modifier: 0,
+                    total: i64::from(roll),
+                    // dc = 実効目標値 (表示用)。負の stat は 0 に写す (u32 表示の安全側)。
+                    dc: target.clamp(0, i64::from(u32::MAX)) as u32,
+                    success,
+                    tier: None,
+                    narration: String::new(),
+                    sound: String::new(),
+                    degree: Some(degree.to_string()),
+                });
+            }
+            StateOp::RollStat { entity, key, count, sides, bonus, negate } => {
+                // 可変量ダイス (spec 16)。ここに到達するのは authored effects のみ
+                // (LLM 提案は adjudicate が StatRollNotAllowed で却下済)。
+                let die_rolls: Vec<u32> = (0..*count).map(|_| state.rng.roll(*sides)).collect();
+                let sum: i64 = die_rolls.iter().map(|r| i64::from(*r)).sum::<i64>() + bonus;
+                let amount = if *negate { -sum } else { sum };
+                let next = state.stat_of(entity, key) + amount;
+                let clamped = clamp_stat(scenario, entity, key, next);
+                state.set_stat(entity, key, clamped);
+                stat_rolls.push(StatRollOutcome {
+                    entity: entity.clone(),
+                    key: key.clone(),
+                    count: *count,
+                    sides: *sides,
+                    bonus: *bonus,
+                    rolls: die_rolls,
+                    amount,
                 });
             }
             StateOp::AttemptChallenge { entity, challenge } => {
                 // adjudicate が challenge 既知・stat 宣言済を保証済。authored 定義から判定を組む。
                 // ここに到達する challenge は必ず存在する (adjudicate 通過後)。
                 if let Some(def) = scenario.challenge(challenge) {
+                    if def.resolution == crate::spine::Resolution::Percentile {
+                        // d100 ロールアンダー (spec 16)。目標値 = 判定主体の stat + modifiers
+                        // (percentile では bonus を目標値に加算 = 「技能値 +10 相当」)。
+                        let roll = state.rng.roll(100);
+                        let subject = def.entity.as_ref().unwrap_or(entity);
+                        let base = def.stat.as_ref().map_or(0, |s| state.stat_of(subject, s));
+                        let cond_mod: i64 =
+                            def.modifiers.iter().filter(|m| m.when.eval(state)).map(|m| m.bonus).sum();
+                        let target = base + cond_mod;
+                        let (degree, success) = percentile_degree(roll, target);
+                        // 帰結スロット: degree 別 → フォールバック連鎖 (apply と射影が共有する
+                        // resolve_degree_slot で解決)。フラグ直書き + effects 原子適用は additive と同型。
+                        let outcome = resolve_degree_slot(def, degree);
+                        if let Some(flag) = outcome.and_then(|o| o.flag.as_ref()) {
+                            state.flags.insert(flag.clone(), true);
+                        }
+                        let effects: Vec<StateOp> =
+                            outcome.map(|o| o.effects.clone()).unwrap_or_default();
+                        if !effects.is_empty() {
+                            let effect_delta = StateDelta::new(String::new(), effects);
+                            apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls);
+                        }
+                        checks.push(CheckOutcome {
+                            entity: subject.clone(),
+                            stat: def.stat.clone().unwrap_or_default(),
+                            sides: 100,
+                            roll,
+                            // percentile の modifier は「目標値への修正」(出目加算ではない)。
+                            modifier: cond_mod,
+                            total: i64::from(roll),
+                            dc: target.clamp(0, i64::from(u32::MAX)) as u32,
+                            success,
+                            tier: None,
+                            narration: outcome.map(|o| o.narration.clone()).unwrap_or_default(),
+                            sound: outcome.map(|o| o.sound.clone()).unwrap_or_default(),
+                            degree: Some(degree.to_string()),
+                        });
+                        continue;
+                    }
                     let roll = state.rng.roll(def.sides);
                     // 判定主体: authored 固定 (def.entity) が op の entity を上書きする。
                     let subject = def.entity.as_ref().unwrap_or(entity);
@@ -708,7 +908,7 @@ fn apply_ops(
                     }
                     if !effects.is_empty() {
                         let effect_delta = StateDelta::new(String::new(), effects);
-                        apply_ops(state, scenario, &effect_delta, rolls, checks);
+                        apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls);
                     }
                     // 結末ナレーション: 極(tier)に narration があれば優先 (より具体的・劇的)、
                     // 無ければ通常成否の narration。毎回・同ターンに提示層が出す (非 latch)。
@@ -737,6 +937,7 @@ fn apply_ops(
                         tier,
                         narration,
                         sound,
+                        degree: None, // 加算式は成功度を持たない (spec 16)。
                     });
                 }
             }
@@ -4140,4 +4341,278 @@ triggers:
         assert!(s.fired.is_empty());
         assert_eq!(s.turn, 0);
     }
+
+
+    /// 【spec 16 Phase A: degree 純関数のエッジ行列 (査読 Nit)】target×roll の境界を固定する。
+    /// critical=01 は target 0 でも成功 / fumble 帯は target<50 で 96-100・>=50 で 100 のみ /
+    /// 整数除算の端 / 判定順は critical 先勝ち。
+    #[test]
+    fn percentile_degree_edge_matrix() {
+        use super::percentile_degree as deg;
+        // target=0: 01 だけが成功 (critical)。96-100 は fumble、他は failure。
+        assert_eq!(deg(1, 0), ("critical", true));
+        assert_eq!(deg(2, 0), ("failure", false));
+        assert_eq!(deg(96, 0), ("fumble", false));
+        assert_eq!(deg(99, 0), ("fumble", false));
+        assert_eq!(deg(100, 0), ("fumble", false));
+        // target=1: extreme/hard 帯は 0 (整数除算) → 01 は critical、02 は failure。
+        assert_eq!(deg(1, 1), ("critical", true));
+        assert_eq!(deg(2, 1), ("failure", false));
+        // target=49 (<50): 96 は fumble。2 は extreme (49/5=9)。
+        assert_eq!(deg(2, 49), ("extreme", true));
+        assert_eq!(deg(96, 49), ("fumble", false));
+        assert_eq!(deg(99, 49), ("fumble", false));
+        // target=50 (>=50): 96 は failure に降格、100 だけ fumble。帯: 10/25/50。
+        assert_eq!(deg(2, 50), ("extreme", true));
+        assert_eq!(deg(10, 50), ("extreme", true));
+        assert_eq!(deg(11, 50), ("hard", true));
+        assert_eq!(deg(25, 50), ("hard", true));
+        assert_eq!(deg(26, 50), ("regular", true));
+        assert_eq!(deg(50, 50), ("regular", true));
+        assert_eq!(deg(51, 50), ("failure", false));
+        assert_eq!(deg(96, 50), ("failure", false));
+        assert_eq!(deg(100, 50), ("fumble", false));
+        // target=100: roll=100 は常に fumble。99 は regular (hard 帯 50 超)。
+        assert_eq!(deg(2, 100), ("extreme", true));
+        assert_eq!(deg(20, 100), ("extreme", true));
+        assert_eq!(deg(50, 100), ("hard", true));
+        assert_eq!(deg(99, 100), ("regular", true));
+        assert_eq!(deg(100, 100), ("fumble", false));
+        // 負の target でも 01 は成功 (安全側)。
+        assert_eq!(deg(1, -5), ("critical", true));
+        assert_eq!(deg(2, -5), ("failure", false));
+    }
+
+    /// 【spec 16 Phase A: check_under】d100 ロールアンダーの即興判定。目標値 = stat 現在値、
+    /// 出目も degree もエンジンが決める。幻技能は UnknownStat で却下。
+    #[test]
+    fn check_under_computes_degree_and_rejects_unknown_stat() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: r\n",
+            "initial_stats: { 目星: 60 }\n",
+            "locations:\n  r: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        // seed 2 の初回 d100 = 11 (実測)。60/5=12 なので extreme 成功。
+        let mut s = sc.initial_state(2);
+        let out = apply(&mut s, &sc, &d(vec![StateOp::CheckUnder {
+            entity: "player".into(),
+            key: "目星".into(),
+        }]))
+        .unwrap();
+        let c = &out.checks[0];
+        assert_eq!((c.sides, c.roll, c.dc, c.total), (100, 11, 60, 11));
+        assert_eq!(c.degree.as_deref(), Some("extreme"));
+        assert!(c.success);
+        assert_eq!(c.modifier, 0, "即興 check_under に修正は無い");
+
+        // 幻技能 (未宣言 stat) は却下 — 閉世界 (既存 Check と同一)。
+        let v = adjudicate(&s, &sc, &d(vec![StateOp::CheckUnder {
+            entity: "player".into(),
+            key: "図書館".into(),
+        }]));
+        assert!(matches!(v, Verdict::Reject { .. }), "未宣言 stat の check_under は却下");
+    }
+
+    /// 【spec 16 Phase B+C: percentile challenge と可変量ダイス】SAN チェック「1/1d6」を
+    /// 成功/失敗/fumble/degree スロットの経路で実証。roll_stat は clamp され決定論。
+    #[test]
+    fn percentile_challenge_degree_slots_fallback_and_roll_stat() {
+        let yaml = concat!(
+            "title: t\nstart: r\n",
+            "allowed_flags: [seen]\n",
+            "initial_stats: { SAN: 60 }\n",
+            "challenges:\n",
+            "  san_check:\n",
+            "    resolution: percentile\n",
+            "    stat: SAN\n",
+            "    on_success:\n",
+            "      effects: [ { op: adjust_stat, key: SAN, delta: -1 } ]\n",
+            "    on_failure:\n",
+            "      narration: 悲鳴が漏れた。\n",
+            "      effects: [ { op: roll_stat, key: SAN, count: 1, sides: 6, negate: true } ]\n",
+            "locations:\n  r: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        );
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let atk = |s: &mut GameState, sc: &Scenario| {
+            apply(s, sc, &d(vec![StateOp::AttemptChallenge {
+                entity: "player".into(),
+                challenge: "san_check".into(),
+            }]))
+            .unwrap()
+        };
+
+        // 成功経路 (seed 19: d100=37 <= 60 = regular)。1 だけ減る。
+        let mut s = sc.initial_state(19);
+        let out = atk(&mut s, &sc);
+        assert_eq!(out.checks[0].degree.as_deref(), Some("regular"));
+        assert_eq!(s.stat_of("player", "SAN"), 59, "成功は固定 -1");
+        assert!(out.stat_rolls.is_empty(), "成功側に可変量ダイスは無い");
+
+        // 失敗経路 (seed 1: d100=66 > 60 = failure)。1d6 が引かれ、出目が監査記録に載る。
+        let mut s = sc.initial_state(1);
+        let out = atk(&mut s, &sc);
+        assert_eq!(out.checks[0].degree.as_deref(), Some("failure"));
+        assert_eq!(out.checks[0].narration, "悲鳴が漏れた。", "帰結ナレーションは毎回・同ターン");
+        let sr = &out.stat_rolls[0];
+        assert_eq!((sr.count, sr.sides, sr.rolls.len()), (1, 6, 1));
+        assert!((1..=6).contains(&sr.rolls[0]));
+        assert_eq!(sr.amount, -i64::from(sr.rolls[0]), "negate で符号反転した意図量");
+        assert_eq!(s.stat_of("player", "SAN"), 60 + sr.amount, "SAN に出目分が反映される");
+        // 決定論: 同 seed 同減少。
+        let mut s2 = sc.initial_state(1);
+        let _ = atk(&mut s2, &sc);
+        assert_eq!(s.stat_of("player", "SAN"), s2.stat_of("player", "SAN"));
+
+        // clamp: SAN 3 (min 0 糖衣) で失敗しても負にならない。
+        let low = yaml.replace("SAN: 60", "SAN: 3");
+        let sc_low = Scenario::from_yaml(&low).unwrap();
+        let mut s = sc_low.initial_state(1); // d100=66 > 3 = failure → 1d6 減
+        let out = atk(&mut s, &sc_low);
+        assert!(s.stat_of("player", "SAN") >= 0, "0 クランプ (帳簿は負にならない)");
+        assert!(out.checks[0].degree.is_some());
+
+        // fumble フォールバック (SAN 40 < 50, seed 13: d100=96 = fumble)。on_fumble 無し →
+        // on_failure に落ちる (narration も効果も failure のもの)。
+        let mid = yaml.replace("SAN: 60", "SAN: 40");
+        let sc_mid = Scenario::from_yaml(&mid).unwrap();
+        let mut s = sc_mid.initial_state(13);
+        let out = atk(&mut s, &sc_mid);
+        assert_eq!(out.checks[0].degree.as_deref(), Some("fumble"));
+        assert_eq!(out.checks[0].narration, "悲鳴が漏れた。", "on_fumble 無しは on_failure へ");
+        assert!(!out.stat_rolls.is_empty(), "failure の 1d6 が使われる");
+
+        // degree スロット優先 (seed 8: d100=23 <= 30 = hard)。on_hard があればそれが勝つ。
+        let slotted = yaml.replace(
+            "    on_success:",
+            "    on_hard:\n      flag: seen\n    on_success:",
+        );
+        let sc_slot = Scenario::from_yaml(&slotted).unwrap();
+        let mut s = sc_slot.initial_state(8);
+        let out = atk(&mut s, &sc_slot);
+        assert_eq!(out.checks[0].degree.as_deref(), Some("hard"));
+        assert_eq!(s.flags.get("seen"), Some(&true), "hard は on_hard のフラグを使う");
+        assert_eq!(s.stat_of("player", "SAN"), 60, "on_hard が勝つので on_success の -1 は乗らない");
+
+        // critical のフォールバック (seed 29: d100=1)。degree スロット無し → on_success へ。
+        let mut s = sc.initial_state(29);
+        let out = atk(&mut s, &sc);
+        assert_eq!(out.checks[0].degree.as_deref(), Some("critical"));
+        assert_eq!(s.stat_of("player", "SAN"), 59, "critical は on_success へフォールバック");
+    }
+
+    /// 【spec 16 Phase C: 専権】LLM の roll_stat 提案は却下される (ダメージ量の捏造遮断)。
+    /// state は無傷 (原子性)。
+    #[test]
+    fn llm_proposed_roll_stat_is_rejected() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: r\n",
+            "initial_stats: { hp: 10 }\n",
+            "locations:\n  r: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let mut s = sc.initial_state(1);
+        let err = apply(&mut s, &sc, &d(vec![StateOp::RollStat {
+            entity: "player".into(),
+            key: "hp".into(),
+            count: 1,
+            sides: 8,
+            bonus: 0,
+            negate: true,
+        }]))
+        .unwrap_err();
+        let Verdict::Reject { reasons } = err else { panic!("Reject であること") };
+        assert!(
+            reasons.iter().any(|r| matches!(r, RejectReason::StatRollNotAllowed { .. })),
+            "StatRollNotAllowed で名指し: {reasons:?}"
+        );
+        assert_eq!(s.stat_of("player", "hp"), 10, "state 無傷");
+    }
+
+    /// 【spec 16: 形の validate】additive の sides 欠落 / percentile の stat 欠落・sides 指定・
+    /// tiers 併用 / roll_stat のゼロダイス、を load 時に名指しで弾く。
+    #[test]
+    fn validate_rejects_percentile_and_roll_stat_shapes() {
+        use crate::spine::ScenarioError as E;
+        let base = |challenge_yaml: &str| {
+            Scenario::from_yaml(&format!(
+                "title: t\nstart: r\ninitial_stats: {{ SAN: 50 }}\nchallenges:\n{challenge_yaml}locations:\n  r: {{ description: d, items: {{}}, exits: [] }}\ngoal: {{ kind: always }}\n"
+            ))
+            .unwrap()
+        };
+        // additive で sides 欠落 (serde default 0) は ChallengeShapeInvalid。
+        let sc = base("  c: { dc: 10 }\n");
+        assert!(
+            sc.validate().iter().any(|e| matches!(e, E::ChallengeShapeInvalid { .. })),
+            "{:?}",
+            sc.validate()
+        );
+        // percentile で stat 欠落。
+        let sc = base("  c: { resolution: percentile }\n");
+        assert!(sc.validate().iter().any(|e| matches!(e, E::PercentileChallengeShape { .. })));
+        // percentile で sides 指定 (加算式との混同)。
+        let sc = base("  c: { resolution: percentile, stat: SAN, sides: 100 }\n");
+        assert!(sc.validate().iter().any(|e| matches!(e, E::PercentileChallengeShape { .. })));
+        // percentile + tiers は二重クリティカル。
+        let sc = base("  c:\n    resolution: percentile\n    stat: SAN\n    tiers:\n      crit: { natural: min }\n");
+        assert!(sc.validate().iter().any(|e| matches!(e, E::TierWithPercentile { .. })));
+        // trigger effects の roll_stat ゼロダイス。
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: r\ninitial_stats: { SAN: 50 }\n",
+            "triggers:\n",
+            "  - id: bad\n",
+            "    when: { kind: always }\n",
+            "    effects: [ { op: roll_stat, key: SAN, count: 0, sides: 6 } ]\n",
+            "locations:\n  r: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        assert!(
+            sc.validate().iter().any(|e| matches!(e, E::RollStatShapeInvalid { .. })),
+            "{:?}",
+            sc.validate()
+        );
+    }
+
+    /// 【spec 16: 全帰結共通効果の射影 (spec 09 の percentile 版)】全 degree が同じフラグに
+    /// 解決される percentile challenge は、そのフラグを前提にした move と同一 delta に束ねられる。
+    #[test]
+    fn percentile_shared_flag_projects_for_bundling() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: r\n",
+            "allowed_flags: [done]\n",
+            "initial_stats: { SAN: 50 }\n",
+            "challenges:\n",
+            "  ritual:\n",
+            "    resolution: percentile\n",
+            "    stat: SAN\n",
+            "    on_success: { flag: done }\n",
+            "    on_failure: { flag: done }\n",
+            "locations:\n",
+            "  r:\n",
+            "    description: d\n",
+            "    items: {}\n",
+            "    exits:\n",
+            "      - to: next\n",
+            "        gate: { kind: flag_is, key: done, value: true }\n",
+            "  next: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(1);
+        // どの出目でも done は立つ = 判定と移動を 1 ターンに束ねられる。
+        let out = apply(&mut s, &sc, &d(vec![
+            StateOp::AttemptChallenge { entity: "player".into(), challenge: "ritual".into() },
+            StateOp::Move { to: "next".into() },
+        ]));
+        assert!(out.is_ok(), "全帰結共通フラグは射影され束ねが受理される: {out:?}");
+        assert_eq!(s.location, "next");
+    }
+
+
 }

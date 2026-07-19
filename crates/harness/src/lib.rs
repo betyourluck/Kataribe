@@ -43,7 +43,10 @@ pub use synopsis::{
     SynopsisRequest, SynopsisTrigger, SYNOPSIS_KEEP_RECENT, SYNOPSIS_MIN_LLM_TURNS,
     SYNOPSIS_OVERFLOW_THRESHOLD, SYNOPSIS_TEXT_MAX, SYNOPSIS_TIMEOUT_SECS,
 };
-pub use turn::{carryover_narration, chronicle_entry, run_turn, ChronicleTags, TurnLog, TurnOutcome};
+pub use turn::{
+    carryover_narration, chronicle_entry, excluded_check_ops, run_turn, ChronicleTags, TurnLog,
+    TurnOutcome,
+};
 
 // =============================================================================
 // PoC: GM ターンループの実証 (Red→Green)
@@ -522,6 +525,7 @@ mod tests {
             tier: None,
             narration: "気配を殺して槍を突き出し、見事に仕留めた。".into(),
             sound: String::new(),
+            degree: None,
         };
         // 継続文脈: 結末文が「判定の結末」として連結され、次ターンの GM が知る。
         let carry =
@@ -849,6 +853,71 @@ mod tests {
         );
     }
 
+    /// 【spec 16 Phase D: 判定様式の接地】percentile 盤面の scenario_brief は「## 判定様式」で
+    /// ロールアンダー (低いほど良い・DC を自分で決めない) を接地し、percentile challenge は
+    /// 「d100 ロールアンダー」と明示される。additive 盤面には節が出ない (全盤面に撒かない)。
+    #[test]
+    fn scenario_brief_grounds_percentile_style() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: r\n",
+            "check_style: percentile\n",
+            "initial_stats: { SAN: 60, 目星: 50 }\n",
+            "challenges:\n",
+            "  san_check:\n",
+            "    description: 正気度ロール\n",
+            "    resolution: percentile\n",
+            "    stat: SAN\n",
+            "locations:\n  r: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let brief = prompt::scenario_brief(&sc);
+        assert!(brief.contains("## 判定様式"), "様式節が出る: {brief}");
+        assert!(brief.contains("check_under") && brief.contains("以下"), "ロールアンダーの読み方: {brief}");
+        assert!(brief.contains("低いほど良い"), "加算式の癖の抑止: {brief}");
+        assert!(brief.contains("DC を自分で決めてはならない"), "DC 発明の抑止: {brief}");
+        assert!(
+            brief.contains("d100 ロールアンダー (技能値以下で成功)"),
+            "percentile challenge の明示: {brief}"
+        );
+
+        // additive (既定) 盤面には様式節が出ない。
+        let plain = Scenario::from_yaml(concat!(
+            "title: t\nstart: r\n",
+            "locations:\n  r: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        assert!(!prompt::scenario_brief(&plain).contains("## 判定様式"));
+        // excluded_check_ops: 様式 → 隠す op の対応 (app/CLI が schema へ渡す)。
+        assert_eq!(excluded_check_ops(&sc), vec!["check".to_string()]);
+        assert_eq!(excluded_check_ops(&plain), vec!["check_under".to_string()]);
+    }
+
+    /// 【spec 16 Phase D: degree の還流】percentile 判定 (degree あり) は check_outcome_note が
+    /// 「d100=出目 ≤ 目標値 → 成功度」の書式で還流する (加算式の margin 書式と分岐)。
+    #[test]
+    fn check_outcome_note_surfaces_degree() {
+        let c = gm_core::CheckOutcome {
+            entity: "player".into(),
+            stat: "目星".into(),
+            sides: 100,
+            roll: 23,
+            modifier: 0,
+            total: 23,
+            dc: 60,
+            success: true,
+            tier: None,
+            narration: String::new(),
+            sound: String::new(),
+            degree: Some("hard".into()),
+        };
+        let note = prompt::check_outcome_note(&[c]);
+        assert!(note.contains("d100=23 ≤ 目標値60"), "ロールアンダー書式: {note}");
+        assert!(note.contains("ハード成功"), "degree は ja 表示で還流: {note}");
+        assert!(!note.contains("DC を"), "margin 書式は degree 判定に出ない: {note}");
+    }
+
     /// 【二層注入 (spec 08-A) = 60 ターンの序盤想起】長編で予算から溢れ「完全に忘れて」いた
     /// 序盤の出来事 (T3 で銀の鍵を入手) が、終盤 (T60 相当) の関連する行動
     /// (「銀の鍵を使う」) をクエリに retrieval され「(関連)」として再掲される。
@@ -994,6 +1063,7 @@ mod tests {
             tier: None,
             narration: String::new(),
             sound: String::new(),
+            degree: None,
         }];
 
         run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[], &[]).await.unwrap();
@@ -1012,7 +1082,7 @@ mod tests {
         let win = vec![CheckOutcome {
             entity: "player".into(), stat: "話術".into(), sides: 20,
             roll: 18, modifier: 3, total: 21, dc: 15, success: true, tier: None,
-            narration: String::new(), sound: String::new(),
+            narration: String::new(), sound: String::new(), degree: None,
         }];
         let note = prompt::check_outcome_note(&win);
         assert!(note.contains("なぜ"), "なぜその結果になったかの後付けを要求する");
@@ -1023,7 +1093,7 @@ mod tests {
         let fumble = vec![CheckOutcome {
             entity: "player".into(), stat: "str".into(), sides: 20,
             roll: 1, modifier: 2, total: 3, dc: 6, success: false, tier: Some("crit_fail".into()),
-            narration: String::new(), sound: String::new(),
+            narration: String::new(), sound: String::new(), degree: None,
         }];
         let note2 = prompt::check_outcome_note(&fumble);
         assert!(note2.contains("DC に 3 届かなかった"), "失敗 margin (-3) を surface する");
@@ -1038,7 +1108,7 @@ mod tests {
         let mk = |narration: &str| CheckOutcome {
             entity: "player".into(), stat: "STR".into(), sides: 20,
             roll: 5, modifier: 0, total: 5, dc: 15, success: false,
-            tier: None, narration: narration.into(), sound: String::new(),
+            tier: None, narration: narration.into(), sound: String::new(), degree: None,
         };
         // authored 文ありの判定だけ → note は空 (再描写不要)。
         assert!(prompt::check_outcome_note(&[mk("扉はびくともしない。")]).is_empty(),

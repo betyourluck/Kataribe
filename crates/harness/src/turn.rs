@@ -132,6 +132,16 @@ pub fn chronicle_entry(
     }
 }
 
+/// 盤面の判定様式 (spec 16) から、LLM の op 語彙 (schema) で**使わせない**判定 op を導く。
+/// percentile → 加算式 `check` を隠す / additive (既定) → `check_under` を隠す。
+/// app/CLI が `LlmClient::set_excluded_ops` に渡す (new_game と campaign 遷移時)。
+pub fn excluded_check_ops(scenario: &Scenario) -> Vec<String> {
+    match scenario.check_style {
+        gm_core::CheckStyle::Percentile => vec!["check".to_string()],
+        gm_core::CheckStyle::Additive => vec!["check_under".to_string()],
+    }
+}
+
 /// 次ターンへ持ち越す「直前までの語り」を組む。GM の narration に、**GM が見ていない**
 /// authored テキスト 2 種を連結する: 発火ビート (筋書きの出来事、#27 のトリガー版) と
 /// **判定の結末文** (`CheckOutcome.narration`、#41) — 出目は apply 後に確定するので GM の
@@ -221,6 +231,8 @@ pub enum TurnOutcome {
         rolls: Vec<RollOutcome>,
         /// この適用で行われた技能判定の結果。次ターンの語りに還流される。
         checks: Vec<CheckOutcome>,
+        /// 可変量ダイス (`roll_stat`) の監査記録 (spec 16)。提示層が「SAN -4 (1d6=4)」を出す素。
+        stat_rolls: Vec<gm_core::StatRollOutcome>,
         /// この適用で発火した反応ビート (Phase C)。`narration` を語りに注入する。
         fired: Vec<FiredTrigger>,
         /// 受理までに要した試行回数 (1 = 一発合格)。
@@ -354,6 +366,7 @@ pub async fn run_turn<P: DeltaProposer>(
                     summary: delta.summary,
                     rolls: out.rolls,
                     checks: out.checks,
+                    stat_rolls: out.stat_rolls,
                     fired: out.fired,
                     attempts: attempt,
                     rejected,

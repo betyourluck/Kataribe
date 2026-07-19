@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useGameStore } from "../stores/game";
+import { useGameStore, degreeLabel, statRollLine } from "../stores/game";
 import { t } from "../i18n";
 
 const game = useGameStore();
@@ -73,16 +73,27 @@ const game = useGameStore();
         </p>
       </div>
 
-      <!-- 技能判定 (出目 + 能力修正 vs DC) -->
+      <!-- 技能判定 (加算式 = 出目+修正 vs DC / percentile = d100 ロールアンダー + 成功度, spec 16) -->
       <div v-else-if="entry.kind === 'checks'" class="space-y-1">
         <template v-for="(c, j) in entry.checks" :key="j">
-          <p class="text-sm text-parchment/70">
+          <p v-if="c.degree" class="text-sm text-parchment/70">
+            🎯 {{ t("log.checkLabel", { entity: c.entity, stat: c.stat }) }}: d100={{ c.roll }} {{ c.success ? "≤" : ">" }} {{ c.dc }} →
+            <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ degreeLabel(c.degree) }}</span>
+          </p>
+          <p v-else class="text-sm text-parchment/70">
             🎯 {{ t("log.checkLabel", { entity: c.entity, stat: c.stat }) }}: 1d{{ c.sides }}({{ c.roll }}){{ c.modifier >= 0 ? "+" + c.modifier : c.modifier }} = {{ c.total }} (DC {{ c.dc }}) →
             <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ c.success ? t("log.success") : t("log.fail") }}</span>
           </p>
           <!-- authored 結末ナレーション (毎回・同ターン)。失敗を必ず描く。 -->
           <p v-if="c.narration" class="text-parchment/90 whitespace-pre-wrap" :style="game.narrationStyle">{{ c.narration }}</p>
         </template>
+      </div>
+
+      <!-- 可変量ダイス (roll_stat, spec 16): 「SAN -4 (1d6=4)」の監査行 -->
+      <div v-else-if="entry.kind === 'statrolls'" class="space-y-0.5">
+        <p v-for="(sr, j) in entry.stat_rolls" :key="j" class="text-sm text-parchment/70">
+          🎲 {{ statRollLine(sr) }}
+        </p>
       </div>
 
       <!-- 却下 (正本が嘘を弾いた) -->

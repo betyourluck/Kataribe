@@ -16,13 +16,15 @@ pub mod spine;
 pub mod state;
 
 pub use engine::{
-    adjudicate, apply, is_goal, ApplyOutcome, CheckOutcome, FiredTrigger, RollOutcome, Verdict,
+    adjudicate, apply, is_goal, percentile_degree, ApplyOutcome, CheckOutcome, FiredTrigger,
+    RollOutcome, StatRollOutcome, Verdict,
 };
 pub use reason::{Lang, RejectReason};
 pub use lint::unknown_key_lints;
 pub use spine::{
-    ChallengeDef, CharacterDef, Exit, Gate, GoalDef, ImageMode, Location, LocationItem, Natural,
-    Protagonist, RoleAssignment, Scenario, ScenarioError, StatDecl, TakeMode, TierDef, Trigger,
+    ChallengeDef, CharacterDef, CheckStyle, Exit, Gate, GoalDef, ImageMode, Location, LocationItem,
+    Natural, Protagonist, Resolution, RoleAssignment, Scenario, ScenarioError, StatDecl, TakeMode,
+    TierDef, Trigger,
 };
 pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
