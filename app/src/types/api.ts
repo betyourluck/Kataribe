@@ -300,6 +300,28 @@ export interface RemotePackage {
   kataribe_version: string | null;
   /** 配布物 (正規化済み zip) の sha256 (spec 17)。未対応の書庫は null/欠落。 */
   sha256?: string | null;
+  /** 配布物の差し替え日時 (ISO8601)。更新バッジの表示に使う人間値。 */
+  file_updated_at?: string | null;
+}
+
+/** 更新あり 1 件 (spec 17 機構③。judgement は hash の相違のみ)。 */
+export interface PackageUpdate {
+  /** packagePaths のパス (ローカル一覧の行と突き合わせるキー)。 */
+  path: string;
+  id: string;
+  /** サイト側の差し替え日時 (ISO8601)。 */
+  file_updated_at: string | null;
+  /** 手元の版 (取得時の写し)。欠落は null → 表示は「(不明)」。 */
+  local_version: string | null;
+  /** 手元の取得時刻 (unix 秒)。 */
+  installed_at_unix: number;
+}
+
+/** 更新完了の報告 (トースト素材)。版は表示のみで判定には使わない。 */
+export interface UpdateResult {
+  title: string;
+  from_version: string | null;
+  to_version: string | null;
 }
 
 /** 書庫の一覧応答 (items + ページネーション)。 */

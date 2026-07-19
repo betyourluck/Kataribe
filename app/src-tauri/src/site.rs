@@ -35,12 +35,35 @@ fn top_name_is_safe(name: &str) -> bool {
         && name != "." && name != ".."
 }
 
+/// 展開先の決め方 (検証は共通・据える場所だけが違う)。
+enum Dest<'a> {
+    /// `root` 直下に zip のトップフォルダ名で据える (衝突は `_2` で回避)。新規取得。
+    Under(&'a Path),
+    /// このパスそのものを package root にする (トップフォルダ名は捨てる)。更新の staging
+    /// (spec 17 rev2 A-2) — tmp 自体が root になるので二重構造を構造的に作らない。
+    Exact(&'a Path),
+}
+
 /// zip を検証して `dest_root` 直下に展開し、生まれたパッケージフォルダの絶対パスを返す。
 ///
 /// 受理する構造は Wrapped のみ: zip 直下がディレクトリ 1 つで、その中に `package.yaml`。
 /// 展開先が既に在る場合は `名前_2`, `名前_3`, … と衝突回避する (再取得で上書きしない —
 /// 進行中のセーブが指す旧フォルダを壊さない)。
 pub fn extract_package_zip(zip_path: &Path, dest_root: &Path) -> Result<PathBuf, String> {
+    extract_impl(zip_path, Dest::Under(dest_root))
+}
+
+/// `extract_package_zip` の展開先固定版 (spec 17 機構④ の staging)。
+///
+/// 検証は同一 (サーバを信用しない二層は更新でも緩めない)。違いは**トップフォルダ名を採らず
+/// `exact_dest` 自身を package root にする**こと — 更新は「同じ場所へ据え直す」操作なので、
+/// zip のトップフォルダ名が変わっていても `旧パス/<新トップ名>/…` の二重構造にならない。
+/// `exact_dest` が既に在れば作り直す (前回の書きかけ残骸を持ち越さない)。
+pub fn extract_package_zip_to(zip_path: &Path, exact_dest: &Path) -> Result<PathBuf, String> {
+    extract_impl(zip_path, Dest::Exact(exact_dest))
+}
+
+fn extract_impl(zip_path: &Path, dest_spec: Dest<'_>) -> Result<PathBuf, String> {
     let file = File::open(zip_path).map_err(|e| format!("ダウンロードファイルを開けません: {e}"))?;
     let mut archive = ZipArchive::new(BufReader::new(file))
         .map_err(|_| "zip として読み込めません".to_string())?;
@@ -98,8 +121,18 @@ pub fn extract_package_zip(zip_path: &Path, dest_root: &Path) -> Result<PathBuf,
         return Err("package.yaml が見つかりません (パッケージ zip ではありません)".to_string());
     }
 
-    // --- 展開先の衝突回避 ---
-    let dest = unique_dir(dest_root, &top);
+    // --- 展開先の確定 (新規取得は衝突回避、更新の staging は指定パスそのもの) ---
+    let dest = match dest_spec {
+        Dest::Under(root) => unique_dir(root, &top),
+        Dest::Exact(exact) => {
+            // 書きかけの残骸に上書き展開すると旧ファイルが混ざる → 作り直す。
+            if exact.exists() {
+                std::fs::remove_dir_all(exact)
+                    .map_err(|e| format!("展開先を掃除できません: {e}"))?;
+            }
+            exact.to_path_buf()
+        }
+    };
     std::fs::create_dir_all(&dest).map_err(|e| format!("展開先を作成できません: {e}"))?;
 
     // --- 展開パス (検証済みエントリのみ。top を剥がして dest 配下へ) ---
@@ -293,6 +326,31 @@ mod tests {
         let zip = make_zip(&[("MyPack/scenarios/main.yaml", "title: s")]);
         let err = extract_package_zip(&zip, &temp_dest()).unwrap_err();
         assert!(err.contains("package.yaml が見つかりません"), "{err}");
+    }
+
+    /// 【展開先固定 (spec 17 rev2 A-2)】zip のトップフォルダ名が変わっていても、指定パス
+    /// 自身が package root になる (二重構造 `dest/<新トップ名>/…` を作らない)。既存の
+    /// 書きかけ残骸は作り直される。
+    #[test]
+    fn extract_to_exact_dest_strips_top_and_keeps_path() {
+        let zip = make_zip(&[
+            ("RenamedByAuthor/package.yaml", "title: t\nversion: '0.3'"),
+            ("RenamedByAuthor/scenarios/main.yaml", "start: a"),
+        ]);
+        let root = temp_dest();
+        let dest = root.join(".update_tmp_xyz");
+        // 前回の書きかけ残骸 (更新後に消えているべき旧ファイル)。
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("stale.yaml"), "junk").unwrap();
+
+        let out = extract_package_zip_to(&zip, &dest).unwrap();
+        assert_eq!(out, dest, "指定パス自身が package root");
+        assert!(out.join("package.yaml").is_file(), "トップは剥がされる");
+        assert!(out.join("scenarios/main.yaml").is_file());
+        assert!(!out.join("RenamedByAuthor").exists(), "二重構造にならない");
+        assert!(!out.join("stale.yaml").exists(), "残骸は持ち越さない");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&zip);
     }
 
     /// 【衝突回避】同名フォルダが既に在れば `_2` で展開する (旧フォルダを上書きしない)。

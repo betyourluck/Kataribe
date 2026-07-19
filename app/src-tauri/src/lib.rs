@@ -960,6 +960,10 @@ struct PackageEntry {
     autosave_turn: Option<u32>,
     /// 手動セーブスロット (spec 07 Phase D) が 1 つでも在るか (パッケージ削除時の確認に使う)。
     has_slots: bool,
+    /// 出所メタ (spec 17) が在れば取得元サイトと書庫 id。サイトタブの「取得済み」判定に使う
+    /// (同じ配布物を `_2` で二重取得させない)。手動配置・自作は None = 判定の対象外。
+    source_site: Option<String>,
+    source_id: Option<String>,
 }
 
 /// localStorage 由来のパス列について、各 `package.yaml` の manifest を読み一覧 view を返す。
@@ -982,6 +986,11 @@ async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Package
             // 手動スロット (Phase D) の有無 (存在チェックのみ = 5 本 parse しない)。
             let has_slots = (1..=SAVE_SLOTS)
                 .any(|n| slot_save_path(&app, &dir, n).is_some_and(|sp| sp.exists()));
+            // 出所メタ (spec 17)。無ければ手動配置 = 更新機構も取得済み判定も触らない。
+            let meta = update::read_source_meta(&dir);
+            let (source_site, source_id) = meta
+                .map(|m| (Some(m.site_url), Some(m.id)))
+                .unwrap_or((None, None));
             match read_manifest(&dir) {
                 Ok(m) => {
                     // 単発シナリオも campaign-entry も playable (new_game が entry を分岐)。
@@ -994,6 +1003,8 @@ async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Package
                         error: None,
                         autosave_turn,
                         has_slots,
+                        source_site,
+                        source_id,
                     }
                 }
                 Err(e) => PackageEntry {
@@ -1004,6 +1015,8 @@ async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Package
                     error: Some(e.to_string()),
                     autosave_turn: None,
                     has_slots,
+                    source_site,
+                    source_id,
                 },
             }
         })
@@ -1229,6 +1242,10 @@ struct RemotePackage {
     /// 更新検知の一次ソース。未対応の古い書庫/自前サーバは None (更新検知は静かに無効)。
     #[serde(default)]
     sha256: Option<String>,
+    /// 配布物の差し替え日時 (ISO8601)。更新バッジの hover 表示に使う人間値
+    /// (版番号はサーバに無い = manifest 非 parse 原則の維持。spec 17 表示設計)。
+    #[serde(default)]
+    file_updated_at: Option<String>,
 }
 
 /// 書庫の一覧応答 (items + ページネーション)。
@@ -1380,6 +1397,34 @@ struct InstalledPackage {
 /// DL 受入上限 — サーバのファイル上限 100MB + 余裕 (無限ストリームへの蓋)。
 const MAX_DOWNLOAD_BYTES: u64 = 110 * 1024 * 1024;
 
+/// パッケージ zip を `tmp` へストリーム DL する (新規取得・更新の共用)。上限超過で即中断。
+async fn download_package_zip(base: &str, id: &str, tmp: &Path) -> Result<(), String> {
+    let mut res = site_client()?
+        .get(format!("{base}/api/packages/{id}/download"))
+        .send()
+        .await
+        .map_err(|e| format!("配布サイトに接続できません: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("ダウンロードに失敗しました: {}", res.status()));
+    }
+    let mut out =
+        std::fs::File::create(tmp).map_err(|e| format!("一時ファイルを作成できません: {e}"))?;
+    let mut written: u64 = 0;
+    while let Some(chunk) = res
+        .chunk()
+        .await
+        .map_err(|e| format!("ダウンロード中に切断されました: {e}"))?
+    {
+        written += chunk.len() as u64;
+        if written > MAX_DOWNLOAD_BYTES {
+            return Err("ファイルが大きすぎます (110MB 超)".to_string());
+        }
+        std::io::Write::write_all(&mut out, &chunk)
+            .map_err(|e| format!("一時ファイルへの書き込みに失敗: {e}"))?;
+    }
+    Ok(())
+}
+
 /// 配布サイトからパッケージ zip を DL し、検証・展開して packages 置き場に据える。
 /// 展開先は `app_data_dir/packages/<フォルダ名>` (spec 07 saves と同じ流儀 — repo を汚さず、
 /// 配布 zip の差し替えでも消えない)。zip 検証は `site::extract_package_zip`
@@ -1422,33 +1467,7 @@ async fn install_from_site(
     let tmp = dl_dir.join(format!("{id}.zip.part"));
 
     // --- DL (ストリームで一時ファイルへ。上限超過で即中断) ---
-    let download = async {
-        let mut res = site_client()?
-            .get(format!("{base}/api/packages/{id}/download"))
-            .send()
-            .await
-            .map_err(|e| format!("配布サイトに接続できません: {e}"))?;
-        if !res.status().is_success() {
-            return Err(format!("ダウンロードに失敗しました: {}", res.status()));
-        }
-        let mut out = std::fs::File::create(&tmp)
-            .map_err(|e| format!("一時ファイルを作成できません: {e}"))?;
-        let mut written: u64 = 0;
-        while let Some(chunk) = res
-            .chunk()
-            .await
-            .map_err(|e| format!("ダウンロード中に切断されました: {e}"))?
-        {
-            written += chunk.len() as u64;
-            if written > MAX_DOWNLOAD_BYTES {
-                return Err("ファイルが大きすぎます (110MB 超)".to_string());
-            }
-            std::io::Write::write_all(&mut out, &chunk)
-                .map_err(|e| format!("一時ファイルへの書き込みに失敗: {e}"))?;
-        }
-        Ok(())
-    };
-    if let Err(e) = download.await {
+    if let Err(e) = download_package_zip(&base, id, &tmp).await {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
@@ -1513,6 +1532,269 @@ async fn install_from_site(
             Err(format!("パッケージとして読めません: {e}"))
         }
     }
+}
+
+// =============================================================================
+// パッケージ更新 (spec 17 Phase C) — 更新検知と上書き取得
+// =============================================================================
+
+/// 「更新あり」1 件 (frontend のバッジ素材)。判定は hash の**相違**のみ (新旧の順序は無い)。
+#[derive(Serialize)]
+struct PackageUpdate {
+    /// `packagePaths` が持つパス (frontend のキー = 表示行との突き合わせに使う)。
+    path: String,
+    /// 書庫のパッケージ id。
+    id: String,
+    /// サイト側の差し替え日時 (ISO8601)。版番号はサーバに無いので日時で示す。
+    file_updated_at: Option<String>,
+    /// 手元の版 (取得時 package.yaml の写し)。欠落は None → 表示は「(不明)」。
+    local_version: Option<String>,
+    /// 手元の取得時刻 (unix 秒)。表示の locale 変換は提示層。
+    installed_at_unix: u64,
+}
+
+/// 更新完了の報告 (トースト素材)。版は人間向け表示のみで、判定には一切使わない。
+#[derive(Serialize)]
+struct UpdateResult {
+    title: String,
+    from_version: Option<String>,
+    to_version: Option<String>,
+}
+
+/// 更新の排他 (rev2 B-10): 同時に 1 件だけ。実行中は検知もスキップする
+/// (スワップ中のフォルダを走査して誤判定しない)。
+static UPDATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 更新中フラグの RAII ガード (どの return でも必ず降りる)。
+struct UpdateGuard;
+impl UpdateGuard {
+    /// 取れなければ None (既に別の更新が進行中)。
+    fn acquire() -> Option<Self> {
+        UPDATING
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .ok()
+            .map(|_| UpdateGuard)
+    }
+}
+impl Drop for UpdateGuard {
+    fn drop(&mut self) {
+        UPDATING.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// 書庫の詳細 (`GET /api/packages/{id}`) を引く。更新検知・更新取得の共通経路。
+async fn fetch_package_detail(base: &str, id: &str) -> Result<RemotePackage, String> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Err("不正なパッケージ id です".to_string());
+    }
+    let res = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("HTTP クライアントの初期化に失敗: {e}"))?
+        .get(format!("{base}/api/packages/{id}"))
+        .send()
+        .await
+        .map_err(|e| format!("配布サイトに接続できません: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("配布サイトがエラーを返しました: {}", res.status()));
+    }
+    res.json::<RemotePackage>()
+        .await
+        .map_err(|e| format!("詳細の形式が読めません: {e}"))
+}
+
+/// 出所メタが「いま設定中のサイト由来」かを判定する (rev2 A-4 SSRF 遮断)。
+/// 一致する時だけネットワークに出る — 細工メタを手動配置されても照会先はユーザー自身が
+/// 登録したサイトだけ (`open_external_url` の原則と同じ)。
+fn meta_matches_site(meta: &update::SourceMeta, normalized_site: &str) -> bool {
+    meta.site_url.trim_end_matches('/') == normalized_site
+}
+
+/// `packagePaths` の各フォルダについて更新の有無を照会する (spec 17 機構③)。
+///
+/// **失敗はすべて沈黙** (rev2 B-8): オフライン・404・5xx・パース失敗はその項目について
+/// 何も主張せず、単に結果に載せない。検知は best-effort であり、一覧を壊さない。
+#[tauri::command]
+async fn check_package_updates(site_url: String, paths: Vec<String>) -> Vec<PackageUpdate> {
+    // 更新の実行中は走査しない (スワップ中のフォルダを見て誤判定しない)。
+    if UPDATING.load(std::sync::atomic::Ordering::Acquire) {
+        return Vec::new();
+    }
+    let Ok(base) = normalize_site_url(&site_url) else {
+        return Vec::new();
+    };
+    // メタが在り、かつ現在のサイト由来のものだけを照会対象にする。
+    let targets: Vec<(String, update::SourceMeta)> = paths
+        .into_iter()
+        .filter_map(|p| {
+            let meta = update::read_source_meta(&resolve_pkg_dir(&p))?;
+            meta_matches_site(&meta, &base).then_some((p, meta))
+        })
+        .collect();
+
+    // 並列照会 (件数はユーザーの登録数 = 高々数十)。
+    let mut tasks = Vec::with_capacity(targets.len());
+    for (path, meta) in targets {
+        let base = base.clone();
+        tasks.push(tokio::spawn(async move {
+            let remote = fetch_package_detail(&base, &meta.id).await.ok()?;
+            let server_hash = remote.sha256?; // 未対応の書庫 → 検知は静かに無効
+            (!server_hash.eq_ignore_ascii_case(&meta.content_hash)).then_some(PackageUpdate {
+                path,
+                id: meta.id,
+                file_updated_at: remote.file_updated_at,
+                local_version: meta.version,
+                installed_at_unix: meta.installed_at_unix,
+            })
+        }));
+    }
+    let mut out = Vec::new();
+    for t in tasks {
+        if let Ok(Some(u)) = t.await {
+            out.push(u);
+        }
+    }
+    out
+}
+
+/// 手元のフォルダが取得後に編集されているか (機構④ 2.)。更新前の確認ダイアログの判定材料。
+/// メタが無い/計算不能は false (触らない側に倒す — 聖域は聖域のまま)。
+#[tauri::command]
+fn package_is_locally_edited(path: String) -> bool {
+    let dir = resolve_pkg_dir(&path);
+    let Some(meta) = update::read_source_meta(&dir) else {
+        return false;
+    };
+    update::tree_hash(&dir).map(|h| h != meta.tree_hash).unwrap_or(false)
+}
+
+/// 書庫の最新版でパッケージを**同じ場所へ**上書き更新する (spec 17 機構④)。
+///
+/// 守りは三重: (a) プレイ中は拒否、(b) ローカル編集は frontend が確認済み (`force`)、
+/// (c) スワップは失敗時に旧フォルダへ復旧。**メタの更新はスワップ成功後のみ** (rev2 B-7) —
+/// 失敗した hash を書くと「更新あり」が二度と点かなくなる。
+#[tauri::command]
+async fn update_site_package(
+    session: tauri::State<'_, SharedSession>,
+    site_url: String,
+    path: String,
+    force: bool,
+) -> Result<UpdateResult, String> {
+    let Some(_guard) = UpdateGuard::acquire() else {
+        return Err("別のパッケージを更新中です。完了までお待ちください".to_string());
+    };
+    let dir = resolve_pkg_dir(&path);
+    let meta = update::read_source_meta(&dir)
+        .ok_or_else(|| "このパッケージは配布サイトから取得したものではありません".to_string())?;
+    let base = normalize_site_url(&site_url)?;
+    if !meta_matches_site(&meta, &base) {
+        return Err("取得元サイトが現在の設定と異なります".to_string());
+    }
+
+    // (a) プレイ中ガード: Windows は再生中の BGM 等がフォルダの rename を失敗させる。
+    // frontend もボタンを disable するが、正本の在り処を握る backend が最終判断する。
+    {
+        let guard = session.lock().await;
+        if let Some(s) = guard.as_ref() {
+            if s.package_root == dir {
+                return Err("プレイ中のパッケージは更新できません。プレイを終了してからお試しください".to_string());
+            }
+        }
+    }
+
+    // (b) ローカル編集: force が無ければここで止める (frontend が確認ダイアログを出す)。
+    if !force {
+        let current = update::tree_hash(&dir)?;
+        if current != meta.tree_hash {
+            return Err("このパッケージはローカルで編集されています".to_string());
+        }
+    }
+
+    // --- サーバの現在値を引く (sha256 = DL 検証の expected、version は表示に使わない) ---
+    let remote = fetch_package_detail(&base, &meta.id).await?;
+
+    let parent = dir
+        .parent()
+        .ok_or_else(|| "パッケージの親フォルダを解決できません".to_string())?
+        .to_path_buf();
+    let tmp_zip = parent.join(format!(".{}.zip.part", meta.id));
+    let staging = parent.join(format!(".update_tmp_{}", meta.id));
+
+    // 一時物は成功・失敗を問わず必ず片付ける (rev2 B-7)。
+    let cleanup = |zip: &Path, stage: &Path| {
+        let _ = std::fs::remove_file(zip);
+        let _ = std::fs::remove_dir_all(stage);
+    };
+
+    if let Err(e) = download_package_zip(&base, &meta.id, &tmp_zip).await {
+        cleanup(&tmp_zip, &staging);
+        return Err(e);
+    }
+    let content_hash = match update::sha256_file(&tmp_zip) {
+        Ok(h) => h,
+        Err(e) => {
+            cleanup(&tmp_zip, &staging);
+            return Err(format!("ダウンロードの検証に失敗: {e}"));
+        }
+    };
+    if let Some(expected) = remote.sha256.as_deref() {
+        if !expected.eq_ignore_ascii_case(&content_hash) {
+            cleanup(&tmp_zip, &staging);
+            return Err("ダウンロードが破損しています (ハッシュ不一致)。もう一度お試しください".to_string());
+        }
+    }
+
+    // --- 展開は staging へ (rev2 A-2: tmp 自体が package root = 二重構造を作らない) ---
+    let (zip2, stage2) = (tmp_zip.clone(), staging.clone());
+    let extracted = tokio::task::spawn_blocking(move || {
+        site::extract_package_zip_to(&zip2, &stage2)?;
+        // 据える前に「パッケージとして読めるか」を確認する (壊れた配布物で旧を潰さない)。
+        read_manifest(&stage2).map_err(|e| format!("パッケージとして読めません: {e}"))
+    })
+    .await
+    .map_err(|e| format!("展開タスクの実行に失敗: {e}"));
+    let _ = std::fs::remove_file(&tmp_zip); // zip はここで用済み
+    let new_manifest = match extracted.and_then(|r| r) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+    };
+
+    // --- スワップ (失敗時は旧フォルダへ復旧。パス・フォルダ名は不変) ---
+    if let Err(e) = update::swap_in_place(&staging, &dir) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+
+    // --- メタ更新はここまで来た時だけ (rev2 B-7) ---
+    let to_version = (!new_manifest.version.trim().is_empty()).then(|| new_manifest.version.clone());
+    let new_meta = update::SourceMeta {
+        site_url: base,
+        id: meta.id,
+        version: to_version.clone(),
+        content_hash,
+        tree_hash: update::tree_hash(&dir)?,
+        installed_at_unix: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    };
+    if let Err(e) = update::write_source_meta(&dir, &new_meta) {
+        eprintln!("[警告] 出所メタを更新できませんでした (次回の更新検知は無効): {e}");
+    }
+    Ok(UpdateResult {
+        title: new_manifest.title,
+        from_version: meta.version,
+        to_version,
+    })
 }
 
 /// [`open_package`] の戻り値: (package root, 開始 scenario, campaign(単発は None), 現在 module,
@@ -2227,6 +2509,9 @@ pub fn run() {
             set_dev_mode,
             fetch_site_packages,
             install_site_package,
+            check_package_updates,
+            package_is_locally_edited,
+            update_site_package,
             fetch_app_update,
             open_external_url,
             get_default_log_dir,
@@ -2241,7 +2526,36 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_path;
+    use super::{meta_matches_site, normalize_path, normalize_site_url};
+
+    /// 【SSRF 遮断 (spec 17 rev2 A-4)】照会に出るのは**現在設定の siteUrl と一致する
+    /// 出所メタだけ**。細工メタ (別サイト) を手動配置されても、Kataribe が触りに行く先は
+    /// 常にユーザー自身が登録したサイトに限られる。末尾スラッシュの揺れは吸収する。
+    #[test]
+    fn only_meta_from_the_configured_site_is_queried() {
+        let site = normalize_site_url("https://kataribe.outcasts.jp/").unwrap();
+        let meta = |url: &str| super::update::SourceMeta {
+            site_url: url.to_string(),
+            id: "id".into(),
+            version: None,
+            content_hash: "h".into(),
+            tree_hash: "t".into(),
+            installed_at_unix: 0,
+        };
+        assert!(meta_matches_site(&meta("https://kataribe.outcasts.jp"), &site));
+        assert!(
+            meta_matches_site(&meta("https://kataribe.outcasts.jp/"), &site),
+            "末尾スラッシュの揺れは吸収する"
+        );
+        assert!(
+            !meta_matches_site(&meta("https://evil.example"), &site),
+            "別サイト由来のメタは照会に出ない"
+        );
+        assert!(
+            !meta_matches_site(&meta("https://kataribe.outcasts.jp.evil.example"), &site),
+            "前方一致では通さない (部分文字列の罠)"
+        );
+    }
     use std::path::{Path, PathBuf};
 
     /// 【本人未知属性の UI 秘匿 + 場所表示名 (2026-07-08)】`hidden_attributes` はプレイヤー UI

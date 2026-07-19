@@ -318,6 +318,16 @@ export const messages = {
       viewOnSite: "書庫で見る",
       viewOnSiteTitle: "説明の全文やレビューをブラウザで読む",
       installed: "「{title}」を取得し、一覧に追加しました",
+      installedAlready: "取得済み",
+      installedAlreadyTitle:
+        "このパッケージは取得済みです (同じものを二重に置きません)。更新はローカルタブの「更新」から",
+      updateAvailable: "更新あり",
+      updateAvailableTitle:
+        "サイト側 {updated} 差し替え / 手元 {installed} 取得 (v{version})",
+      updateAction: "更新",
+      updating: "更新中…",
+      updateActionTitle: "書庫の最新版で上書きする (同じフォルダ・セーブは残ります)",
+      updateWhilePlayingTitle: "プレイ中は更新できません",
       prev: "前へ",
       next: "次へ",
       categories: {
@@ -344,6 +354,14 @@ export const messages = {
       slotSaved: "スロット {slot} にセーブしました",
       slotSaveFailed: "セーブに失敗: {error}",
       deleteConfirmOk: "削除",
+      // --- パッケージ更新 (spec 17) ---
+      updateWhilePlaying: "プレイ中のパッケージは更新できません。プレイを終了してからお試しください",
+      updateEditedConfirm:
+        "このパッケージはローカルで編集されています。更新すると変更は失われます。\n上書きして更新しますか？",
+      updateConfirmOk: "上書き更新",
+      packageUpdated: "「{title}」を v{from} → v{to} に更新しました",
+      updateFailed: "更新に失敗しました: {error}",
+      versionUnknown: "(不明)",
       noLogToSave: "保存するログがありません",
       logHeaderDate: "保存日時",
       logSaved: "ログを保存しました: {path}",
@@ -672,6 +690,15 @@ export const messages = {
       viewOnSite: "View on site",
       viewOnSiteTitle: "Read the full description and reviews in your browser",
       installed: "Installed “{title}” and added it to the list",
+      installedAlready: "Installed",
+      installedAlreadyTitle:
+        "Already installed (no duplicate copies). Update it from the “Update” button in the Local tab.",
+      updateAvailable: "Update available",
+      updateAvailableTitle: "Site: replaced {updated} / Local: installed {installed} (v{version})",
+      updateAction: "Update",
+      updating: "Updating…",
+      updateActionTitle: "Overwrite with the latest from the archive (same folder; saves are kept)",
+      updateWhilePlayingTitle: "Can't update while playing",
       prev: "Prev",
       next: "Next",
       categories: {
@@ -698,6 +725,14 @@ export const messages = {
       slotSaved: "Saved to slot {slot}",
       slotSaveFailed: "Save failed: {error}",
       deleteConfirmOk: "Delete",
+      // --- Package updates (spec 17) ---
+      updateWhilePlaying: "Can't update the package you're playing. Finish the session first.",
+      updateEditedConfirm:
+        "This package has local edits. Updating will discard them.\nOverwrite and update?",
+      updateConfirmOk: "Overwrite",
+      packageUpdated: "Updated “{title}” from v{from} to v{to}",
+      updateFailed: "Update failed: {error}",
+      versionUnknown: "(unknown)",
       noLogToSave: "No log to save",
       logHeaderDate: "Saved at",
       logSaved: "Log saved: {path}",

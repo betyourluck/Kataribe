@@ -5,7 +5,7 @@
  * - 「配布サイト」タブ (spec 05 Phase C): 書庫サイトの一覧を fetch し、選んだ zip を
  *   DL→検証→展開→パス登録までアプリ内で完結させる。サイト URL は設定項目 (既定 = 公式)。
  */
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import { useGameStore, SITE_CATEGORIES } from "../stores/game";
 import type { RemotePackage } from "../types/api";
 import { t } from "../i18n";
@@ -21,6 +21,31 @@ const newPath = ref("");
 function add() {
   game.addPackage(newPath.value);
   newPath.value = "";
+}
+
+// 更新検知 (spec 17 機構③): ローカルタブを開くたびに書庫へ照会する。失敗は沈黙 (store 側)。
+function openLocalTab() {
+  tab.value = "local";
+  game.checkPackageUpdates();
+}
+onMounted(() => game.checkPackageUpdates());
+
+/** unix 秒 / ISO8601 を表示用の日付文字列へ (locale は OS 設定に従う)。空は「?」。 */
+function fmtDate(v: string | number | null): string {
+  if (v === null || v === "") return "?";
+  const d = typeof v === "number" ? new Date(v * 1000) : new Date(v);
+  return isNaN(d.getTime()) ? "?" : d.toLocaleString();
+}
+
+/** 「更新あり」チップの hover 文 (サイトの差し替え日時 ↔ 手元の取得日時と版)。 */
+function updateHint(path: string): string {
+  const u = game.updateFor(path);
+  if (!u) return "";
+  return t("packages.updateAvailableTitle", {
+    updated: fmtDate(u.file_updated_at),
+    installed: fmtDate(u.installed_at_unix),
+    version: u.local_version ?? t("store.versionUnknown"),
+  });
 }
 
 // --- 配布サイトタブ ---
@@ -79,7 +104,7 @@ function totalPages(): number {
           <button
             class="rounded px-3 py-1"
             :class="tab === 'local' ? 'bg-ember/80 text-ink font-bold' : 'text-parchment/60 hover:text-parchment'"
-            @click="tab = 'local'"
+            @click="openLocalTab"
           >
             {{ t("packages.tabLocal") }}
           </button>
@@ -109,11 +134,28 @@ function totalPages(): number {
               <div class="flex items-center gap-2">
                 <span class="font-bold text-parchment truncate">{{ p.error ? p.path : p.title }}</span>
                 <span v-if="p.error" class="shrink-0 rounded bg-red-900/60 px-1.5 text-xs text-red-200">{{ t("packages.loadFailed") }}</span>
+                <!-- spec 17: 書庫の配布物と内容が違う (= 差し替えられた) パッケージ -->
+                <span
+                  v-if="game.updateFor(p.path)"
+                  class="shrink-0 rounded bg-ember/80 px-1.5 text-xs text-ink font-bold"
+                  :title="updateHint(p.path)"
+                >
+                  {{ t("packages.updateAvailable") }}
+                </span>
               </div>
               <div class="text-xs text-parchment/45 truncate">{{ p.path }}</div>
               <div v-if="p.description && !p.error" class="text-xs text-parchment/60 mt-0.5 desc-clamp">{{ p.description }}</div>
               <div v-if="p.error" class="text-xs text-red-300/80 mt-0.5">{{ p.error }}</div>
             </div>
+            <button
+              v-if="game.updateFor(p.path)"
+              class="shrink-0 rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
+              :disabled="game.updatingPath !== null || p.path === game.activePackagePath"
+              :title="p.path === game.activePackagePath ? t('packages.updateWhilePlayingTitle') : t('packages.updateActionTitle')"
+              @click="game.updatePackage(p.path)"
+            >
+              {{ game.updatingPath === p.path ? t("packages.updating") : t("packages.updateAction") }}
+            </button>
             <button
               class="shrink-0 text-parchment/40 hover:text-red-400 text-sm"
               :title="t('packages.removeTitle')"
@@ -246,7 +288,17 @@ function totalPages(): number {
                   {{ t("packages.viewOnSite") }} ↗
                 </button>
               </div>
+              <!-- spec 17: 同じ配布物の二重取得 (`_2` の並置) を止める。更新はローカルタブから。 -->
               <button
+                v-if="game.installedFromSite(p.id)"
+                disabled
+                class="shrink-0 rounded bg-ash/50 px-3 py-1 text-sm text-parchment/50 font-bold"
+                :title="t('packages.installedAlreadyTitle')"
+              >
+                {{ t("packages.installedAlready") }}
+              </button>
+              <button
+                v-else
                 class="shrink-0 rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
                 :disabled="game.installingId !== null"
                 :title="t('packages.installTitle')"

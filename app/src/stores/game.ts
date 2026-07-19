@@ -9,6 +9,8 @@ import type {
   CharacterView,
   RemoteList,
   InstalledPackage,
+  PackageUpdate,
+  UpdateResult,
   StatRollView,
   SynopsisView,
   LogLineView,
@@ -224,6 +226,9 @@ export interface PackageEntry {
   autosave_turn: number | null;
   // 手動セーブスロット (spec 07 Phase D) が 1 つでも在るか (削除確認に使う)。
   has_slots: boolean;
+  // 出所メタ (spec 17) が在れば取得元サイト / 書庫 id。手動配置・自作は null。
+  source_site: string | null;
+  source_id: string | null;
 }
 
 // localStorage からパス一覧を読む (壊れていれば同梱既定にフォールバック)。
@@ -295,6 +300,11 @@ interface GameState {
   remoteError: string | null;
   // 取得 (DL→展開) 中のパッケージ id。null なら待機。
   installingId: string | null;
+  // --- パッケージ更新 (spec 17 Phase C) ---
+  // 「更新あり」のパッケージ (path をキーに一覧行と突き合わせる)。照会失敗は沈黙 = 空のまま。
+  packageUpdates: PackageUpdate[];
+  // 上書き更新中のパス。null なら待機 (同時に 1 件 = backend の排他と対)。
+  updatingPath: string | null;
   // 会話ログのテキスト保存先フォルダ (空 = 既定)。設定「ログ」タブで指定。
   logDir: string;
   // ログ保存/フォルダ操作の一時トースト (App.vue が数秒表示して消す)。
@@ -358,6 +368,8 @@ export const useGameStore = defineStore("game", {
       remoteLoading: false,
       remoteError: null,
       installingId: null,
+      packageUpdates: [],
+      updatingPath: null,
       logDir: loadLogDir(),
       logToast: "",
       llmModel: "",
@@ -692,6 +704,71 @@ export const useGameStore = defineStore("game", {
         return null;
       } finally {
         this.installingId = null;
+      }
+    },
+
+    // --- パッケージ更新 (spec 17 Phase C) ---
+
+    // 登録済みパッケージの更新有無を書庫へ照会する (ローカルタブを開くたび自動)。
+    // 失敗は沈黙 (rev2 B-8): 例外でも既存のバッジ状態を消さない — 検知は best-effort で、
+    // オフラインや一時的な 5xx が「更新なし」に見えてしまう方が有害。
+    async checkPackageUpdates() {
+      try {
+        this.packageUpdates = await invoke<PackageUpdate[]>("check_package_updates", {
+          siteUrl: this.siteUrl,
+          paths: this.packagePaths,
+        });
+      } catch {
+        /* 沈黙 (前回の判定を保つ) */
+      }
+    },
+
+    // このパスに更新が来ているか (一覧行のバッジ判定)。
+    updateFor(path: string): PackageUpdate | undefined {
+      return this.packageUpdates.find((u) => u.path === path);
+    },
+
+    // この書庫 id を現在のサイトから取得済みか (サイトタブの「取得済み」判定)。
+    // 出所メタの site_url まで見るので、別サイトの同 id とは混ざらない。同じ配布物を
+    // `_2` で二重に据えるのを止めるのが眼目 (更新はローカルタブの役割)。
+    installedFromSite(id: string): PackageEntry | undefined {
+      const site = this.siteUrl.replace(/\/+$/, "");
+      return this.packages.find(
+        (p) => p.source_id === id && (p.source_site ?? "").replace(/\/+$/, "") === site,
+      );
+    },
+
+    // 書庫の最新版で上書き更新する。ローカル編集が在れば先に確認する (失われる変更の告知)。
+    // 成功したらメタ・一覧・バッジを取り直し、版の遷移をトーストで報せる。
+    async updatePackage(path: string) {
+      if (this.updatingPath) return; // 直列化 (backend の排他と対)
+      if (path === this.activePackagePath) {
+        this.logToast = t("store.updateWhilePlaying");
+        return;
+      }
+      try {
+        const edited = await invoke<boolean>("package_is_locally_edited", { path });
+        if (edited && !(await this.askConfirm(t("store.updateEditedConfirm"), t("store.updateConfirmOk")))) {
+          return;
+        }
+        this.updatingPath = path;
+        const r = await invoke<UpdateResult>("update_site_package", {
+          siteUrl: this.siteUrl,
+          path,
+          force: edited,
+        });
+        const unknown = t("store.versionUnknown");
+        this.logToast = t("store.packageUpdated", {
+          title: r.title,
+          from: r.from_version ?? unknown,
+          to: r.to_version ?? unknown,
+        });
+        await this.refreshPackages();
+        await this.checkPackageUpdates();
+      } catch (e) {
+        this.logToast = t("store.updateFailed", { error: String(e) });
+      } finally {
+        this.updatingPath = null;
       }
     },
 

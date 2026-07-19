@@ -132,10 +132,14 @@ pub fn cleanup_leftovers(packages_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(packages_dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
         if !path.is_dir() {
+            // 中断した DL の一時 zip (`.{id}.zip.part`)。次回は作り直すので残す意味がない。
+            if name.ends_with(".zip.part") {
+                let _ = std::fs::remove_file(&path);
+            }
             continue;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with(".update_tmp_") {
             let _ = std::fs::remove_dir_all(&path);
             continue;
@@ -151,6 +155,36 @@ pub fn cleanup_leftovers(packages_dir: &Path) {
             }
         }
     }
+}
+
+/// 展開済みの新フォルダ `staged` を `target` の場所へ据え替える (spec 17 機構④ 5.)。
+///
+/// `target → target.bak` → `staged → target` → `.bak` 削除。**途中で失敗したら
+/// `.bak → target` を戻す**ので、旧フォルダは必ず生き残る (更新は全か無か)。
+/// **パス・フォルダ名は不変** — セーブの FNV キーと `packagePaths` の安定が眼目。
+pub fn swap_in_place(staged: &Path, target: &Path) -> Result<(), String> {
+    let name = target
+        .file_name()
+        .ok_or_else(|| "更新先のフォルダ名を解決できません".to_string())?
+        .to_string_lossy()
+        .into_owned();
+    let parent = target
+        .parent()
+        .ok_or_else(|| "更新先の親フォルダを解決できません".to_string())?;
+    let bak = parent.join(format!("{name}.bak"));
+
+    // 事前掃除 (rev2 A-3): 前回の残骸が在ると rename が失敗する。
+    if bak.exists() {
+        let _ = std::fs::remove_dir_all(&bak);
+    }
+    std::fs::rename(target, &bak).map_err(|e| format!("旧フォルダを退避できません: {e}"))?;
+    if let Err(e) = std::fs::rename(staged, target) {
+        // 据え替えに失敗 → 旧を戻す (ここで戻せなければ cleanup_leftovers が起動時に復旧する)。
+        let _ = std::fs::rename(&bak, target);
+        return Err(format!("新しいフォルダを据えられません: {e}"));
+    }
+    let _ = std::fs::remove_dir_all(&bak); // 残っても次回の掃除が拾う
+    Ok(())
 }
 
 #[cfg(test)]
@@ -229,6 +263,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 【スワップの原子性 (spec 17 機構④ 5.)】成功でパス不変・中身が入れ替わる /
+    /// 失敗注入 (staged 不在) で旧フォルダが必ず生き残り、残骸 (.bak) も残らない。
+    #[test]
+    fn swap_in_place_replaces_content_and_restores_on_failure() {
+        let root = temp_dir("swap");
+        let target = root.join("MyPack");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("package.yaml"), "version: 0.1").unwrap();
+        std::fs::write(target.join("old_only.yaml"), "x").unwrap();
+
+        // 前回の残骸が在っても事前掃除で通る。
+        std::fs::create_dir_all(root.join("MyPack.bak")).unwrap();
+
+        // staging は zip のトップ名と無関係の tmp (フォルダ名は維持される)。
+        let staged = root.join(".update_tmp_abc");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("package.yaml"), "version: 0.2").unwrap();
+
+        swap_in_place(&staged, &target).unwrap();
+        assert!(target.exists(), "パスは不変 (セーブの FNV キーが生きる)");
+        assert_eq!(
+            std::fs::read_to_string(target.join("package.yaml")).unwrap(),
+            "version: 0.2",
+            "中身が新しくなる"
+        );
+        assert!(!target.join("old_only.yaml").exists(), "旧ファイルは残らない");
+        assert!(!staged.exists(), "staging は消費される");
+        assert!(!root.join("MyPack.bak").exists(), "残骸を残さない");
+
+        // --- 失敗注入: staged が無い状態でスワップ → 旧が復旧している ---
+        let err = swap_in_place(&root.join(".update_tmp_missing"), &target).unwrap_err();
+        assert!(err.contains("据えられません"), "{err}");
+        assert!(target.exists(), "失敗しても旧フォルダは生き残る");
+        assert_eq!(
+            std::fs::read_to_string(target.join("package.yaml")).unwrap(),
+            "version: 0.2",
+            "中身も無傷"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// 【残骸掃除の 3 分岐 (rev2 A-3)】tmp 削除 / bak 単独 → 復旧 / 両在 → bak 破棄。
     #[test]
     fn cleanup_leftovers_three_branches() {
@@ -241,8 +316,12 @@ mod tests {
         // ③ スワップ完了後の bak 削除失敗: 両方在る。
         std::fs::create_dir_all(root.join("pkg_b")).unwrap();
         std::fs::create_dir_all(root.join("pkg_b.bak")).unwrap();
+        // ④ 中断した DL の一時 zip。
+        std::fs::write(root.join(".abc.zip.part"), b"partial").unwrap();
 
         cleanup_leftovers(&root);
+
+        assert!(!root.join(".abc.zip.part").exists(), "中断 DL の一時 zip も掃除");
 
         assert!(!root.join(".update_tmp_xyz").exists(), "tmp は無条件削除");
         assert!(root.join("pkg_a").exists(), "bak 単独 → 旧に復旧");
