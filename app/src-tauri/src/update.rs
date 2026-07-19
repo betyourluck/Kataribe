@@ -128,6 +128,10 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> R
 ///
 /// 失敗は握り潰す (掃除は best-effort。一覧表示を壊さない)。起動時/一覧読込時に呼ぶ =
 /// Phase C の update より先に入れておくことで、update のどんな失敗にも耐える器になる。
+///
+/// **更新の実行中は呼んではならない** — `.update_tmp_*` は「残骸」と「いま展開中の staging」を
+/// 名前で区別できないので、掃除が進行中の更新を消してしまう (旧フォルダは復旧で守られるが
+/// 更新が理由もなく失敗する)。呼び出し側 (`list_packages`) が `UPDATING` を見て回避する。
 pub fn cleanup_leftovers(packages_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(packages_dir) else { return };
     for entry in entries.flatten() {

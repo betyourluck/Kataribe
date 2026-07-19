@@ -972,8 +972,12 @@ struct PackageEntry {
 async fn list_packages(app: tauri::AppHandle, paths: Vec<String>) -> Vec<PackageEntry> {
     // spec 17 rev2 A-3: 更新スワップのクラッシュ残骸を掃除 (tmp 削除 / .bak 自動復旧)。
     // 書庫取得物の置き場 (app_data/packages) だけを走査する (repo 同梱・手動配置は触らない)。
-    if let Ok(data_dir) = app.path().app_data_dir() {
-        update::cleanup_leftovers(&data_dir.join("packages"));
+    // **更新中はしない**: `.update_tmp_*` は残骸と展開中の staging を名前で区別できないので、
+    // 更新の最中に一覧を開くと自分の staging を消してしまう (旧は復旧されるが更新が落ちる)。
+    if !UPDATING.load(std::sync::atomic::Ordering::Acquire) {
+        if let Ok(data_dir) = app.path().app_data_dir() {
+            update::cleanup_leftovers(&data_dir.join("packages"));
+        }
     }
     paths
         .into_iter()
