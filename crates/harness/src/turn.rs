@@ -177,6 +177,26 @@ pub fn carryover_narration(narration: &str, beats: &[String], checks: &[CheckOut
     s
 }
 
+/// 対決の決着 digest (spec 18 Phase C)。何交換あっても GM にはこの 1 行だけを渡す —
+/// トークン経済の要 (HP 等の現在値は state_brief が別途運ぶので数値は重複させない)。
+/// 呼び出し側 (app/CLI) が `carryover_narration` の beats と chronicle summary に併記する。
+pub fn contest_digest(end: &gm_core::ContestEnd) -> String {
+    let desc = if end.description.trim().is_empty() {
+        end.contest.as_str()
+    } else {
+        end.description.trim()
+    };
+    let how = match end.reason.as_str() {
+        "until" => "決着した",
+        "goal" => "決着した (結末に到達)",
+        _ => "決着つかず打ち切られた",
+    };
+    format!(
+        "対決「{desc}」は {} 交換 (勝ち {} / 負け {} / 分け {}) で{how}",
+        end.rounds, end.wins, end.losses, end.ties
+    )
+}
+
 /// 受理適用の直後に engine 事実からタグを機械計上する (spec 08-B)。LLM は関与しない。
 /// `state` は適用後、`inv_before` は適用前の inventory の写し。
 fn chronicle_tags(

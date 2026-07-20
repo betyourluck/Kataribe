@@ -283,6 +283,26 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
             s.push_str(&format!("- {label} (id: {id}): {basis}{req}\n"));
         }
     }
+    // 対決 (spec 18 Phase C)。attempt_contest で「開く」と、決着まで LLM を介さず
+    // engine とプレイヤーが交互に振る (一括型 cadence)。GM の責務は開始の描写と、
+    // 決着後に知らされる digest を踏まえた語りだけ。
+    if !scenario.contests.is_empty() {
+        s.push_str(
+            "\n## 対決 (attempt_contest で id を選んで開く。開いた後の決着はエンジンとプレイヤーが直接つける)\n",
+        );
+        for (id, c) in &scenario.contests {
+            let label = if c.description.trim().is_empty() { id.as_str() } else { c.description.trim() };
+            let req = match &c.requires {
+                Some(g) => format!("【前提: {}】", gate_brief(g)),
+                None => String::new(),
+            };
+            s.push_str(&format!("- {label} (id: {id}): 相手 = {}{req}\n", c.opponent));
+        }
+        s.push_str(
+            "対決を開いたターンは**始まりの描写まで** — 交換の経過や決着を先取りして語るな \
+             (出目はまだ存在しない)。決着は次のターンに「対決の結果」として知らされる。\n",
+        );
+    }
     // 判定様式 (spec 16)。percentile 盤面では check_under の意味論を接地する — schema 入替
     // (見せない) と対の「読み方」の接地。GM_SYSTEM は盤面非依存の const を保つ (全盤面に
     // percentile 文言を撒かない)。scenario_brief はセッション内安定 = prompt caching も不変。

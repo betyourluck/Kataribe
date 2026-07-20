@@ -487,6 +487,50 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                 }
                 pending_checks = checks; // 次ターンへ持ち越し
+                // spec 18 Phase C: 対決 (contest) は CLI では自動でラウンドを回し切る
+                // (⚔ クリックは GUI の演出。台本流し込みと衝突させない)。決着 digest を
+                // 継続文脈と経緯ログへ併記して GM に還流する。
+                while state.pending_contest.is_some() {
+                    match gm_core::contest_round(&mut state, &scenario) {
+                        Ok(r) => {
+                            let line = |c: &gm_core::CheckOutcome| -> String {
+                                if let Some(deg) = &c.degree {
+                                    format!(
+                                        "{} d100={} ≤{} [{}]",
+                                        c.entity,
+                                        c.roll,
+                                        c.dc,
+                                        harness::prompt::degree_label_ja(deg)
+                                    )
+                                } else {
+                                    format!("{} 1d{}({}){:+}={}", c.entity, c.sides, c.roll, c.modifier, c.total)
+                                }
+                            };
+                            let mark = match r.outcome.as_str() {
+                                "win" => "勝ち",
+                                "lose" => "負け",
+                                _ => "引き分け",
+                            };
+                            println!("  ⚔ {} vs {} → {mark}", line(&r.player), line(&r.opponent));
+                            if !r.narration.is_empty() {
+                                println!("    {}", r.narration);
+                            }
+                            for beat in resolve_recall(&lore, &r.fired) {
+                                println!("  ✦ {}", beat.narration);
+                            }
+                            if let Some(end) = r.ended {
+                                let digest = harness::contest_digest(&end);
+                                println!("  [{digest}]");
+                                last_narration =
+                                    harness::carryover_narration(&last_narration, &[digest.clone()], &[]);
+                                if let Some(h) = history.last_mut() {
+                                    h.summary.push_str(&format!("／{digest}"));
+                                }
+                            }
+                        }
+                        Err(_) => break, // 防御 (定義消失等) — 帳簿は engine 側で破棄済み
+                    }
+                }
                 // spec 18 Phase B: 決断つき判定 (プッシュ/差分買い) の決断 UI は GUI の責務 —
                 // CLI (作者テスト用) は**自動 Accept** で失敗帰結を確定して進む (対話プロンプトは
                 // 台本流し込みと衝突するため足さない)。最終 check を還流用に差し替える。

@@ -228,6 +228,13 @@ export const messages = {
         summaryUsing: "「{name}」で要約します（次の「新しいゲーム」から有効）",
       },
     },
+    contest: {
+      title: "{desc} — {name} と対峙している",
+      tally: "第 {n} 交換まで: 勝ち {w} / 負け {l} / 分け {d}",
+      round: "⚔ 打ち合う (第 {n} 交換)",
+      roundTitle: "双方が振り、帰結が即座に適用される。AI は呼ばれない",
+      note: "決着がつくまで AI は関与しません。",
+    },
     decision: {
       title: "{entity} の{stat}判定は失敗した——どうする？",
       accept: "受け入れる",
@@ -616,6 +623,13 @@ export const messages = {
         summarySameAsGm: "Summarizing with the same model as the GM",
         summaryUsing: "Summarizing with “{name}” (applies from the next “New game”)",
       },
+    },
+    contest: {
+      title: "{desc} — facing {name}",
+      tally: "Through round {n}: {w} won / {l} lost / {d} tied",
+      round: "⚔ Clash (round {n})",
+      roundTitle: "Both sides roll and consequences apply at once. No AI involved",
+      note: "The AI stays out until this is settled.",
     },
     decision: {
       title: "{entity}'s {stat} check failed — what now?",

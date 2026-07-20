@@ -1,6 +1,6 @@
 # spec 18: プレイヤーが振るダイス — 開帳・選択・交互
 
-**Status**: rev2 / Phase A+B 実装済み（2026-07-20 起草 → 同日査読 rev2 → Phase A（実機目視 Green）→ 同日 Phase B（実 LLM プレイ残）。C は Draft）
+**Status**: rev2 / Phase A+B+C 実装済み（2026-07-20 起草 → 同日査読 rev2 → A（実機目視 Green）→ B（実機目視 Green）→ C（GUI 目視・実 LLM 残）。spec 18 の実装は全 Phase 完了）
 **依存**: spec 16（d100 ロールアンダー・成功度）/ spec 09（逐次射影）/ spec 14（入力キャッシュ）
 
 ## 動機（ユーザー、2026-07-20）
@@ -248,8 +248,32 @@ engine は stat の名前（幸運/SAN/…）を解釈しない — 閉世界の
     僅差の緊張をそのまま値札にする)。GM の語りが判定前に「力無き者には、道は開かれん」と
     煽る構図も成立。磨き込み候補: パネルの entity 表示が id (`player`) のまま —
     protagonist name への写像は判定行と共通の課題 (Phase A から同じ・低優先)。
-- **Phase C（交互）**: `Contest` プリミティブ + digest 還流 + UI。着手前にスコープの線を
-  data_contract に凍結する。
+- **✅Phase C（交互、2026-07-20 実装）**: 全層縦貫。
+  - **engine**: `ContestDef`（opponent / player_roll・opponent_roll = RollSpec inline or
+    `CharacterDef.rolls` テンプレート名 / on_win・on_lose・on_tie = ChallengeOutcome 再利用 /
+    requires / until / max_rounds 既定 1）+ `StateOp::AttemptContest`（LLM は「開く」だけ）+
+    `contest_round`（1 交換 = 双方振り→比較→player 視点の帰結原子適用→settle。
+    additive = 合計 / percentile = degree 順位→同位は目標値の高い側 = CoC7 準拠）。
+    決着 = until / max_rounds / **goal 到達の安全弁**（決着条件の書き漏れでも死亡 goal で
+    必ず閉じる）。`PendingContest` はセーブ対象の帳簿のみ。
+  - **設計の単純化（spec からの改訂）**: 様式は「テンプレート単位」でなく **contest 単位で
+    双方に適用** — 様式跨ぎ対抗が構造的に存在しなくなり、禁止 validate 自体が不要になった。
+  - **閉世界**: contest 帰結フラグは authored_only、validate 3 種（幻の相手 / 振り方解決不能・
+    stat 未宣言・様式不整合 / 幻フラグ）、帰結 effects の attempt_* 入れ子遮断。
+  - **digest**: `対決「…」は 5 交換 (勝ち 3 / 負け 2 / 分け 0) で決着した` の 1 行だけを
+    carryover + chronicle に併記（HP 等の現在値は state_brief が別途運ぶ = 数値を重複させない）。
+  - **prompt**: scenario_brief「## 対決」（id / 相手 / 前提）+「開いたターンは始まりの描写
+    まで・決着を先取りして語るな」。GM_SYSTEM は不変（盤面非依存を保つ = caching 安定）。
+  - **app/frontend**: `play_contest_round` command（ラウンド毎 autosave）+ ContestPanel
+    （⚔ 打ち合う・戦績表示）。player の振りは伏せカード（Phase A 機構）、相手の振り +
+    帰結文/SE/ビートは開帳後に流す。入力は決着まで締める（backend ガードと二層）。
+    CLI は自動でラウンドを回し切る。
+  - **v1 スコープ外**: 途中離脱（逃走）/ 3 者以上の乱戦 / ラウンド毎のプレイヤー選択
+    （技の選択等 — 攻め方は authored 固定。選択が欲しい戦闘は challenge の逐次型で書く）。
+  - PoC 3 本（全周 / percentile 比較 + max_rounds / validate + 専権）+ harness 1 本
+    （brief 接地 + digest 形式）。workspace 281 green・app 22 green・build green。
+    ドッグフード: dice_trial に gravel_brawl（石くれの群れ・until = 双方 HP0・20 交換上限）。
+    **GUI 目視と実 LLM（GM が attempt_contest を開けるか / digest を語りに織るか）が残**。
 
 ### CoC7 準拠表（rev2 — 何で取るか / 取らないか）
 

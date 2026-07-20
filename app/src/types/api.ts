@@ -106,6 +106,44 @@ export interface DecisionView {
   buys: BuyOptionView[];
 }
 
+/** 進行中の対決 (spec 18 Phase C)。ContestPanel の素。 */
+export interface ContestView {
+  contest: string;
+  description: string;
+  opponent: string;
+  opponent_name: string;
+  rounds: number;
+  wins: number;
+  losses: number;
+  ties: number;
+}
+
+/** 対決 1 ラウンドの結果 (play_contest_round の戻り)。 */
+export interface ContestRoundView {
+  /** player の振り (success = 勝ち)。伏せカードで開く。 */
+  player: CheckView;
+  /** 相手の振り (即開示)。narration にラウンド帰結文が載る。 */
+  opponent: CheckView;
+  outcome: string;
+  stat_rolls: StatRollView[];
+  beats: BeatView[];
+  ended: {
+    rounds: number;
+    wins: number;
+    losses: number;
+    ties: number;
+    reason: string;
+    digest: string;
+  } | null;
+  state: StateView;
+  goal_reached: boolean;
+  goal_id: string | null;
+  goal_title: string | null;
+  goal_narration: string | null;
+  contest: ContestView | null;
+  map: MapView;
+}
+
 /** 決断の確定結果 (resolve_dice_decision の戻り)。 */
 export interface DecisionResultView {
   check: CheckView;
@@ -176,6 +214,8 @@ export interface GameView {
   map: MapView;
   /** 決断待ちの判定 (spec 18 Phase B)。再開時にセーブから復元される。 */
   decision: DecisionView | null;
+  /** 進行中の対決 (spec 18 Phase C)。再開時にセーブから復元される。 */
+  contest: ContestView | null;
 }
 
 /** あらすじ 1 章 (spec 10)。一度確定したら不変 (append-only)。リスト key は upto_turn。 */
@@ -310,6 +350,8 @@ export interface TurnView {
   map: MapView;
   /** 決断待ちの判定 (spec 18 Phase B)。非 null の間、開帳後に決断パネルを出し入力を締める。 */
   decision: DecisionView | null;
+  /** 進行中の対決 (spec 18 Phase C)。非 null の間 ⚔ パネルを出し入力を締める。 */
+  contest: ContestView | null;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

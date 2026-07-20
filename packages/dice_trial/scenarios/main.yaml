@@ -13,7 +13,10 @@
 #      成功=敵 HP 1d8 減 / 失敗=反撃で自分 HP 1d6 減 / 自然 20=会心 +1d8)。
 #      命中カード → ダメージカードが直列で開く。番人 HP 0 → 試練突破。
 #   5. 未開帳中に入力欄が締まるか / 設定オフ (グラフィック) で即時表示に戻るか
-#   6. (Phase B) 失敗すると決断パネルが出る:
+#   6. (Phase C)「石くれを蹴散らす」→ gravel_brawl (一括型対決)。⚔ パネルでラウンドを
+#      回す — player の出目は伏せカード、相手は即開示、決着まで LLM 非関与 (トークンゼロ)。
+#      決着の digest が次の GM ターンに語られる。
+#   7. (Phase B) 失敗すると決断パネルが出る:
 #      - 受け入れる / 押して振り直す (押した失敗はより悪い) / 幸運を払って買い上げる
 #      - 岩のプッシュ失敗 = 岩のしくじり (落石) / 碑文のプッシュ失敗 = SAN 1d10 /
 #        番人へのプッシュ失敗 = 反撃 1d10
@@ -27,6 +30,15 @@ spend_rules: { from: 幸運 }
 # roll_stat でダメージを振る (LLM は挑戦を選ぶだけ = 数値を持てない閉世界)。
 # 敵の技量は DC が代役 (真の対抗ロールは spec 18 Phase C の Contest)。
 characters:
+  gravel:
+    name: 石くれの群れ
+    profile: 床の砂利が寄り集まった小さな騒霊。試練の間の掃除役だが、挑戦者にはとりあえず殴りかかる。
+    stats:
+      HP: { initial: 6, min: 0 }
+      "腕力": { initial: 8 }
+    rolls:
+      # 「このキャラが振るときはこれ」のテンプレート (spec 18 Phase C)。
+      "体当たり": { stat: "腕力", sides: 20 }
   guardian:
     name: 石の番人
     profile: 試練の間を守り続けた古の石像。二つの試練を制した者だけに、最後の試練として立ちはだかる。
@@ -48,6 +60,7 @@ locations:
       奥の壁龕には巨大な石像が沈黙している。番人の声が反響する——
       「二つの試練を制した者だけが、最後の試練に見える」。
     image: trial_hall.svg
+    present: [gravel]   # 石くれは開幕から居る (presence 規律との整合。番人は set_presence で登場)
     exits: []
 
 challenges:
@@ -127,6 +140,32 @@ challenges:
       narration: 碑文がこちらを読み返してきた。頭の奥で何かが千切れる音がした。
       effects:
         - { op: roll_stat, key: SAN, count: 1, sides: 10, negate: true }
+
+# --- 対決 (spec 18 Phase C): 決着まで LLM を介さない一括型 cadence のサンプル ---
+# 「石くれを蹴散らす」と入力 → GM が attempt_contest で開く → ⚔ パネルでラウンドを回す。
+# 何交換あっても消費トークンはゼロ (決着の digest だけが次の GM ターンに渡る)。
+contests:
+  gravel_brawl:
+    description: 石くれの群れを蹴散らす
+    opponent: gravel
+    player_roll: { stat: STR, sides: 20 }
+    opponent_roll: "体当たり"
+    on_win:
+      narration: 拳が群れの芯を捉え、石くれがばらばらと崩れる。
+      sound: chime.wav
+      effects:
+        - { op: roll_stat, entity: gravel, key: HP, count: 1, sides: 6, negate: true }
+    on_lose:
+      narration: 足元をすくわれ、石の礫が脛を打った。
+      sound: rumble.wav
+      effects:
+        - { op: roll_stat, key: HP, count: 1, sides: 3, negate: true }
+    until:
+      kind: any
+      of:
+        - { kind: stat_at_most, entity: gravel, key: HP, value: 0 }
+        - { kind: stat_at_most, entity: player, key: HP, value: 0 }
+    max_rounds: 20
 
 triggers:
   # しくじりの帰結: ビート+SE+可変量ダイス。開帳前に鳴ったら/見えたら漏洩 = テストの本丸。

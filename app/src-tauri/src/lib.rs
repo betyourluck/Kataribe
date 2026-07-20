@@ -180,6 +180,40 @@ struct DecisionView {
     buys: Vec<BuyOptionView>,
 }
 
+/// 進行中の対決の view (spec 18 Phase C)。frontend の ContestPanel の素。
+#[derive(Serialize)]
+struct ContestView {
+    contest: String,
+    description: String,
+    opponent: String,
+    /// 相手の表示名 (CharacterDef.name。無ければ id)。
+    opponent_name: String,
+    rounds: u32,
+    wins: u32,
+    losses: u32,
+    ties: u32,
+}
+
+fn contest_view(state: &GameState, scenario: &Scenario) -> Option<ContestView> {
+    let p = state.pending_contest.as_ref()?;
+    let def = scenario.contest(&p.contest)?;
+    Some(ContestView {
+        contest: p.contest.clone(),
+        description: def.description.clone(),
+        opponent: def.opponent.clone(),
+        opponent_name: scenario
+            .characters
+            .get(&def.opponent)
+            .map(|c| c.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| def.opponent.clone()),
+        rounds: p.rounds,
+        wins: p.wins,
+        losses: p.losses,
+        ties: p.ties,
+    })
+}
+
 /// 先頭の決断待ちを view にする (無ければ None)。
 fn decision_view(state: &GameState, scenario: &Scenario) -> Option<DecisionView> {
     let opts = gm_core::decision_options(state, scenario)?;
@@ -275,6 +309,8 @@ struct GameView {
     map: MapView,
     /// 決断待ちの判定 (spec 18 Phase B)。再開時にセーブから復元される (決断はセーブを跨いで生きる)。
     decision: Option<DecisionView>,
+    /// 進行中の対決 (spec 18 Phase C)。再開時にセーブから復元される。
+    contest: Option<ContestView>,
 }
 
 /// scenario の lint を作者向けの表示文にする (非 fatal — load は拒否せず開幕に ⚠ で報せる。
@@ -356,6 +392,8 @@ struct TurnView {
     /// 決断待ちの判定 (spec 18 Phase B)。Some の間、frontend は開帳後に決断パネルを出し、
     /// resolve_dice_decision が確定するまで入力を締める。
     decision: Option<DecisionView>,
+    /// 進行中の対決 (spec 18 Phase C)。Some の間、frontend は ⚔ パネルを出し入力を締める。
+    contest: Option<ContestView>,
 }
 
 /// campaign のモジュール遷移 (前モジュールの goal 到達 → 次モジュールへ state を糸通しして差し替え)。
@@ -1963,6 +2001,7 @@ async fn new_game(
         recent_log: Vec::new(),
         map: map_view(&scenario, &state, &[], &pkg_dir),
         decision: None, // 新規開始に決断の持ち越しは無い
+        contest: None,
     };
 
     let save_path = autosave_path(&app, &pkg_dir);
@@ -2082,8 +2121,9 @@ async fn restore_session(
             save.history.iter().filter(|l| l.turn > upto).map(log_line_view).collect()
         },
         map: map_view(&scenario, &state, &save.history, &pkg_dir),
-        // 決断待ちはセーブを跨いで生きる (spec 18 Phase B) — 再開直後に決断パネルを復元する。
+        // 決断待ち・対決はセーブを跨いで生きる (spec 18) — 再開直後にパネルを復元する。
         decision: decision_view(&state, &scenario),
+        contest: contest_view(&state, &scenario),
     };
 
     // オートセーブの書き先 (ロード元がスロットでも常に autosave パス = スロットは凍結点のまま)。
@@ -2246,6 +2286,11 @@ async fn play_turn(
     if !sess.state.pending_decisions.is_empty() {
         return Err("ダイスの決断が残っています。先に受け入れる/押す/払うを選んでください".into());
     }
+    // spec 18 Phase C: 対決の進行中もターンを回さない (決着が先。engine 側の
+    // ContestInProgress 却下と二層)。
+    if sess.state.pending_contest.is_some() {
+        return Err("対決が進行中です。決着がつくまで次の行動はできません".into());
+    }
 
     // spec 10: このターンで増えた分の差分計上用スナップショット (あらすじ / chronicle)。
     let syn_before = sess.synopsis.entries.len();
@@ -2401,6 +2446,8 @@ async fn play_turn(
                 map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
                 // spec 18 Phase B: 決断つき判定が凍結されたらパネル素材を載せる。
                 decision: decision_view(&sess.state, &sess.scenario),
+                // spec 18 Phase C: attempt_contest で対決が開いたらパネル素材を載せる。
+                contest: contest_view(&sess.state, &sess.scenario),
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -2432,6 +2479,7 @@ async fn play_turn(
             // 却下 = state 無傷 (決断があったならそのまま残っているはずだが、そもそも決断中は
             // play_turn 自体をガードで弾く)。
             decision: decision_view(&sess.state, &sess.scenario),
+            contest: contest_view(&sess.state, &sess.scenario),
         },
     };
 
@@ -2723,6 +2771,161 @@ async fn resolve_dice_decision(
     })
 }
 
+/// 対決 1 ラウンドの結果 view (spec 18 Phase C)。
+#[derive(Serialize)]
+struct ContestRoundView {
+    /// player の振り (success = 勝ち)。伏せカードで開く。
+    player: CheckView,
+    /// 相手の振り (即開示)。narration にはラウンド帰結文を載せる (表示の合流点)。
+    opponent: CheckView,
+    /// player 視点: win / lose / tie。
+    outcome: String,
+    stat_rolls: Vec<StatRollView>,
+    beats: Vec<BeatView>,
+    /// 決着したら Some。digest は GM へ還流した 1 行と同じ文。
+    ended: Option<ContestEndView>,
+    state: StateView,
+    goal_reached: bool,
+    goal_id: Option<String>,
+    goal_title: Option<String>,
+    goal_narration: Option<String>,
+    /// 続いていれば Some (次ラウンドの帳簿)。決着後は None。
+    contest: Option<ContestView>,
+    map: MapView,
+}
+
+#[derive(Serialize)]
+struct ContestEndView {
+    rounds: u32,
+    wins: u32,
+    losses: u32,
+    ties: u32,
+    reason: String,
+    digest: String,
+}
+
+/// 対決を 1 ラウンド進める (spec 18 Phase C)。LLM は呼ばれない (トークンゼロ)。
+/// 決着時は digest を継続文脈 + 経緯ログへ併記し (次の GM ターンが読む)、autosave する。
+#[tauri::command]
+async fn play_contest_round(
+    session: tauri::State<'_, SharedSession>,
+) -> Result<ContestRoundView, String> {
+    let mut guard = session.lock().await;
+    let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+
+    let r = gm_core::contest_round(&mut sess.state, &sess.scenario).map_err(|e| match e {
+        gm_core::ContestError::NoContest => "進行中の対決がありません".to_string(),
+        gm_core::ContestError::UnknownContest => {
+            "この対決の定義が見つかりません (パッケージが更新された可能性)".to_string()
+        }
+    })?;
+
+    // 発火ビート (帰結からの連鎖)。lore 解決は play_turn と同経路。
+    let resolved = resolve_recall(&sess.lore, &r.fired);
+    sess.pending_lore.extend(resolved.iter().flat_map(|b| b.recalled.clone()));
+    let beats: Vec<BeatView> = resolved
+        .iter()
+        .map(|b| BeatView {
+            narration: normalize(&b.narration),
+            recalled: b.recalled.iter().map(|f| normalize(&f.text)).collect(),
+            image: b.image.as_ref().and_then(|id| {
+                resolve_asset(&sess.package_root, AssetKind::Images, id)
+                    .map(|p| p.to_string_lossy().into_owned())
+            }),
+            image_mode: b.image_mode.map(|m| match m {
+                ImageMode::Background => "background".to_string(),
+                ImageMode::Overlay => "overlay".to_string(),
+            }),
+            sound: b.sound.as_ref().and_then(|id| {
+                resolve_asset(&sess.package_root, AssetKind::Audios, id)
+                    .map(|p| p.to_string_lossy().into_owned())
+            }),
+        })
+        .collect();
+
+    let to_view = |c: &CheckOutcome, narration: &str, sound: &str| CheckView {
+        entity: c.entity.clone(),
+        stat: c.stat.clone(),
+        sides: c.sides,
+        roll: c.roll,
+        modifier: c.modifier,
+        total: c.total,
+        dc: c.dc,
+        success: c.success,
+        narration: normalize(narration),
+        sound: (!sound.is_empty())
+            .then(|| resolve_asset(&sess.package_root, AssetKind::Audios, sound))
+            .flatten()
+            .map(|p| p.to_string_lossy().into_owned()),
+        degree: c.degree.clone(),
+        pushed: false,
+        spent: 0,
+        pending: false,
+    };
+    // ラウンド帰結文/SE は相手側の行に載せる (player カード開帳 → 相手の行と同時に結末が出る)。
+    let player = to_view(&r.player, "", "");
+    let opponent = to_view(&r.opponent, &r.narration, &r.sound);
+
+    // 決着: digest を GM の継続文脈 + 経緯ログへ (次ターンの語りの素)。
+    let ended = r.ended.as_ref().map(|end| {
+        let digest = harness::contest_digest(end);
+        let base = std::mem::take(&mut sess.last_narration);
+        sess.last_narration = carryover_narration(&base, &[digest.clone()], &[]);
+        if let Some(h) = sess.history.last_mut() {
+            h.summary.push_str(&format!("／{digest}"));
+        }
+        ContestEndView {
+            rounds: end.rounds,
+            wins: end.wins,
+            losses: end.losses,
+            ties: end.ties,
+            reason: end.reason.clone(),
+            digest,
+        }
+    });
+
+    // ラウンドごとに正本が動く → autosave (クラッシュしても交換の途中から再開できる)。
+    if let Some(path) = sess.save_path.clone() {
+        let save = session_save_of(sess);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = save_session(&path, &save) {
+            eprintln!("[警告] オートセーブ失敗: {e}");
+        }
+    }
+
+    let (goal_id, goal_title, goal_narration) = goal_view(&sess.state, &sess.scenario);
+    let stat_roll_views = r
+        .stat_rolls
+        .iter()
+        .map(|sr| StatRollView {
+            entity: sr.entity.clone(),
+            key: sr.key.clone(),
+            count: sr.count,
+            sides: sr.sides,
+            bonus: sr.bonus,
+            rolls: sr.rolls.clone(),
+            amount: sr.amount,
+        })
+        .collect();
+    Ok(ContestRoundView {
+        player,
+        opponent,
+        outcome: r.outcome.clone(),
+        stat_rolls: stat_roll_views,
+        beats,
+        ended,
+        state: state_view(&sess.state, &sess.scenario, &sess.history),
+        goal_reached: is_goal(&sess.state, &sess.scenario),
+        goal_id,
+        goal_title,
+        goal_narration,
+        contest: contest_view(&sess.state, &sess.scenario),
+        map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
@@ -2742,6 +2945,7 @@ pub fn run() {
             resume_game,
             play_turn,
             resolve_dice_decision,
+            play_contest_round,
             list_packages,
             list_save_slots,
             save_slot,

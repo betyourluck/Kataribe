@@ -44,7 +44,8 @@ pub use synopsis::{
     SYNOPSIS_OVERFLOW_THRESHOLD, SYNOPSIS_TEXT_MAX, SYNOPSIS_TIMEOUT_SECS,
 };
 pub use turn::{
-    carryover_narration, chronicle_entry, excluded_check_ops, run_turn, ChronicleTags, TurnLog,
+    carryover_narration, chronicle_entry, contest_digest, excluded_check_ops, run_turn,
+    ChronicleTags, TurnLog,
     TurnOutcome,
 };
 
@@ -1142,6 +1143,48 @@ mod tests {
         // 凍結中: 最終結果ではないので還流しない (final は resolve_decision 後に差し替え)。
         let frozen = CheckOutcome { pending: true, ..base };
         assert!(prompt::check_outcome_note(&[frozen]).is_empty(), "凍結中は還流しない");
+    }
+
+    /// 【spec 18 Phase C】scenario_brief が対決を surface し「開いたターンは始まりの描写まで・
+    /// 決着を先取りするな」を接地する。digest は交換数と勝敗だけを 1 行で運ぶ (トークン経済)。
+    #[test]
+    fn scenario_brief_surfaces_contests_and_digest_is_one_line() {
+        let sc = gm_core::Scenario::from_yaml(concat!(
+            "title: t\nstart: r\n",
+            "initial_stats: { STR: 5 }\n",
+            "characters:\n",
+            "  mob:\n",
+            "    name: 石くれ\n",
+            "    stats: { HP: { initial: 2 } }\n",
+            "contests:\n",
+            "  brawl:\n",
+            "    description: 石くれとの殴り合い\n",
+            "    opponent: mob\n",
+            "    requires: { kind: flag_is, key: open, value: true }\n",
+            "    player_roll: { stat: STR, sides: 6 }\n",
+            "    opponent_roll: { sides: 6 }\n",
+            "allowed_flags: [open]\n",
+            "goal: { kind: always }\n",
+            "locations: { r: { description: d, items: {}, exits: [] } }\n",
+        ))
+        .unwrap();
+        let brief = prompt::scenario_brief(&sc);
+        assert!(brief.contains("## 対決"), "対決の節が出る");
+        assert!(brief.contains("brawl") && brief.contains("石くれとの殴り合い"));
+        assert!(brief.contains("相手 = mob"));
+        assert!(brief.contains("前提"), "requires を surface する");
+        assert!(brief.contains("先取りして語るな"), "開始ターンの規律を接地する");
+
+        let digest = contest_digest(&gm_core::ContestEnd {
+            contest: "brawl".into(),
+            description: "石くれとの殴り合い".into(),
+            rounds: 5,
+            wins: 3,
+            losses: 2,
+            ties: 0,
+            reason: "until".into(),
+        });
+        assert_eq!(digest, "対決「石くれとの殴り合い」は 5 交換 (勝ち 3 / 負け 2 / 分け 0) で決着した");
     }
 
     /// GM_SYSTEM が「判定結果の後付け（なぜ成功/失敗したか）」を刷り込む。

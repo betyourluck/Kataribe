@@ -13,6 +13,8 @@ import type {
   UpdateResult,
   DecisionView,
   DecisionResultView,
+  ContestView,
+  ContestRoundView,
   StatRollView,
   SynopsisView,
   LogLineView,
@@ -293,6 +295,10 @@ interface GameState {
   decision: DecisionView | null;
   // 決断の確定を backend に送信中 (パネルのボタンを二重押しさせない)。
   deciding: boolean;
+  // 進行中の対決 (spec 18 Phase C)。非 null の間 ⚔ パネルを出し入力を締める。
+  contest: ContestView | null;
+  // ラウンド送信中 (⚔ ボタンの二重押し防止)。
+  fighting: boolean;
   // 右ペイン (状態パネル) の幅 px。ドラッグハンドルで可変。
   panelWidth: number;
   // 音量 0..100 (BGM/SE 共通)。サウンド設定。
@@ -379,6 +385,8 @@ export const useGameStore = defineStore("game", {
       pendingVisual: null,
       decision: null,
       deciding: false,
+      contest: null,
+      fighting: false,
       msgFont: loadMsgFont(),
       msgColor: loadMsgColor(),
       msgShadow: loadMsgShadow(),
@@ -429,6 +437,10 @@ export const useGameStore = defineStore("game", {
     // (開帳前に選択肢が見えたら、失敗したことがカードより先に漏れる。)
     showDecision(): boolean {
       return this.decision !== null && !this.hasUnrevealedDice;
+    },
+    // 対決パネルを出すか (spec 18 Phase C): 進行中で、開帳と決断が済んでいる。
+    showContest(): boolean {
+      return this.contest !== null && !this.hasUnrevealedDice && this.decision === null;
     },
     // いま開けるダイス行 (log の index)。開帳は古い方から直列 = 常に最初の未開帳 entry のみ。
     revealTargetIndex: (s): number =>
@@ -964,9 +976,11 @@ export const useGameStore = defineStore("game", {
       this.pendingTail = [];
       this.pendingSe = [];
       this.pendingVisual = null;
-      // 決断待ち (Phase B) はセーブを跨いで生きる — 再開時に復元する (新規は null)。
+      // 決断待ち (B)・対決 (C) はセーブを跨いで生きる — 再開時に復元する (新規は null)。
       this.decision = view.decision ?? null;
       this.deciding = false;
+      this.contest = view.contest ?? null;
+      this.fighting = false;
       // あらすじ (spec 10): 新規開始は空、再開はセーブから全量復元。
       this.synopsis = view.synopsis ?? [];
       this.recentLog = view.recent_log ?? [];
@@ -1169,6 +1183,54 @@ export const useGameStore = defineStore("game", {
       }
     },
 
+    // 対決を 1 ラウンド進める (spec 18 Phase C)。LLM は呼ばれない (トークンゼロ)。
+    // player の振りは伏せカードで開き、相手の振り・帰結文・ビートは開帳後に流れる。
+    async playContestRound() {
+      if (!this.contest || this.fighting) return;
+      this.fighting = true;
+      try {
+        const r = await invoke<ContestRoundView>("play_contest_round", {});
+        const reveal = this.diceReveal;
+        // player の振り: 伏せカード (開帳)。演出オフなら即開示。
+        this.log.push({ kind: "checks", checks: [r.player], revealed: reveal ? 0 : 1 });
+        // 相手の振り + ラウンド帰結文/SE は開帳後に (漏洩防止は Phase A の機構を使い回す)。
+        const tail = (e: LogEntry) => (reveal ? this.pendingTail.push(e) : this.log.push(e));
+        tail({ kind: "checks", checks: [r.opponent], revealed: 1 });
+        if (!reveal) this.playSe(assetUrl(r.opponent.sound));
+        else this.pendingSe.push(assetUrl(r.opponent.sound));
+        if (r.stat_rolls.length) {
+          tail({ kind: "statrolls", stat_rolls: r.stat_rolls, revealed: r.stat_rolls.length });
+        }
+        for (const b of r.beats) {
+          if (b.narration.trim() || b.recalled.length) {
+            tail({ kind: "beat", narration: b.narration, recalled: b.recalled, expanded: false });
+          }
+          if (reveal) this.pendingSe.push(assetUrl(b.sound));
+          else this.playSe(assetUrl(b.sound));
+        }
+        if (r.ended) {
+          tail({ kind: "system", text: r.ended.digest });
+        }
+        if (r.goal_reached) {
+          if (r.goal_narration) tail({ kind: "narration", text: r.goal_narration });
+          const goalLabel = r.goal_title ?? r.goal_id;
+          tail({
+            kind: "system",
+            text: goalLabel
+              ? t("store.clearedNamed", { goal: goalLabel })
+              : t("store.clearedGeneric"),
+          });
+        }
+        this.state = r.state;
+        if (r.map) this.map = r.map;
+        this.contest = r.contest; // 決着後は null → パネルが畳まれ入力が開く
+      } catch (e) {
+        this.logToast = String(e);
+      } finally {
+        this.fighting = false;
+      }
+    },
+
     // 開帳完了: 保留していた後続行 (ビート/goal バナー/エピローグ) と SE・CG を解き放つ。
     flushPendingDice() {
       for (const entry of this.pendingTail) this.log.push(entry);
@@ -1203,6 +1265,8 @@ export const useGameStore = defineStore("game", {
         if (turn.accepted) {
           // 決断待ち (spec 18 Phase B)。開帳がすべて済んだ後にパネルが出る (表示条件は getter)。
           this.decision = turn.decision ?? null;
+          // 対決 (spec 18 Phase C)。attempt_contest が開いたら ⚔ パネル。
+          this.contest = turn.contest ?? null;
           if (turn.narration) this.log.push({ kind: "narration", text: turn.narration });
           // ダイス系 3 行は伏せて積む (revealed=0)。演出オフなら全開 (= 従来動作)。
           if (turn.rolls.length) {

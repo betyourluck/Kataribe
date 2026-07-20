@@ -13,7 +13,7 @@ const ta = ref<HTMLTextAreaElement | null>(null);
 const disabled = computed(
   () =>
     !game.started || game.loading || game.cleared || game.hasUnrevealedDice ||
-    game.decision !== null,
+    game.decision !== null || game.contest !== null,
 );
 // 送信できるか (中身がある & 入力可)。
 const canSend = computed(() => !!text.value.trim() && !disabled.value);
