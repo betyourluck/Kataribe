@@ -329,6 +329,9 @@ fn child_of(ctx: Ctx, key: &str) -> Child {
         (Ctx::ChallengeMod, "when") => Child::Direct(Ctx::Gate),
         (Ctx::Goal, "when") => Child::Direct(Ctx::Gate),
         (Ctx::Character, "stats") => Child::StatMap,
+        // initial_stats は素の数値と境界つき宣言 (StatInit) の両受け — mapping 値だけ
+        // StatDecl として typo 検査する (Character.stats と同じ StatMap 意味論)。
+        (Ctx::Scenario, "initial_stats") => Child::StatMap,
         (Ctx::Character, "taboos") => Child::Seq(Ctx::Gate),
         (Ctx::Gate, "of") => Child::Seq(Ctx::Gate),
         (Ctx::VoteRule, "when") => Child::Direct(Ctx::Gate),

@@ -5803,6 +5803,53 @@ locations:
         assert!(sc.authored_only_flags().contains("won"), "contest 帰結フラグは専権");
     }
 
+    /// 【player stat の境界つき宣言 (2026-07-20)】`initial_stats` が素の数値と
+    /// `{ initial, min, max }` の両受けに — 従来形は無改修で挙動不変 (min 0・max なし)、
+    /// 境界つきは SAN 上限 99 / 借金 (負の min) が書ける。clamp は adjust/scale/roll_stat の
+    /// 全経路に効く (stat_bounds が player 宣言を読む)。
+    #[test]
+    fn player_stat_bounds_via_initial_stats_decl() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats:
+  hp: 10
+  SAN: { initial: 60, min: 0, max: 99 }
+  "所持金": { initial: 100, min: -500 }
+allowed_flags: []
+goal: { kind: flag_is, key: never, value: true }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty());
+        let mut s = sc.initial_state(1);
+        assert_eq!(s.stat_of(PLAYER, "hp"), 10, "従来形は従来どおり");
+        assert_eq!(s.stat_of(PLAYER, "SAN"), 60, "境界つきは initial で seed");
+
+        // 上限: SAN +50 は 99 で頭打ち (回復イベントの青天井を防ぐ)。
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: PLAYER.into(), key: "SAN".into(), delta: 50,
+        }])).unwrap();
+        assert_eq!(s.stat_of(PLAYER, "SAN"), 99, "宣言 max で clamp");
+
+        // 負の下限: 所持金 -400 → -300 (既定 0 でなく宣言 min -500 まで下がれる)。
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: PLAYER.into(), key: "所持金".into(), delta: -400,
+        }])).unwrap();
+        assert_eq!(s.stat_of(PLAYER, "所持金"), -300, "負の min が効く (借金)");
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: PLAYER.into(), key: "所持金".into(), delta: -400,
+        }])).unwrap();
+        assert_eq!(s.stat_of(PLAYER, "所持金"), -500, "宣言 min で clamp");
+
+        // 従来形 (hp) は max なしのまま = 挙動不変。
+        apply(&mut s, &sc, &d(vec![StateOp::AdjustStat {
+            entity: PLAYER.into(), key: "hp".into(), delta: 100,
+        }])).unwrap();
+        assert_eq!(s.stat_of(PLAYER, "hp"), 110, "従来形に上限は生えない (後方互換)");
+    }
+
     // =========================================================================
     // spec 19: 式修正 — 判定の修正値/目標値を stat の式で書く
     // =========================================================================

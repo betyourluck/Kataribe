@@ -220,6 +220,39 @@ pub struct Location {
     pub exits: Vec<Exit>,
 }
 
+/// 主人公 stat の初期宣言 — **素の数値と境界つき宣言の両受け** (untagged)。
+///
+/// `initial_stats` は最初期からの素の i64 マップだったため、NPC (`CharacterDef.stats` =
+/// StatDecl) と違い上限が付けられなかった (歴史的非対称)。CoC7 の SAN 上限 99 等で
+/// 境界が必要になったので両受けにした — **既存 YAML (`hp: 10`) は無改修で従来どおり**
+/// (min 0・max なし)、境界が要るときだけ `{ initial, min, max }` で書く。
+/// `Location.items` の旧/新形式両受けと同じ後方互換パターン。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StatInit {
+    /// 従来形: `hp: 10` (min 0・max なし)。
+    Value(i64),
+    /// 境界つき: `SAN: { initial: 60, min: 0, max: 99 }`。
+    Decl(StatDecl),
+}
+
+impl StatInit {
+    pub fn initial(&self) -> i64 {
+        match self {
+            StatInit::Value(v) => *v,
+            StatInit::Decl(d) => d.initial,
+        }
+    }
+
+    /// clamp 境界 `(min, max)`。従来形は既定 (0, なし) = 挙動不変。
+    pub fn bounds(&self) -> (i64, Option<i64>) {
+        match self {
+            StatInit::Value(_) => (0, None),
+            StatInit::Decl(d) => (d.min, d.max),
+        }
+    }
+}
+
 /// stat の宣言: 初期値と境界 (clamp の上下限)。`min` 省略時 0、`max` 省略時なし。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatDecl {
@@ -918,7 +951,7 @@ pub struct Scenario {
     pub vote_rules: Vec<VoteRule>,
     /// `"player"` の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。
     #[serde(default)]
-    pub initial_stats: IndexMap<StatKey, i64>,
+    pub initial_stats: IndexMap<StatKey, StatInit>,
     /// **プレイヤーには隠すが GM は見る秘密の数値** (2026-07-19 命名整理)。隠し好感度・裏の腐敗値の
     /// ような**プレイヤー UI に出したくないが GM は追う**数値。提示層の扱い: UI の状態パネル = 出さない /
     /// CLI = 出さない / prompt の `state_brief` = **〔秘匿〕注記付きで GM に見せる**。GM_SYSTEM が
@@ -1645,20 +1678,27 @@ impl Scenario {
     }
 
     /// 指定キャラ stat の clamp 境界 `(min, max)`。宣言が無ければ下限 0・上限なし。
+    /// 主人公は `initial_stats` の境界つき宣言 (StatInit::Decl) を読む — 従来形 (素の数値) は
+    /// 既定 (0, なし) のままで挙動不変。
     pub fn stat_bounds(&self, entity: &str, key: &str) -> (i64, Option<i64>) {
+        if entity == PLAYER {
+            if let Some(init) = self.initial_stats.get(key) {
+                return init.bounds();
+            }
+        }
         if let Some(decl) = self.characters.get(entity).and_then(|c| c.stats.get(key)) {
             (decl.min, decl.max)
         } else {
-            (0, None) // 主人公の initial_stats 糖衣を含む既定
+            (0, None)
         }
     }
 
     /// 開始地点・全キャラの初期 stat から初期状態を作る。
     pub fn initial_state(&self, seed: u64) -> GameState {
         let mut s = GameState::new(self.start.clone(), seed);
-        // 主人公の糖衣。
+        // 主人公の糖衣 (境界つき宣言は initial を読む)。
         for (k, v) in &self.initial_stats {
-            s.set_stat(PLAYER, k, *v);
+            s.set_stat(PLAYER, k, v.initial());
         }
         for skill in &self.initial_skills {
             s.grant_skill(PLAYER, skill);

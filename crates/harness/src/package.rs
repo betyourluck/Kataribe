@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use gm_core::{AttrKey, FlagKey, ItemId, Scenario, SkillId, StatKey};
+use gm_core::{AttrKey, FlagKey, ItemId, Scenario, SkillId, StatInit, StatKey};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
@@ -53,8 +53,9 @@ pub struct PlayerDef {
     /// 初期数値。各モジュールへ merge する際 **package が勝つ** (モジュール跨ぎの分裂を防ぐ)。
     /// `IndexMap` = YAML 記述順を保持 (`CharacterDef::stats` と対称) → `inject_package` が
     /// `initial_stats` へ宣言順で注入し、状態パネルが主人公も「書いた順」で並ぶ。
+    /// 素の数値と境界つき宣言 (`{ initial, min, max }`) の両受け (StatInit・後方互換)。
     #[serde(default)]
-    pub stats: IndexMap<StatKey, i64>,
+    pub stats: IndexMap<StatKey, StatInit>,
     /// 初期スキル (閉世界)。各モジュールへ union。
     #[serde(default)]
     pub skills: BTreeSet<SkillId>,
@@ -108,7 +109,7 @@ pub fn inject_package(scenario: &mut Scenario, manifest: &PackageManifest) {
     }
     if let Some(p) = &manifest.player {
         for (k, v) in &p.stats {
-            scenario.initial_stats.insert(k.clone(), *v); // package が勝つ
+            scenario.initial_stats.insert(k.clone(), v.clone()); // package が勝つ (境界宣言ごと)
         }
         scenario.initial_skills.extend(p.skills.iter().cloned());
         scenario.initial_inventory.extend(p.items.iter().cloned());
@@ -250,8 +251,8 @@ mod tests {
 
         // player: classroom.yaml の hp:0 を package の hp:10 が上書き (package が勝つ=分裂防止)。
         assert_eq!(
-            loaded.scenario.initial_stats.get("hp"),
-            Some(&10),
+            loaded.scenario.initial_stats.get("hp").map(|v| v.initial()),
+            Some(10),
             "package の player.stats が scenario へ注入され勝つ"
         );
         // globals: met_moka が「使える」と「跨いで生きる」の両方へ union。
@@ -324,7 +325,7 @@ mod tests {
             player: Some(PlayerDef {
                 name: "先生".into(),
                 profile: "高校教師。".into(),
-                stats: IndexMap::from([("hp".to_string(), 10)]),
+                stats: IndexMap::from([("hp".to_string(), StatInit::Value(10))]),
                 items: BTreeSet::from(["chalk".to_string()]),
                 ..Default::default()
             }),
@@ -332,7 +333,7 @@ mod tests {
             ..Default::default()
         };
         inject_package(&mut sc, &manifest);
-        assert_eq!(sc.initial_stats.get("hp"), Some(&10), "package が勝つ (8→10)");
+        assert_eq!(sc.initial_stats.get("hp").map(|v| v.initial()), Some(10), "package が勝つ (8→10)");
         assert!(sc.initial_inventory.contains("chalk"), "package の player.items が initial_inventory へ注入");
         assert!(sc.initial_state(1).has_item("player", "chalk"), "initial_state で player に seed される");
         assert!(
