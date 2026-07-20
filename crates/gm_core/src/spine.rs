@@ -467,6 +467,65 @@ pub struct ChallengeDef {
     /// **percentile とは併用不可** (`TierWithPercentile` — 二重クリティカルの曖昧さを load 時に弾く)。
     #[serde(default)]
     pub tiers: BTreeMap<String, TierDef>,
+    /// **プッシュ可否** (spec 18 Phase B・opt-in)。true = 失敗した判定を 1 度だけ振り直す決断を
+    /// プレイヤーに許す (CoC7 のプッシュロール)。**既定 false** — opt-in にする理由は二つ:
+    /// ①既存 content の挙動 (帰結の即時適用・全帰結共通効果の射影 spec 09) を変えない
+    /// ②SAN ロール等「一発勝負」が意図の challenge が黙って押せてしまう事故を作らない。
+    #[serde(default)]
+    pub pushable: Option<bool>,
+    /// **差分買い可否** (spec 18 Phase B)。既定 true だが `Scenario.spend_rules` が無ければ
+    /// そもそも買えない (scenario 側 opt-in が主・こちらは個別 challenge を締める弁)。
+    #[serde(default)]
+    pub spendable: Option<bool>,
+    /// **プッシュして失敗した時の帰結** (任意)。解決連鎖: on_push_failure → (fumble なら
+    /// on_fumble) → on_failure。「押した失敗はより悪い」を authored に書く場所 (CoC7 原典の
+    /// 代償はここ — push_cost の stat 支払いは上乗せしたい時だけ)。
+    #[serde(default)]
+    pub on_push_failure: Option<ChallengeOutcome>,
+}
+
+impl ChallengeDef {
+    /// 全帰結スロット (通常成否 + degree 別 + push 失敗) の走査。authored_only_flags /
+    /// validate (フラグ宣言・効果検査) が共有する — スロット追加時の取りこぼしを一箇所で防ぐ。
+    pub fn all_outcomes(&self) -> impl Iterator<Item = (&'static str, &ChallengeOutcome)> {
+        [
+            ("on_success", &self.on_success),
+            ("on_failure", &self.on_failure),
+            ("on_critical", &self.on_critical),
+            ("on_extreme", &self.on_extreme),
+            ("on_hard", &self.on_hard),
+            ("on_fumble", &self.on_fumble),
+            ("on_push_failure", &self.on_push_failure),
+        ]
+        .into_iter()
+        .filter_map(|(label, o)| o.as_ref().map(|o| (label, o)))
+    }
+}
+
+/// 差分買いの支払い規則 (spec 18 Phase B・scenario 単位の opt-in)。
+/// 失敗した出目と目標の差分を `from` stat から `rate` 倍で支払い、成功に変える。
+/// **engine は stat 名を解釈しない** — `幸運` は CoC7 が宣言した一例で、`所持金`/`霊力` でも
+/// 同じ機構が動く (LUCK 固定変数を作らない、2026-07-20 ユーザー決定)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpendRules {
+    /// 支払い元 stat (player の宣言済みキー必須 = `SpendStatUndeclared`)。
+    pub from: StatKey,
+    /// 差分 1 あたりの支払い量 (既定 1 = CoC7 の 1:1)。
+    #[serde(default = "default_rate")]
+    pub rate: i64,
+}
+
+fn default_rate() -> i64 {
+    1
+}
+
+/// プッシュの代償 (spec 18 Phase B・任意)。既定 None = 原典どおり stat コスト無し
+/// (代償は `on_push_failure` の帰結が本線)。書けば「押すのに hp/金を払う」が上乗せされる。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushCost {
+    /// 支払い元 stat (player の宣言済みキー必須 = `PushCostStatUndeclared`)。
+    pub from: StatKey,
+    pub amount: i64,
 }
 
 /// challenge の判定様式 (spec 16)。フィールドレス enum = YAML は素の文字列 (`resolution: percentile`)。
@@ -554,6 +613,10 @@ pub enum ScenarioError {
         entity: EntityId,
         stat: StatKey,
     },
+    /// `spend_rules.from` が player の宣言済み stat でない (幻の財布。spec 18 Phase B)。
+    SpendStatUndeclared { key: StatKey },
+    /// `push_cost.from` が player の宣言済み stat でない (幻の代償元。spec 18 Phase B)。
+    PushCostStatUndeclared { key: StatKey },
     /// tier の `at_most`/`at_least` 閾値が `1..=sides` の範囲外 (常時発火/絶対不発火の幻値)。
     TierThresholdOutOfRange {
         challenge: ChallengeId,
@@ -794,6 +857,14 @@ pub struct Scenario {
     /// authored challenge (技能判定の素性と帰結)。LLM は `AttemptChallenge` で選ぶだけ。
     #[serde(default)]
     pub challenges: BTreeMap<ChallengeId, ChallengeDef>,
+    /// 差分買いの支払い規則 (spec 18 Phase B・opt-in)。None = この盤面に差分買いは無い。
+    /// Some で `pushable`/`spendable` な challenge の失敗が「stat を払って成功に変える」決断になる。
+    #[serde(default)]
+    pub spend_rules: Option<SpendRules>,
+    /// プッシュの代償 (spec 18 Phase B・任意)。None = 原典どおり無償
+    /// (代償は各 challenge の `on_push_failure`)。
+    #[serde(default)]
+    pub push_cost: Option<PushCost>,
     pub locations: BTreeMap<LocationId, Location>,
     /// 単一の達成条件 (名前無し・後方互換)。`goals` を使う時は省略可。
     #[serde(default)]
@@ -901,7 +972,9 @@ impl Scenario {
             collect_setflags(&t.effects, &mut set);
         }
         for c in self.challenges.values() {
-            for outcome in [&c.on_success, &c.on_failure].into_iter().flatten() {
+            // 全帰結スロット (degree 別 + push 失敗も含む) — 従来 on_success/on_failure のみで
+            // percentile の degree スロットが漏れていた (#50 バックストップの穴) のを併せて閉じる。
+            for (_, outcome) in c.all_outcomes() {
                 if let Some(flag) = &outcome.flag {
                     set.insert(flag.clone());
                 }
@@ -986,17 +1059,13 @@ impl Scenario {
                     }
                 }
             }
-            // tier (極) と全帰結スロット (通常成否 + degree 別) が立てるフラグは allowed_flags 宣言必須。
+            // tier (極) と全帰結スロット (通常成否 + degree 別 + push 失敗) が立てるフラグは
+            // allowed_flags 宣言必須 (走査は all_outcomes に集約 — スロット追加の取りこぼし防止)。
             let outcome_flags = def
                 .tiers
                 .iter()
                 .filter_map(|(tname, tier)| tier.flag.as_ref().map(|f| (tname.as_str(), f)))
-                .chain(def.on_success.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_success", f)))
-                .chain(def.on_failure.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_failure", f)))
-                .chain(def.on_critical.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_critical", f)))
-                .chain(def.on_extreme.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_extreme", f)))
-                .chain(def.on_hard.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_hard", f)))
-                .chain(def.on_fumble.as_ref().and_then(|o| o.flag.as_ref()).map(|f| ("on_fumble", f)));
+                .chain(def.all_outcomes().filter_map(|(label, o)| o.flag.as_ref().map(|f| (label, f))));
             for (label, flag) in outcome_flags {
                 if !self.allowed_flags.contains(flag) {
                     errs.push(ScenarioError::ChallengeFlagUndeclared {
@@ -1042,12 +1111,7 @@ impl Scenario {
                 .tiers
                 .values()
                 .map(|t| &t.effects)
-                .chain(def.on_success.as_ref().map(|o| &o.effects))
-                .chain(def.on_failure.as_ref().map(|o| &o.effects))
-                .chain(def.on_critical.as_ref().map(|o| &o.effects))
-                .chain(def.on_extreme.as_ref().map(|o| &o.effects))
-                .chain(def.on_hard.as_ref().map(|o| &o.effects))
-                .chain(def.on_fumble.as_ref().map(|o| &o.effects));
+                .chain(def.all_outcomes().map(|(_, o)| &o.effects));
             for effects in effect_lists {
                 for op in effects {
                     match op {
@@ -1085,6 +1149,17 @@ impl Scenario {
                         _ => {}
                     }
                 }
+            }
+        }
+        // 決断の支払い元 (spec 18 Phase B): player の宣言済み stat 必須 (幻の財布/代償元)。
+        if let Some(sr) = &self.spend_rules {
+            if !self.knows_stat(PLAYER, &sr.from) {
+                errs.push(ScenarioError::SpendStatUndeclared { key: sr.from.clone() });
+            }
+        }
+        if let Some(pc) = &self.push_cost {
+            if !self.knows_stat(PLAYER, &pc.from) {
+                errs.push(ScenarioError::PushCostStatUndeclared { key: pc.from.clone() });
             }
         }
         // 世界フラグは許可フラグの部分集合でなければならない (幻の世界フラグを持ち越さない)。

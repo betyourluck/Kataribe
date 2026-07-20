@@ -22,7 +22,8 @@ use serde_yaml::Value;
 
 use crate::spine::{
     AttrRequirement, ChallengeDef, ChallengeMod, ChallengeOutcome, CharacterDef, Exit, Gate,
-    GoalDef, Location, Protagonist, RoleAssignment, Scenario, StatDecl, TierDef, Trigger, VoteRule,
+    GoalDef, Location, Protagonist, PushCost, RoleAssignment, Scenario, SpendRules, StatDecl,
+    TierDef, Trigger, VoteRule,
 };
 use crate::state::StateOp;
 
@@ -60,6 +61,8 @@ enum Ctx {
     RoleAssignment,
     VoteRule,
     AttrRequirement,
+    SpendRules,
+    PushCost,
 }
 
 /// 各文脈の既知キー集合。実際の型から導出する ([`Tables::build`])。
@@ -82,6 +85,8 @@ struct Tables {
     role_assignment: BTreeSet<String>,
     vote_rule: BTreeSet<String>,
     attr_requirement: BTreeSet<String>,
+    spend_rules: BTreeSet<String>,
+    push_cost: BTreeSet<String>,
 }
 
 /// 最小 YAML から型 `T` を作り、**シリアライズして全フィールド名**を得る
@@ -224,6 +229,8 @@ impl Tables {
             role_assignment: struct_keys::<RoleAssignment>("key: k\npool: {}\namong: []"),
             vote_rule: struct_keys::<VoteRule>("{}"),
             attr_requirement: struct_keys::<AttrRequirement>("key: k\nvalue: v"),
+            spend_rules: struct_keys::<SpendRules>("from: x"),
+            push_cost: struct_keys::<PushCost>("from: x\namount: 1"),
         }
     }
 
@@ -247,6 +254,8 @@ impl Tables {
             Ctx::RoleAssignment => &self.role_assignment,
             Ctx::VoteRule => &self.vote_rule,
             Ctx::AttrRequirement => &self.attr_requirement,
+            Ctx::SpendRules => &self.spend_rules,
+            Ctx::PushCost => &self.push_cost,
         }
     }
 }
@@ -278,6 +287,8 @@ fn child_of(ctx: Ctx, key: &str) -> Child {
         (Ctx::Scenario, "flag_rules") => Child::MapValues(Ctx::Gate),
         (Ctx::Scenario, "protagonist") => Child::Direct(Ctx::Protagonist),
         (Ctx::Scenario, "role_assignment") => Child::Direct(Ctx::RoleAssignment),
+        (Ctx::Scenario, "spend_rules") => Child::Direct(Ctx::SpendRules),
+        (Ctx::Scenario, "push_cost") => Child::Direct(Ctx::PushCost),
         (Ctx::Scenario, "vote_rules") => Child::Seq(Ctx::VoteRule),
         (Ctx::Location, "items") => Child::ItemMap,
         (Ctx::Location, "exits") => Child::Seq(Ctx::Exit),
@@ -286,7 +297,13 @@ fn child_of(ctx: Ctx, key: &str) -> Child {
         (Ctx::Trigger, "effects") => Child::Seq(Ctx::Op),
         (Ctx::Challenge, "requires") => Child::Direct(Ctx::Gate),
         (Ctx::Challenge, "modifiers") => Child::Seq(Ctx::ChallengeMod),
-        (Ctx::Challenge, "on_success" | "on_failure") => Child::Direct(Ctx::Outcome),
+        // 全帰結スロット (spec 16 の degree 別 + spec 18 の on_push_failure)。
+        // 従来 on_success/on_failure のみ = degree スロット内の typo が盲点だった。
+        (
+            Ctx::Challenge,
+            "on_success" | "on_failure" | "on_critical" | "on_extreme" | "on_hard" | "on_fumble"
+            | "on_push_failure",
+        ) => Child::Direct(Ctx::Outcome),
         (Ctx::Challenge, "tiers") => Child::MapValues(Ctx::Tier),
         (Ctx::Outcome, "effects") | (Ctx::Tier, "effects") => Child::Seq(Ctx::Op),
         (Ctx::ChallengeMod, "when") => Child::Direct(Ctx::Gate),

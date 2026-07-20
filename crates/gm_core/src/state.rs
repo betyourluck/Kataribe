@@ -96,6 +96,42 @@ pub struct GameState {
     /// `persistent_flags` と同じ問いで、必要になったら spec 02 同型の機構で扱う)。
     #[serde(default)]
     pub taken_items: BTreeMap<LocationId, BTreeSet<ItemId>>,
+    /// **決断待ちの判定** (spec 18 Phase B)。pushable/spendable な challenge が失敗した時、
+    /// 帰結 (フラグ/effects/トリガー) を**適用せず凍結**した素性が積まれる。プレイヤーの決断
+    /// (受け入れ/プッシュ/差分買い) を `resolve_decision` が確定し、そこで初めて帰結が原子適用
+    /// される。先頭から順に解決 (開帳→決断の直列)。**セーブ対象** (serde default = 旧セーブ互換)。
+    /// 空でない間、上位 (app) は次のターンを回さない。
+    #[serde(default)]
+    pub pending_decisions: Vec<PendingDecision>,
+}
+
+/// 決断待ちの判定の凍結素性 (spec 18 Phase B)。**raw_roll (出目そのもの) を必ず持つ** —
+/// 差分買いの費用は `出目 − 買いたい成功度の閾値` の計算に生の出目が要る (degree だけでは
+/// 導けない、rev2 査読 I-5)。帰結スロットは持たない (challenge 定義から決断確定時に解決 =
+/// セーブに authored 内容を複製しない)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingDecision {
+    /// どの challenge の判定か (解決時に定義を引き直すキー)。
+    pub challenge: String,
+    /// 判定主体 (決断が凍結されるのは player のみだが、表示用に運ぶ)。
+    pub entity: EntityId,
+    /// 判定 stat (表示用。stat 無し challenge は空文字)。
+    pub stat: StatKey,
+    /// ダイス面数 (additive)。percentile は 100。
+    pub sides: u32,
+    /// **生の出目** (差分買いの費用計算の基準)。
+    pub roll: u32,
+    /// additive の修正値 (stat + modifiers)。percentile は目標値への修正合算。
+    pub modifier: i64,
+    /// additive の合計 (roll + modifier)。percentile は出目そのもの。
+    pub total: i64,
+    /// additive の DC。percentile は実効目標値。
+    pub dc: u32,
+    /// percentile の成功度 (凍結時は常に "failure" — fumble は凍結されず final)。additive は None。
+    pub degree: Option<String>,
+    /// プッシュ済みか (凍結時 false。push 解決は final なので true のまま残ることは無いが、
+    /// CheckOutcome への写しと将来の拡張のため素性に持つ)。
+    pub pushed: bool,
 }
 
 impl GameState {
@@ -115,6 +151,7 @@ impl GameState {
             votes: BTreeMap::new(),
             flag_turns: BTreeMap::new(),
             taken_items: BTreeMap::new(),
+            pending_decisions: Vec::new(),
         }
     }
 

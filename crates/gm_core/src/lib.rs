@@ -16,8 +16,9 @@ pub mod spine;
 pub mod state;
 
 pub use engine::{
-    adjudicate, apply, is_goal, percentile_degree, ApplyOutcome, CheckOutcome, FiredTrigger,
-    RollOutcome, StatRollOutcome, Verdict,
+    adjudicate, apply, decision_options, is_goal, percentile_degree, resolve_decision,
+    ApplyOutcome, BuyOption, CheckOutcome, DecisionChoice, DecisionError, DecisionOptions,
+    DecisionResolution, FiredTrigger, RollOutcome, StatRollOutcome, Verdict,
 };
 pub use reason::{Lang, RejectReason};
 pub use lint::unknown_key_lints;
@@ -28,6 +29,6 @@ pub use spine::{
 };
 pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
-    RngState, SkillId, StatKey, StateDelta, StateOp, TriggerId, AUTHORED_ONLY_OPS, DEFAULT_GOAL,
-    PLAYER,
+    PendingDecision, RngState, SkillId, StatKey, StateDelta, StateOp, TriggerId, AUTHORED_ONLY_OPS,
+    DEFAULT_GOAL, PLAYER,
 };

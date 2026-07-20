@@ -75,6 +75,17 @@ pub struct CheckOutcome {
     /// 既存フィールドの意味が変わる (表示は degree の有無で書式分岐)。
     #[serde(default)]
     pub degree: Option<String>,
+    /// spec 18 Phase B: プッシュ (振り直し) を経て確定した判定か。還流 (check_outcome_note) と
+    /// 表示が「押して振り直した」を語る素。
+    #[serde(default)]
+    pub pushed: bool,
+    /// spec 18 Phase B: 差分買いで支払った量 (0 = 買っていない)。還流と表示の素。
+    #[serde(default)]
+    pub spent: i64,
+    /// spec 18 Phase B: この判定が**決断待ちで凍結中**か (帰結未適用・narration 無し)。
+    /// 提示層は開帳後に決断 UI を出し、resolve_decision の結果 (最終 CheckOutcome) で上書きする。
+    #[serde(default)]
+    pub pending: bool,
 }
 
 /// 発火したトリガー (Phase C)。`narration` は語りへ注入する指示。
@@ -214,7 +225,7 @@ fn validate_ops(
             // 帰結**依存**の効果 (片側だけ/tier) は従来どおり非射影 = ダイスはターンを割る。
             if let StateOp::AttemptChallenge { challenge, .. } = op {
                 if let Some(def) = scenario.challenge(challenge) {
-                    for eff in guaranteed_challenge_effects(def) {
+                    for eff in guaranteed_challenge_effects(scenario, def) {
                         apply_deterministic_op(&mut proj, scenario, &eff);
                     }
                 }
@@ -227,7 +238,14 @@ fn validate_ops(
 /// on_success と on_failure の効果の**多重集合の交差** (過剰射影は誤受理の芽なので個数も厳密) と、
 /// 両帰結が同じフラグを立てる場合の set_flag。tier は加算的で outcome 効果を打ち消さないため
 /// 交差の健全性に影響しない (tier 限定の効果は共通でないので入らない)。片側が None なら空。
-fn guaranteed_challenge_effects(def: &crate::spine::ChallengeDef) -> Vec<StateOp> {
+fn guaranteed_challenge_effects(scenario: &Scenario, def: &crate::spine::ChallengeDef) -> Vec<StateOp> {
+    // spec 18 Phase B: 決断つき challenge は最終スロットが on_push_failure/買い上げ先まで
+    // 広がる (どの帰結で確定するかは決断次第) ため「全帰結共通」を静的に保証できない →
+    // 射影しない (過剰射影は誤受理の芽 — 安全側)。pushable の既定を false (opt-in) にした
+    // 理由の一つがこれ: 既存 content の束ね受理 (spec 09) を黙って壊さない。
+    if decision_enabled(scenario, def) {
+        return Vec::new();
+    }
     // 2 帰結の多重集合の厳密交差 (順序保存は左側基準)。
     fn intersect_effects(a: &[StateOp], b: &[StateOp]) -> Vec<StateOp> {
         let mut pool: Vec<&StateOp> = b.iter().collect();
@@ -622,6 +640,325 @@ pub fn apply(
     Ok(ApplyOutcome { rolls, checks, stat_rolls, fired })
 }
 
+// =============================================================================
+// 決断つき判定 — プッシュ / 差分買い (spec 18 Phase B)
+//
+// 第三の権能「プレイヤー op」: LLM 提案でも authored 専権でもなく、プレイヤーが UI から
+// 直接 engine に入れる決断。凍結された失敗 (PendingDecision) を Accept / Push / Buy の
+// いずれかで確定し、そこで初めて帰結 (フラグ/effects/トリガー) を原子適用する。
+// LLM を介さない = トークンを消費しない。
+// =============================================================================
+
+/// 凍結中の判定の CheckOutcome (提示用)。narration/sound は決断確定まで空 —
+/// 結末文が先に見えたら開帳の意味がない (spec 18 Phase A の伏せと同じ理由で B でも守る)。
+fn pending_check(p: &crate::state::PendingDecision) -> CheckOutcome {
+    CheckOutcome {
+        entity: p.entity.clone(),
+        stat: p.stat.clone(),
+        sides: p.sides,
+        roll: p.roll,
+        modifier: p.modifier,
+        total: p.total,
+        dc: p.dc,
+        success: false,
+        tier: None,
+        narration: String::new(),
+        sound: String::new(),
+        degree: p.degree.clone(),
+        pushed: false,
+        spent: 0,
+        pending: true,
+    }
+}
+
+/// この challenge が決断 (プッシュ/差分買い) の対象になりうるか (静的判定・射影の除外にも使う)。
+fn decision_enabled(scenario: &Scenario, def: &crate::spine::ChallengeDef) -> bool {
+    def.pushable.unwrap_or(false)
+        || (scenario.spend_rules.is_some() && def.spendable.unwrap_or(true))
+}
+
+/// player が `from` stat から払える上限 = 現在値 − 宣言 min (払って死ぬ設計も作者が
+/// min:0 + goal で書けば成立する — engine は止めない)。
+fn spendable_amount(state: &GameState, scenario: &Scenario, from: &str) -> i64 {
+    state.stat_of(PLAYER, from) - scenario.stat_bounds(PLAYER, from).0
+}
+
+/// プッシュが実行可能か (宣言 + 未プッシュ + 代償を払える)。
+fn push_available(
+    state: &GameState,
+    scenario: &Scenario,
+    def: &crate::spine::ChallengeDef,
+    p: &crate::state::PendingDecision,
+) -> bool {
+    def.pushable.unwrap_or(false)
+        && !p.pushed
+        && scenario
+            .push_cost
+            .as_ref()
+            .map_or(true, |pc| spendable_amount(state, scenario, &pc.from) >= pc.amount)
+}
+
+/// 差分買いの選択肢 (段階買い)。percentile は regular/hard/extreme の三段
+/// (critical=01 は出目そのものなので買えない)、additive は success の一段。
+/// **買えるのは支払える段だけ** (提示 = 実行可能、の一致)。
+fn buy_options(
+    state: &GameState,
+    scenario: &Scenario,
+    def: &crate::spine::ChallengeDef,
+    p: &crate::state::PendingDecision,
+) -> Vec<BuyOption> {
+    let Some(sr) = &scenario.spend_rules else { return Vec::new() };
+    if !def.spendable.unwrap_or(true) || p.pushed {
+        return Vec::new();
+    }
+    let avail = spendable_amount(state, scenario, &sr.from);
+    let rate = sr.rate.max(1);
+    let mut out = Vec::new();
+    if p.degree.is_some() {
+        // percentile: 買い上げ先の閾値 (percentile_degree と同じ整数除算)。
+        let dc = i64::from(p.dc);
+        for (degree, threshold) in [("regular", dc), ("hard", dc / 2), ("extreme", dc / 5)] {
+            let cost = (i64::from(p.roll) - threshold) * rate;
+            if threshold >= 1 && cost > 0 && cost <= avail {
+                out.push(BuyOption { degree: degree.into(), cost, from: sr.from.clone() });
+            }
+        }
+    } else {
+        // additive: 差分 = dc - total を埋めて成功に。
+        let cost = (i64::from(p.dc) - p.total) * rate;
+        if cost > 0 && cost <= avail {
+            out.push(BuyOption { degree: "success".into(), cost, from: sr.from.clone() });
+        }
+    }
+    out
+}
+
+/// 凍結すべきか = 実行可能な選択肢が一つでも在るか。「受け入れる」しか無い停止は無意味なので、
+/// 選択肢ゼロ (宣言なし/払えない) なら凍結せず従来どおり即時確定する。
+fn decision_has_options(
+    state: &GameState,
+    scenario: &Scenario,
+    def: &crate::spine::ChallengeDef,
+    p: &crate::state::PendingDecision,
+) -> bool {
+    push_available(state, scenario, def, p) || !buy_options(state, scenario, def, p).is_empty()
+}
+
+/// 差分買いの 1 段 (提示層がボタンにする)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuyOption {
+    /// 買い上げ先: percentile = `regular`/`hard`/`extreme`、additive = `success`。
+    pub degree: String,
+    /// 支払い量 (差分 × rate)。
+    pub cost: i64,
+    /// 支払い元 stat (表示用)。
+    pub from: String,
+}
+
+/// 先頭の決断待ちと、いま実行可能な選択肢 (提示層の決断 UI の素)。
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionOptions {
+    pub pending: crate::state::PendingDecision,
+    pub can_push: bool,
+    /// プッシュの代償 (stat, 量)。None = 無償。
+    pub push_cost: Option<(String, i64)>,
+    pub buys: Vec<BuyOption>,
+}
+
+/// 先頭の決断待ちの選択肢を返す (無ければ None)。決断は先頭から順に (開帳→決断の直列)。
+pub fn decision_options(state: &GameState, scenario: &Scenario) -> Option<DecisionOptions> {
+    let p = state.pending_decisions.first()?;
+    let def = scenario.challenge(&p.challenge)?;
+    Some(DecisionOptions {
+        pending: p.clone(),
+        can_push: push_available(state, scenario, def, p),
+        push_cost: scenario.push_cost.as_ref().map(|pc| (pc.from.clone(), pc.amount)),
+        buys: buy_options(state, scenario, def, p),
+    })
+}
+
+/// プレイヤーの決断。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub enum DecisionChoice {
+    /// 失敗を受け入れる (凍結していた失敗帰結を適用)。
+    Accept,
+    /// プッシュ: 代償を払って 1 度だけ振り直す。結果は成否に依らず final。
+    Push,
+    /// 差分買い: `degree` まで買い上げて成功に変える。
+    Buy { degree: String },
+}
+
+/// 決断の失敗 (UI が正しい選択肢だけ出していれば起きない防御的エラー)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum DecisionError {
+    /// 決断待ちが無い。
+    NoPending,
+    /// challenge 定義が見つからない (セーブ後に content が変わった等)。凍結は破棄済み。
+    UnknownChallenge,
+    /// この challenge はプッシュできない (宣言 false / 代償を払えない)。
+    NotPushable,
+    /// 買えない (spend_rules 無し / spendable false / 支払い不足 / 不正な段)。
+    NotBuyable,
+}
+
+/// 決断の確定結果 (提示層が最終の判定行・語り・発火ビートを描く素)。
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionResolution {
+    /// 最終の判定 (narration/sound 込み。pushed/spent が経緯を運ぶ)。
+    pub check: CheckOutcome,
+    /// 帰結 effects が振ったダイス (roll_stat 等) と発火ビート。
+    pub rolls: Vec<RollOutcome>,
+    pub stat_rolls: Vec<StatRollOutcome>,
+    pub fired: Vec<FiredTrigger>,
+    /// 差分買いの支払い (stat, 量)。
+    pub spent: Option<(String, i64)>,
+    /// プッシュの代償の支払い (stat, 量)。
+    pub push_paid: Option<(String, i64)>,
+}
+
+/// 先頭の決断待ちを確定する (spec 18 Phase B の中枢)。
+///
+/// ここで初めて帰結が state に触れる: スロット解決 → フラグ直書き + effects 原子適用 →
+/// トリガー settle → flag_turns 記録。turn は増えない (決断は同じ物語ターンの内側)。
+/// プッシュの振り直しは本流 RNG を消費する (決定論: 同 seed + 同じ選択列 → 同じ出目)。
+pub fn resolve_decision(
+    state: &mut GameState,
+    scenario: &Scenario,
+    choice: DecisionChoice,
+) -> Result<DecisionResolution, DecisionError> {
+    let Some(p) = state.pending_decisions.first().cloned() else {
+        return Err(DecisionError::NoPending);
+    };
+    let Some(def) = scenario.challenge(&p.challenge) else {
+        // content 差し替え等の防御: 凍結を破棄する (帰結は永遠に適用できないので抱えない)。
+        state.pending_decisions.remove(0);
+        return Err(DecisionError::UnknownChallenge);
+    };
+    let is_percentile = p.degree.is_some();
+
+    let flags_before: BTreeSet<String> =
+        state.flags.iter().filter(|(_, v)| **v).map(|(k, _)| k.clone()).collect();
+    let mut rolls = Vec::new();
+    let mut scratch_checks = Vec::new();
+    let mut stat_rolls = Vec::new();
+    let mut spent = None;
+    let mut push_paid = None;
+
+    // 決断ごとに最終スロットと最終判定値を確定する。
+    let (slot, check) = match choice {
+        DecisionChoice::Accept => {
+            let slot = if is_percentile {
+                resolve_degree_slot(def, "failure")
+            } else {
+                def.on_failure.as_ref()
+            };
+            (slot, pending_check(&p))
+        }
+        DecisionChoice::Buy { degree } => {
+            let option = buy_options(state, scenario, def, &p)
+                .into_iter()
+                .find(|b| b.degree == degree)
+                .ok_or(DecisionError::NotBuyable)?;
+            // 支払い (afford 済み・宣言 min まで)。
+            let next = state.stat_of(PLAYER, &option.from) - option.cost;
+            state.set_stat(PLAYER, &option.from, clamp_stat(scenario, PLAYER, &option.from, next));
+            spent = Some((option.from.clone(), option.cost));
+            let slot = if is_percentile {
+                resolve_degree_slot(def, &option.degree)
+            } else {
+                def.on_success.as_ref()
+            };
+            let mut check = pending_check(&p);
+            check.success = true;
+            check.spent = option.cost;
+            if is_percentile {
+                check.degree = Some(option.degree);
+            }
+            (slot, check)
+        }
+        DecisionChoice::Push => {
+            if !push_available(state, scenario, def, &p) {
+                return Err(DecisionError::NotPushable);
+            }
+            // 代償 (任意) を先に払う — 振り直しは代償込みの決断。
+            if let Some(pc) = &scenario.push_cost {
+                let next = state.stat_of(PLAYER, &pc.from) - pc.amount;
+                state.set_stat(PLAYER, &pc.from, clamp_stat(scenario, PLAYER, &pc.from, next));
+                push_paid = Some((pc.from.clone(), pc.amount));
+            }
+            let mut check = pending_check(&p);
+            check.pushed = true;
+            let slot = if is_percentile {
+                let roll2 = state.rng.roll(100);
+                let (deg2, success2) = percentile_degree(roll2, i64::from(p.dc));
+                check.roll = roll2;
+                check.total = i64::from(roll2);
+                check.degree = Some(deg2.to_string());
+                check.success = success2;
+                if success2 {
+                    resolve_degree_slot(def, deg2)
+                } else {
+                    // 押した失敗はより悪い: on_push_failure → (fumble なら on_fumble) → on_failure。
+                    def.on_push_failure.as_ref().or_else(|| {
+                        if deg2 == "fumble" {
+                            def.on_fumble.as_ref().or(def.on_failure.as_ref())
+                        } else {
+                            def.on_failure.as_ref()
+                        }
+                    })
+                }
+            } else {
+                // additive の振り直し。tier は最初の自然出目だけの劇 — 振り直しでは判定しない
+                // (会心/大失敗の二重抽選を作らない)。
+                let roll2 = state.rng.roll(p.sides);
+                let total2 = i64::from(roll2) + p.modifier;
+                let success2 = total2 >= i64::from(p.dc);
+                check.roll = roll2;
+                check.total = total2;
+                check.success = success2;
+                if success2 {
+                    def.on_success.as_ref()
+                } else {
+                    def.on_push_failure.as_ref().or(def.on_failure.as_ref())
+                }
+            };
+            (slot, check)
+        }
+    };
+
+    // 凍結を解いてから帰結を適用する (帰結が別の決断を生むことは無い —
+    // effects に attempt_challenge は validate が遮断済み)。
+    state.pending_decisions.remove(0);
+
+    let mut check = check;
+    if let Some(o) = slot {
+        if let Some(flag) = &o.flag {
+            state.flags.insert(flag.clone(), true);
+        }
+        if !o.effects.is_empty() {
+            let effect_delta = StateDelta::new(String::new(), o.effects.clone());
+            apply_ops(state, scenario, &effect_delta, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+        }
+        check.narration = o.narration.clone();
+        check.sound = o.sound.clone();
+    }
+    check.pending = false;
+
+    // 帰結からの発火 (apply と同じ settle) と、真化フラグのターン刻印。
+    let fired = fire_triggers(state, scenario, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+    let newly_true: Vec<String> = state
+        .flags
+        .iter()
+        .filter(|(k, v)| **v && !flags_before.contains(*k))
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in newly_true {
+        state.flag_turns.insert(key, state.turn);
+    }
+
+    Ok(DecisionResolution { check, rolls, stat_rolls, fired, spent, push_paid })
+}
+
 /// 受理・適用後の `state` に対し、発火条件 `when` が真でまだ発火していないトリガーを発火させる。
 ///
 /// 禁忌 (`check_taboos`) の双対: 禁忌が「真化を却下」するのに対し、トリガーは「真化で発火」する。
@@ -781,6 +1118,9 @@ fn apply_ops(
                     narration: String::new(), // 素の Check は authored 結末文を持たない (LLM が次ターンに語る)。
                     sound: String::new(),     // 素の Check は authored 効果音を持たない。
                     degree: None,             // 加算式は成功度を持たない (spec 16)。
+                    pushed: false,
+                    spent: 0,
+                    pending: false,
                 });
             }
             StateOp::CheckUnder { entity, key } => {
@@ -803,6 +1143,9 @@ fn apply_ops(
                     narration: String::new(),
                     sound: String::new(),
                     degree: Some(degree.to_string()),
+                    pushed: false,
+                    spent: 0,
+                    pending: false,
                 });
             }
             StateOp::RollStat { entity, key, count, sides, bonus, negate } => {
@@ -838,6 +1181,28 @@ fn apply_ops(
                             def.modifiers.iter().filter(|m| m.when.eval(state)).map(|m| m.bonus).sum();
                         let target = base + cond_mod;
                         let (degree, success) = percentile_degree(roll, target);
+                        // spec 18 Phase B: 決断つき challenge の通常失敗は帰結を適用せず凍結する
+                        // (apply 済みの帰結は巻き戻せない → プッシュ/差分買いの確定まで遅延)。
+                        // fumble は final (逃れられない)、player 以外の主体は凍結しない。
+                        if degree == "failure" && subject == PLAYER {
+                            let p = crate::state::PendingDecision {
+                                challenge: challenge.clone(),
+                                entity: subject.clone(),
+                                stat: def.stat.clone().unwrap_or_default(),
+                                sides: 100,
+                                roll,
+                                modifier: cond_mod,
+                                total: i64::from(roll),
+                                dc: target.clamp(0, i64::from(u32::MAX)) as u32,
+                                degree: Some(degree.to_string()),
+                                pushed: false,
+                            };
+                            if decision_has_options(state, scenario, def, &p) {
+                                checks.push(pending_check(&p));
+                                state.pending_decisions.push(p);
+                                continue;
+                            }
+                        }
                         // 帰結スロット: degree 別 → フォールバック連鎖 (apply と射影が共有する
                         // resolve_degree_slot で解決)。フラグ直書き + effects 原子適用は additive と同型。
                         let outcome = resolve_degree_slot(def, degree);
@@ -864,6 +1229,9 @@ fn apply_ops(
                             narration: outcome.map(|o| o.narration.clone()).unwrap_or_default(),
                             sound: outcome.map(|o| o.sound.clone()).unwrap_or_default(),
                             degree: Some(degree.to_string()),
+                            pushed: false,
+                            spent: 0,
+                            pending: false,
                         });
                         continue;
                     }
@@ -877,21 +1245,44 @@ fn apply_ops(
                     let modifier = stat_mod + cond_mod;
                     let total = roll as i64 + modifier;
                     let success = total >= def.dc as i64;
-                    // 通常成否の帰結 (フラグ + 結末ナレーション)。フラグは直書き (validate が宣言保証)。
-                    let outcome = if success { def.on_success.as_ref() } else { def.on_failure.as_ref() };
-                    if let Some(flag) = outcome.and_then(|o| o.flag.as_ref()) {
-                        state.flags.insert(flag.clone(), true);
-                    }
                     // 極 (tier): 自然出目が min/max/閾値に該当する authored tier を引く。
                     // 複数該当時は BTreeMap のキー名昇順で最初が勝つ (決定論)。
                     // 該当 tier に flag があれば engine が直書きする (通常成否フラグと併存)。
                     // 閾値欠落 (validate が弾く前提だが) は発火させない安全側 (map_or false)。
+                    // 凍結判定 (spec 18) に tier 該当の有無が要るため、成否帰結より先に引く。
                     let hit = def.tiers.iter().find(|(_, t)| match t.natural {
                         crate::spine::Natural::Min => roll == 1,
                         crate::spine::Natural::Max => roll == def.sides,
                         crate::spine::Natural::AtMost => t.threshold.is_some_and(|n| roll <= n),
                         crate::spine::Natural::AtLeast => t.threshold.is_some_and(|n| roll >= n),
                     });
+                    // spec 18 Phase B: 決断つき challenge の**素の失敗**は帰結を凍結する。
+                    // tier 該当 (大失敗等) は authored の劇 = final なので凍結しない
+                    // (additive の fumble 相当)。player 以外の主体も凍結しない。
+                    if !success && hit.is_none() && subject == PLAYER {
+                        let p = crate::state::PendingDecision {
+                            challenge: challenge.clone(),
+                            entity: subject.clone(),
+                            stat: def.stat.clone().unwrap_or_default(),
+                            sides: def.sides,
+                            roll,
+                            modifier,
+                            total,
+                            dc: def.dc,
+                            degree: None,
+                            pushed: false,
+                        };
+                        if decision_has_options(state, scenario, def, &p) {
+                            checks.push(pending_check(&p));
+                            state.pending_decisions.push(p);
+                            continue;
+                        }
+                    }
+                    // 通常成否の帰結 (フラグ + 結末ナレーション)。フラグは直書き (validate が宣言保証)。
+                    let outcome = if success { def.on_success.as_ref() } else { def.on_failure.as_ref() };
+                    if let Some(flag) = outcome.and_then(|o| o.flag.as_ref()) {
+                        state.flags.insert(flag.clone(), true);
+                    }
                     let tier = hit.map(|(name, _)| name.clone());
                     if let Some((_, t)) = hit {
                         if let Some(flag) = &t.flag {
@@ -938,6 +1329,9 @@ fn apply_ops(
                         narration,
                         sound,
                         degree: None, // 加算式は成功度を持たない (spec 16)。
+                        pushed: false,
+                        spent: 0,
+                        pending: false,
                     });
                 }
             }
@@ -4614,5 +5008,337 @@ triggers:
         assert_eq!(s.location, "next");
     }
 
+    // =========================================================================
+    // spec 18 Phase B: 決断つき判定 (プッシュ / 差分買い / 帰結の確定遅延)
+    // =========================================================================
 
+    /// 決断テスト用の additive 盤面。sides:1 dc:5 = 常に失敗 (決定論)。
+    fn decision_yaml() -> &'static str {
+        r#"
+title: t
+start: room
+initial_stats: { STR: 0, "幸運": 50, HP: 10 }
+allowed_flags: [fell, pushed_worse, opened]
+spend_rules: { from: "幸運" }
+push_cost: { from: HP, amount: 1 }
+challenges:
+  door:
+    description: 扉をこじ開ける
+    stat: STR
+    sides: 1
+    dc: 5
+    pushable: true
+    on_success: { flag: opened, narration: 開いた }
+    on_failure: { flag: fell, narration: 失敗した, effects: [ { op: adjust_stat, key: HP, delta: -2 } ] }
+    on_push_failure: { flag: pushed_worse, narration: もっと悪いことになった }
+triggers:
+  - id: alarm
+    when: { kind: flag_is, key: fell, value: true }
+    narration: 警報が鳴り響いた
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#
+    }
+
+    /// 【帰結の確定遅延 (spec 18 Phase B の中枢)】pushable な challenge の失敗は
+    /// フラグ/effects/トリガーが**一切適用されず**凍結され、Accept で初めて原子適用される。
+    #[test]
+    fn pushable_failure_freezes_consequences_until_accept() {
+        let sc = Scenario::from_yaml(decision_yaml()).unwrap();
+        assert!(sc.validate().is_empty());
+        let mut s = sc.initial_state(1);
+
+        let o = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(), challenge: "door".into(),
+        }])).unwrap();
+
+        // 凍結: 帰結は世界に触れていない。
+        assert!(!s.flag("fell"), "失敗フラグは未適用");
+        assert_eq!(s.stat_of(PLAYER, "HP"), 10, "失敗 effects (HP-2) も未適用");
+        assert!(o.fired.is_empty(), "トリガー (警報) も発火しない");
+        assert_eq!(s.pending_decisions.len(), 1, "決断待ちが積まれる");
+        assert!(o.checks[0].pending, "判定行は凍結中フラグつき");
+        assert!(o.checks[0].narration.is_empty(), "結末文は決断確定まで出さない");
+
+        // 選択肢: プッシュ可 (HP 1 払える) + 買い可 (差分 4 <= 幸運 50)。
+        let opts = decision_options(&s, &sc).unwrap();
+        assert!(opts.can_push);
+        assert_eq!(opts.push_cost, Some(("HP".into(), 1)));
+        assert_eq!(opts.buys, vec![BuyOption { degree: "success".into(), cost: 4, from: "幸運".into() }]);
+
+        // Accept: ここで初めて帰結が適用される。
+        let r = resolve_decision(&mut s, &sc, DecisionChoice::Accept).unwrap();
+        assert!(s.flag("fell"), "失敗フラグが立つ");
+        assert_eq!(s.stat_of(PLAYER, "HP"), 8, "失敗 effects が適用される");
+        assert_eq!(r.fired.len(), 1, "警報トリガーが発火する");
+        assert_eq!(r.check.narration, "失敗した", "結末文が確定する");
+        assert!(!r.check.pending);
+        assert!(s.pending_decisions.is_empty(), "凍結は解かれた");
+        assert!(s.flag_turns.contains_key("fell"), "真化ターンも刻まれる");
+    }
+
+    /// 【プッシュ】代償 (HP-1) を払って振り直し、再失敗は on_push_failure 連鎖で確定する。
+    /// on_failure の帰結 (fell/HP-2) は**起きない** (押した失敗は別の帰結)。
+    #[test]
+    fn push_pays_cost_rerolls_and_uses_push_failure_chain() {
+        let sc = Scenario::from_yaml(decision_yaml()).unwrap();
+        let mut s = sc.initial_state(1);
+        apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(), challenge: "door".into(),
+        }])).unwrap();
+
+        let r = resolve_decision(&mut s, &sc, DecisionChoice::Push).unwrap();
+        assert_eq!(r.push_paid, Some(("HP".into(), 1)), "押す代償を払う");
+        assert_eq!(s.stat_of(PLAYER, "HP"), 9, "HP 10-1 (on_failure の -2 は起きない)");
+        assert!(r.check.pushed, "押した判定として確定");
+        assert!(!r.check.success, "1d1=1 < 5 = 再失敗 (決定論)");
+        assert!(s.flag("pushed_worse"), "on_push_failure のフラグ");
+        assert!(!s.flag("fell"), "on_failure の帰結は取られない (連鎖が置き換える)");
+        assert_eq!(r.check.narration, "もっと悪いことになった");
+        assert!(s.pending_decisions.is_empty(), "プッシュは成否に依らず final");
+        // final なので二度目の決断は無い。
+        assert!(matches!(
+            resolve_decision(&mut s, &sc, DecisionChoice::Push),
+            Err(DecisionError::NoPending)
+        ));
+    }
+
+    /// 【差分買い (percentile)】失敗を hard まで買い上げ、支払いが宣言 stat から引かれ、
+    /// 買った degree のスロットが適用される。
+    #[test]
+    fn buy_degree_deducts_stat_and_applies_bought_slot() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { "知識": 60, "幸運": 50 }
+allowed_flags: [read, hard_read]
+spend_rules: { from: "幸運" }
+challenges:
+  lore:
+    resolution: percentile
+    description: 碑文を読む
+    stat: "知識"
+    spendable: true
+    on_success: { flag: read }
+    on_hard: { flag: hard_read, narration: 鮮やかに読み解いた }
+    on_failure: { narration: 読めない }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty());
+        // 素の失敗 (61..=95) かつ hard (閾値 30) を幸運 50 で買える出目 (<=80) を seed 探索。
+        for seed in 0..300u64 {
+            let mut s = sc.initial_state(seed);
+            apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+                entity: PLAYER.into(), challenge: "lore".into(),
+            }])).unwrap();
+            let Some(p) = s.pending_decisions.first().cloned() else { continue };
+            if p.roll > 80 {
+                continue; // hard を買えない出目 — 別 seed で
+            }
+            let opts = decision_options(&s, &sc).unwrap();
+            assert!(!opts.can_push, "pushable 未宣言 (既定 false) なので押せない");
+            let hard = opts.buys.iter().find(|b| b.degree == "hard").expect("hard を買える");
+            assert_eq!(hard.cost, i64::from(p.roll) - 30, "費用 = 出目 - hard 閾値 (60/2)");
+
+            let r = resolve_decision(&mut s, &sc, DecisionChoice::Buy { degree: "hard".into() })
+                .unwrap();
+            assert_eq!(s.stat_of(PLAYER, "幸運"), 50 - hard.cost, "支払いが引かれる");
+            assert_eq!(r.spent, Some(("幸運".into(), hard.cost)));
+            assert!(r.check.success && r.check.degree.as_deref() == Some("hard"));
+            assert_eq!(r.check.spent, hard.cost);
+            assert!(s.flag("hard_read"), "買った degree のスロット (on_hard) が適用される");
+            assert!(!s.flag("read"), "regular のスロットではない");
+            assert_eq!(r.check.narration, "鮮やかに読み解いた");
+            return;
+        }
+        panic!("300 seed 以内に買える失敗が出るはず");
+    }
+
+    /// 【凍結しない側】fumble は final / NPC 主体は決断なし / 選択肢ゼロ (宣言なし) は即時確定。
+    #[test]
+    fn fumble_npc_and_no_option_failures_do_not_freeze() {
+        // fumble: 目標値 2 (<50) なら 96-100 が fumble。pushable でも final。
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { "知識": 2, "幸運": 50 }
+allowed_flags: [failed]
+spend_rules: { from: "幸運" }
+challenges:
+  lore:
+    resolution: percentile
+    description: d
+    stat: "知識"
+    pushable: true
+    on_failure: { flag: failed }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut seen_fumble = false;
+        for seed in 0..300u64 {
+            let mut s = sc.initial_state(seed);
+            let o = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+                entity: PLAYER.into(), challenge: "lore".into(),
+            }])).unwrap();
+            if o.checks[0].degree.as_deref() == Some("fumble") {
+                assert!(s.pending_decisions.is_empty(), "fumble は凍結されず final");
+                assert!(s.flag("failed"), "帰結 (on_fumble→on_failure 連鎖) は即時適用");
+                seen_fumble = true;
+                break;
+            }
+        }
+        assert!(seen_fumble, "300 seed 以内に fumble が出るはず (p=5%)");
+
+        // 選択肢ゼロ: pushable 無し + spend_rules 無し → 凍結せず従来どおり。
+        let yaml2 = r#"
+title: t
+start: room
+initial_stats: { STR: 0 }
+allowed_flags: [fell]
+challenges:
+  door: { description: d, stat: STR, sides: 1, dc: 5, on_failure: { flag: fell } }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc2 = Scenario::from_yaml(yaml2).unwrap();
+        let mut s2 = sc2.initial_state(1);
+        apply(&mut s2, &sc2, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(), challenge: "door".into(),
+        }])).unwrap();
+        assert!(s2.pending_decisions.is_empty(), "選択肢が無ければ停止しない");
+        assert!(s2.flag("fell"), "従来どおり即時確定");
+    }
+
+    /// 【射影の除外】決断つき challenge は「全帰結共通効果」を射影しない —
+    /// 最終スロットが決断次第で on_push_failure まで広がるため、静的な共通保証が成り立たない。
+    #[test]
+    fn decision_enabled_challenge_is_excluded_from_guaranteed_projection() {
+        let base = r#"
+title: t
+start: a
+initial_stats: { STR: 0 }
+allowed_flags: [done]
+challenges:
+  work:
+    description: d
+    stat: STR
+    sides: 1
+    dc: 5
+    PUSHABLE
+    on_success: { effects: [ { op: set_flag, key: done, value: true } ] }
+    on_failure: { effects: [ { op: set_flag, key: done, value: true } ] }
+goal: { kind: always }
+locations:
+  a: { description: d, items: {}, exits: [ { to: b, gate: { kind: flag_is, key: done, value: true } } ] }
+  b: { description: d, items: {}, exits: [] }
+"#;
+        let bundle = d(vec![
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "work".into() },
+            StateOp::Move { to: "b".into() },
+        ]);
+        // 非 pushable: 共通効果 (done) が射影され束ねが一発受理 (spec 09 の既存保証)。
+        let sc_plain = Scenario::from_yaml(&base.replace("PUSHABLE", "")).unwrap();
+        assert!(matches!(adjudicate(&sc_plain.initial_state(1), &sc_plain, &bundle), Verdict::Accept));
+        // pushable: 射影されず move gate 未達で却下 (安全側)。
+        let sc_push = Scenario::from_yaml(&base.replace("PUSHABLE", "pushable: true")).unwrap();
+        assert!(matches!(
+            adjudicate(&sc_push.initial_state(1), &sc_push, &bundle),
+            Verdict::Reject { .. }
+        ));
+    }
+
+    /// 【validate + 閉世界】幻の財布/代償元/押し失敗フラグは load 時に弾かれ、
+    /// on_push_failure と degree スロットのフラグは authored 専権 (#50 バックストップ) に入る。
+    #[test]
+    fn decision_declarations_validate_and_join_authored_only() {
+        use crate::spine::ScenarioError as E;
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { STR: 0 }
+allowed_flags: [worse]
+spend_rules: { from: "幻の幸運" }
+push_cost: { from: "幻のHP", amount: 1 }
+challenges:
+  door:
+    description: d
+    stat: STR
+    sides: 1
+    dc: 5
+    pushable: true
+    on_push_failure: { flag: ghost_flag }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let errs = sc.validate();
+        assert!(errs.iter().any(|e| matches!(e, E::SpendStatUndeclared { key } if key == "幻の幸運")));
+        assert!(errs.iter().any(|e| matches!(e, E::PushCostStatUndeclared { key } if key == "幻のHP")));
+        assert!(
+            errs.iter().any(|e| matches!(e, E::ChallengeFlagUndeclared { tier, flag, .. }
+                if tier == "on_push_failure" && flag == "ghost_flag")),
+            "on_push_failure の幻フラグも load 時に弾く: {errs:?}"
+        );
+
+        // authored 専権: on_push_failure / degree スロット (on_fumble 等) のフラグが
+        // usable 語彙から除外される (従来 on_success/on_failure のみ = #50 の穴を閉じた)。
+        let yaml2 = r#"
+title: t
+start: room
+initial_stats: { "知識": 60 }
+allowed_flags: [worse, fumbled]
+challenges:
+  lore:
+    resolution: percentile
+    description: d
+    stat: "知識"
+    pushable: true
+    on_fumble: { flag: fumbled }
+    on_push_failure: { flag: worse }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc2 = Scenario::from_yaml(yaml2).unwrap();
+        let authored = sc2.authored_only_flags();
+        assert!(authored.contains("worse"), "on_push_failure のフラグは専権");
+        assert!(authored.contains("fumbled"), "degree スロット (on_fumble) のフラグも専権");
+    }
+
+    /// 【旧セーブ互換】pending_decisions 欠落の GameState が読める + 凍結込みで roundtrip する。
+    #[test]
+    fn pending_decisions_serde_roundtrip_and_old_save_compat() {
+        let sc = Scenario::from_yaml(decision_yaml()).unwrap();
+        let mut s = sc.initial_state(1);
+        apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(), challenge: "door".into(),
+        }])).unwrap();
+        assert_eq!(s.pending_decisions.len(), 1);
+
+        // 凍結込み roundtrip (セーブを跨いで決断が生きる)。
+        let yaml = serde_yaml::to_string(&s).unwrap();
+        let restored: GameState = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(restored, s, "凍結込みで同値");
+
+        // 旧セーブ (フィールド欠落) も読める。
+        let old = yaml
+            .lines()
+            .filter(|l| !l.starts_with("pending_decisions") && !l.starts_with("- challenge"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let old_state: Result<GameState, _> = serde_yaml::from_str(&old);
+        // 行フィルタで構造が崩れる場合に備え、最小 YAML でも確認する。
+        let minimal: GameState =
+            serde_yaml::from_str("location: room\nrng: { seed: 1, cursor: 0 }").unwrap();
+        assert!(minimal.pending_decisions.is_empty(), "欠落 = 空 (serde default)");
+        let _ = old_state;
+    }
 }
