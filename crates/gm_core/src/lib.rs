@@ -12,6 +12,7 @@
 pub mod engine;
 pub mod reason;
 pub mod lint;
+pub mod expr;
 pub mod spine;
 pub mod state;
 
@@ -23,6 +24,7 @@ pub use engine::{
 };
 pub use reason::{Lang, RejectReason};
 pub use lint::unknown_key_lints;
+pub use expr::{parse_expr, Expr};
 pub use spine::{
     ChallengeDef, CharacterDef, CheckStyle, ContestDef, Exit, Gate, GoalDef, ImageMode, Location,
     LocationItem, Natural, Protagonist, Resolution, RoleAssignment, RollRef, RollSpec, Scenario,

@@ -464,6 +464,20 @@ fn validate_op(
                                 });
                             }
                         }
+                        // 式修正 (spec 19) の参照 stat も実際の主体で検査する (load 時 validate は
+                        // 既定主体で見るが、op の entity 上書きで主体が変わりうる — 二層目)。
+                        if let Some(xsrc) = &def.expr {
+                            if let Ok(x) = crate::expr::parse_expr(xsrc) {
+                                for key in x.stats() {
+                                    if !scenario.knows_stat(subject, &key) {
+                                        reasons.push(RejectReason::UnknownStat {
+                                            entity: subject.clone(),
+                                            key,
+                                        });
+                                    }
+                                }
+                            }
+                        }
                         // 面数は additive のみの概念 (percentile は d100 固定・sides=0 が正、
                         // 形の整合は load 時 validate が保証済み — spec 16)。
                         if def.resolution == crate::spine::Resolution::Additive && def.sides < 1 {
@@ -712,6 +726,20 @@ pub enum ContestError {
     UnknownContest,
 }
 
+/// 判定主体の修正/目標の素値 (spec 19): `expr` があれば式を現在値で評価、無ければ stat 現在値。
+/// validate 済みの式が前提 — 万一パース不能なら 0 (安全側・load 時に弾かれているはず)。
+fn stat_or_expr(
+    state: &GameState,
+    entity: &str,
+    stat: &Option<String>,
+    expr: &Option<String>,
+) -> i64 {
+    if let Some(xsrc) = expr {
+        return crate::expr::parse_expr(xsrc).map(|x| x.eval(state, entity)).unwrap_or(0);
+    }
+    stat.as_ref().map_or(0, |s| state.stat_of(entity, s))
+}
+
 /// percentile degree の強さ順位 (対抗比較用)。大きいほど良い。
 fn degree_rank(degree: &str) -> u8 {
     match degree {
@@ -747,7 +775,8 @@ pub fn contest_round(
 
     // 1 振り (side): additive = 1d{sides}+stat+bonus / percentile = 1d100 ≤ stat+bonus。
     let mut roll_side = |entity: &str, spec: &crate::spine::RollSpec| -> CheckOutcome {
-        let stat_mod = spec.stat.as_ref().map_or(0, |s| state.stat_of(entity, s));
+        // stat 現在値 or 式修正 (spec 19)。
+        let stat_mod = stat_or_expr(state, entity, &spec.stat, &spec.expr);
         if is_percentile {
             let roll = state.rng.roll(100);
             let target = stat_mod + spec.bonus;
@@ -1429,7 +1458,8 @@ fn apply_ops(
                         // (percentile では bonus を目標値に加算 = 「技能値 +10 相当」)。
                         let roll = state.rng.roll(100);
                         let subject = def.entity.as_ref().unwrap_or(entity);
-                        let base = def.stat.as_ref().map_or(0, |s| state.stat_of(subject, s));
+                        // 目標値の素: stat 現在値 or 式修正 (spec 19。式は現在値で評価)。
+                        let base = stat_or_expr(state, subject, &def.stat, &def.expr);
                         let cond_mod: i64 =
                             def.modifiers.iter().filter(|m| m.when.eval(state)).map(|m| m.bonus).sum();
                         let target = base + cond_mod;
@@ -1491,8 +1521,9 @@ fn apply_ops(
                     let roll = state.rng.roll(def.sides);
                     // 判定主体: authored 固定 (def.entity) が op の entity を上書きする。
                     let subject = def.entity.as_ref().unwrap_or(entity);
-                    // stat 無し = 能力に依らない純粋ダイス (修正値 0)。
-                    let stat_mod = def.stat.as_ref().map_or(0, |s| state.stat_of(subject, s));
+                    // stat 無し = 能力に依らない純粋ダイス (修正値 0)。式修正 (spec 19) があれば
+                    // 現在値で評価した値が修正になる ((CON+SIZ)/2 等)。
+                    let stat_mod = stat_or_expr(state, subject, &def.stat, &def.expr);
                     // 条件付き修正: when (Gate) が真の分だけ bonus を加える (導師の教えで +5 等)。
                     let cond_mod: i64 = def.modifiers.iter().filter(|m| m.when.eval(state)).map(|m| m.bonus).sum();
                     let modifier = stat_mod + cond_mod;
@@ -5770,6 +5801,114 @@ locations:
             "解決不能テンプレートを名指しする: {errs:?}"
         );
         assert!(sc.authored_only_flags().contains("won"), "contest 帰結フラグは専権");
+    }
+
+    // =========================================================================
+    // spec 19: 式修正 — 判定の修正値/目標値を stat の式で書く
+    // =========================================================================
+
+    /// 【式修正の評価と「生きた派生値」】additive の修正 = (CON+SIZ)/2 が現在値で評価され、
+    /// CON が削られると次の判定から補正も落ちる。percentile は式が目標値になる。
+    #[test]
+    fn challenge_expr_evaluates_live_values() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { CON: 13, SIZ: 11, DEX: 35 }
+allowed_flags: []
+challenges:
+  club:
+    description: 棍棒で殴る
+    expr: "(CON + SIZ) / 2"
+    sides: 1
+    dc: 1
+  dodge:
+    resolution: percentile
+    description: 回避
+    expr: "DEX * 2"
+goal: { kind: flag_is, key: never, value: true }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(1);
+
+        // additive: 修正 = (13+11)/2 = 12。1d1(1)+12 = 13。
+        let o = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(), challenge: "club".into(),
+        }])).unwrap();
+        assert_eq!(o.checks[0].modifier, 12, "式修正 (CON+SIZ)/2 = 12");
+        assert_eq!(o.checks[0].total, 13);
+
+        // percentile: 目標値 = DEX*2 = 70。
+        let o2 = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(), challenge: "dodge".into(),
+        }])).unwrap();
+        assert_eq!(o2.checks[0].dc, 70, "式が目標値になる");
+        assert!(o2.checks[0].degree.is_some());
+
+        // 生きた派生値: CON 13→3 に削ると次の club の修正は (3+11)/2 = 7 へ落ちる。
+        s.set_stat(PLAYER, "CON", 3);
+        let o3 = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(), challenge: "club".into(),
+        }])).unwrap();
+        assert_eq!(o3.checks[0].modifier, 7, "現在値で評価される (手書きシートとの差)");
+    }
+
+    /// 【式修正の閉世界】stat と併記 / 参照 stat 未宣言 / 壊れた式は load 時に名指しされ、
+    /// contest の RollSpec.expr も同じ検査を通る。
+    #[test]
+    fn expr_validation_rejects_broken_and_undeclared() {
+        use crate::spine::ScenarioError as E;
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { CON: 10 }
+allowed_flags: []
+characters:
+  mob:
+    name: m
+    stats: { "腕力": { initial: 8 } }
+challenges:
+  bad_both:
+    description: d
+    stat: CON
+    expr: "CON + 1"
+    sides: 6
+    dc: 3
+  bad_ghost:
+    description: d
+    expr: "CON + 幻の筋力"
+    sides: 6
+    dc: 3
+  bad_parse:
+    description: d
+    expr: "(CON +"
+    sides: 6
+    dc: 3
+contests:
+  ok_expr:
+    opponent: mob
+    player_roll: { expr: "CON / 2", sides: 20 }
+    opponent_roll: { expr: "腕力 * 2", sides: 20 }
+goal: { kind: flag_is, key: never, value: true }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let errs = sc.validate();
+        assert!(errs.iter().any(|e| matches!(e, E::ChallengeExprInvalid { challenge, detail }
+            if challenge == "bad_both" && detail.contains("同時に書けない"))));
+        assert!(errs.iter().any(|e| matches!(e, E::ChallengeExprInvalid { challenge, detail }
+            if challenge == "bad_ghost" && detail.contains("幻の筋力"))));
+        assert!(errs.iter().any(|e| matches!(e, E::ChallengeExprInvalid { challenge, .. }
+            if challenge == "bad_parse")));
+        // contest 側の式は健全 (双方とも自分の宣言 stat を参照) — contest 由来のエラーは無い。
+        assert!(
+            !errs.iter().any(|e| matches!(e, E::ContestRollInvalid { .. })),
+            "contest の式修正は通る: {errs:?}"
+        );
     }
 
     /// 【旧セーブ互換】pending_decisions 欠落の GameState が読める + 凍結込みで roundtrip する。

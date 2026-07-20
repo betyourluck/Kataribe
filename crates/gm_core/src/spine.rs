@@ -439,6 +439,12 @@ pub struct ChallengeDef {
     /// `None` なら能力に依らない純粋ダイス (修正値 0、運試し)。`Some` なら 1d{sides}+stat修正。
     #[serde(default)]
     pub stat: Option<StatKey>,
+    /// **式修正** (spec 19)。stat の代わりに `(CON + SIZ) / 2` のような整数式で
+    /// 修正値 (additive) / 目標値 (percentile) を書く。**判定のたびに現在値で評価**される
+    /// (CON が削られれば補正も落ちる = 生きた派生値)。参照 stat は判定主体の宣言済みキー必須、
+    /// `stat` との併記は不可 (validate `ChallengeExprInvalid`)。除算は切り捨て (CoC 準拠)。
+    #[serde(default)]
+    pub expr: Option<String>,
     /// additive のダイス面数。**serde default 0** (spec 16 で percentile が省略できるように) —
     /// additive で 0 は load 時 `ChallengeShapeInvalid` (従来の必須性を validate で保証)。
     #[serde(default)]
@@ -513,9 +519,13 @@ impl ChallengeDef {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollSpec {
     /// 修正に使う stat (その entity が宣言済みであること)。省略 = 純粋な運試し (修正 0)。
-    /// percentile では必須 (目標値の素)。
+    /// percentile では必須 (目標値の素。`expr` でも可)。
     #[serde(default)]
     pub stat: Option<StatKey>,
+    /// 式修正 (spec 19)。stat の代わりに `(STR + SIZ) / 4` のような式で修正値/目標値を書く。
+    /// `stat` との併記は不可。判定のたびに現在値で評価される。
+    #[serde(default)]
+    pub expr: Option<String>,
     /// additive の面数。percentile では書かない (無視される)。
     #[serde(default)]
     pub sides: u32,
@@ -718,6 +728,9 @@ pub enum ScenarioError {
     /// percentile challenge の形が不正 (spec 16): `stat` 欠落 / `sides`・`dc` の指定
     /// (加算式との混同)。`detail` が何が悪いかを名指しする。
     PercentileChallengeShape { challenge: ChallengeId, detail: String },
+    /// challenge の式修正 (spec 19) が不正: パース不能 / `stat` と併記 / 参照 stat 未宣言 /
+    /// リテラルのゼロ除算。`detail` が何が悪いかを名指しする。
+    ChallengeExprInvalid { challenge: ChallengeId, detail: String },
     /// percentile challenge に `tiers` が併記されている (spec 16)。自然出目帯と degree の
     /// 二重クリティカルは authored 意図が曖昧 — percentile の極は degree スロットで書く。
     TierWithPercentile { challenge: ChallengeId },
@@ -1159,10 +1172,10 @@ impl Scenario {
                     }
                 }
                 Resolution::Percentile => {
-                    if def.stat.is_none() {
+                    if def.stat.is_none() && def.expr.is_none() {
                         errs.push(ScenarioError::PercentileChallengeShape {
                             challenge: cid.clone(),
-                            detail: "stat (目標値に使う技能) が必須".into(),
+                            detail: "stat (目標値に使う技能) か expr (式) が必須".into(),
                         });
                     }
                     if def.sides != 0 || def.dc != 0 {
@@ -1218,6 +1231,34 @@ impl Scenario {
                                 threshold: n,
                                 sides: def.sides,
                             });
+                        }
+                    }
+                }
+            }
+            // 式修正 (spec 19): パース可能・stat と非併記・参照 stat が判定主体で宣言済み。
+            // 主体は authored 固定 (entity) があればそれ、無ければ player を既定として検査する
+            // (op の entity 上書きで別主体になった場合は裁定時の UnknownStat が二層目)。
+            if let Some(xsrc) = &def.expr {
+                if def.stat.is_some() {
+                    errs.push(ScenarioError::ChallengeExprInvalid {
+                        challenge: cid.clone(),
+                        detail: "stat と expr は同時に書けない (どちらか一方)".into(),
+                    });
+                }
+                match crate::expr::parse_expr(xsrc) {
+                    Err(e) => errs.push(ScenarioError::ChallengeExprInvalid {
+                        challenge: cid.clone(),
+                        detail: e,
+                    }),
+                    Ok(x) => {
+                        let subject = def.entity.clone().unwrap_or_else(|| PLAYER.to_string());
+                        for key in x.stats() {
+                            if !self.knows_stat(&subject, &key) {
+                                errs.push(ScenarioError::ChallengeExprInvalid {
+                                    challenge: cid.clone(),
+                                    detail: format!("式が参照する stat '{key}' が {subject} に宣言されていない"),
+                                });
+                            }
                         }
                     }
                 }
@@ -1301,12 +1342,40 @@ impl Scenario {
                         });
                     }
                 }
-                match def.resolution {
-                    Resolution::Percentile if spec.stat.is_none() => {
+                // 式修正 (spec 19): パース可能・stat と非併記・参照 stat 宣言済み。
+                if let Some(xsrc) = &spec.expr {
+                    if spec.stat.is_some() {
                         errs.push(ScenarioError::ContestRollInvalid {
                             contest: cid.clone(),
                             entity: entity.clone(),
-                            detail: "percentile の振り方には stat が必須".into(),
+                            detail: "stat と expr は同時に書けない".into(),
+                        });
+                    }
+                    match crate::expr::parse_expr(xsrc) {
+                        Err(e) => errs.push(ScenarioError::ContestRollInvalid {
+                            contest: cid.clone(),
+                            entity: entity.clone(),
+                            detail: e,
+                        }),
+                        Ok(x) => {
+                            for key in x.stats() {
+                                if !self.knows_stat(&entity, &key) {
+                                    errs.push(ScenarioError::ContestRollInvalid {
+                                        contest: cid.clone(),
+                                        entity: entity.clone(),
+                                        detail: format!("式が参照する stat '{key}' が宣言されていない"),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                match def.resolution {
+                    Resolution::Percentile if spec.stat.is_none() && spec.expr.is_none() => {
+                        errs.push(ScenarioError::ContestRollInvalid {
+                            contest: cid.clone(),
+                            entity: entity.clone(),
+                            detail: "percentile の振り方には stat (か expr) が必須".into(),
                         });
                     }
                     Resolution::Additive if spec.sides == 0 => {

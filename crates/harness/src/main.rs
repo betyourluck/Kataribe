@@ -522,7 +522,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 let digest = harness::contest_digest(&end);
                                 println!("  [{digest}]");
                                 last_narration =
-                                    harness::carryover_narration(&last_narration, &[digest.clone()], &[]);
+                                    harness::carryover_narration(&last_narration, std::slice::from_ref(&digest), &[]);
                                 if let Some(h) = history.last_mut() {
                                     h.summary.push_str(&format!("／{digest}"));
                                 }
