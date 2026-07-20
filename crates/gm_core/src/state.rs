@@ -96,6 +96,11 @@ pub struct GameState {
     /// `persistent_flags` と同じ問いで、必要になったら spec 02 同型の機構で扱う)。
     #[serde(default)]
     pub taken_items: BTreeMap<LocationId, BTreeSet<ItemId>>,
+    /// **進行中の対決** (spec 18 Phase C)。`attempt_contest` の受理で開き、
+    /// [`crate::contest_round`] が 1 交換ずつ進めて決着 (until/max_rounds/goal) で閉じる。
+    /// 進行中は上位 (app) が次のターンを回さない (決着まで LLM 非関与)。**セーブ対象**。
+    #[serde(default)]
+    pub pending_contest: Option<PendingContest>,
     /// **決断待ちの判定** (spec 18 Phase B)。pushable/spendable な challenge が失敗した時、
     /// 帰結 (フラグ/effects/トリガー) を**適用せず凍結**した素性が積まれる。プレイヤーの決断
     /// (受け入れ/プッシュ/差分買い) を `resolve_decision` が確定し、そこで初めて帰結が原子適用
@@ -103,6 +108,20 @@ pub struct GameState {
     /// 空でない間、上位 (app) は次のターンを回さない。
     #[serde(default)]
     pub pending_decisions: Vec<PendingDecision>,
+}
+
+/// 進行中の対決の帳簿 (spec 18 Phase C)。ラウンドの積算だけを持つ (振り方・帰結は
+/// authored 定義から毎ラウンド引き直す = セーブに authored 内容を複製しない)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingContest {
+    /// どの contest か (定義を引き直すキー)。
+    pub contest: String,
+    /// 消化済みラウンド数。
+    pub rounds: u32,
+    /// player 側の勝ち/負け/引き分けの積算 (digest の素)。
+    pub wins: u32,
+    pub losses: u32,
+    pub ties: u32,
 }
 
 /// 決断待ちの判定の凍結素性 (spec 18 Phase B)。**raw_roll (出目そのもの) を必ず持つ** —
@@ -151,6 +170,7 @@ impl GameState {
             votes: BTreeMap::new(),
             flag_turns: BTreeMap::new(),
             taken_items: BTreeMap::new(),
+            pending_contest: None,
             pending_decisions: Vec::new(),
         }
     }
@@ -346,6 +366,11 @@ pub enum StateOp {
         entity: EntityId,
         challenge: ChallengeId,
     },
+    /// authored contest (対決) の開始 (spec 18 Phase C)。**LLM は対決を「開く」だけ** —
+    /// 双方の振り方 (RollSpec)・帰結・決着条件はすべて authored 定義側にある。開始後の
+    /// ラウンドは **LLM を介さず** engine とプレイヤーが直接回す ([`crate::contest_round`]) =
+    /// 雑魚戦のトークンを消す一括型 (cadence はこの機構、逐次型は従来の challenge)。
+    AttemptContest { contest: String },
     /// stat への加減 (+/−)。エンジンが `clamp(current + delta)` を計算する。
     /// LLM は変化量(意図)だけを提案し、結果の値は持てない。`entity` 省略時は主人公。
     AdjustStat {

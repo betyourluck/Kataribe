@@ -472,6 +472,28 @@ fn validate_op(
                     }
                 }
             }
+            StateOp::AttemptContest { contest } => {
+                // 対決の開始 (spec 18 Phase C)。素性は authored — LLM は id を選ぶだけ。
+                if state.pending_contest.is_some() {
+                    reasons.push(RejectReason::ContestInProgress);
+                }
+                match scenario.contest(contest) {
+                    None => {
+                        reasons.push(RejectReason::UnknownContest { contest: contest.clone() })
+                    }
+                    Some(def) => {
+                        if let Some(req) = &def.requires {
+                            if !req.eval(state) {
+                                reasons.push(RejectReason::ContestLocked {
+                                    contest: contest.clone(),
+                                    requirement: req.clone(),
+                                    unmet: req.unmet(state),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             StateOp::AdjustStat { entity, key, delta: _ } => {
                 if !scenario.knows_stat(entity, key) {
                     reasons.push(RejectReason::UnknownStat { entity: entity.clone(), key: key.clone() });
@@ -638,6 +660,237 @@ pub fn apply(
     }
 
     Ok(ApplyOutcome { rolls, checks, stat_rolls, fired })
+}
+
+// =============================================================================
+// 対決 (contest) — 決着まで LLM を介さない交互振り (spec 18 Phase C)
+//
+// attempt_contest (LLM が「開く」) の後、ラウンドはプレイヤーと engine が直接回す。
+// 1 ラウンド = 双方が振って比較 → player 視点の on_win/on_lose/on_tie を原子適用 →
+// until/max_rounds/goal で決着。何交換でも LLM は 1 往復 (開始の語りと決着後の digest)。
+// =============================================================================
+
+/// 対決 1 ラウンドの結果 (提示層が両者の出目・帰結・決着を描く素)。
+#[derive(Debug, Clone, Serialize)]
+pub struct ContestRound {
+    /// player 側の振り (success = このラウンドに勝ったか)。
+    pub player: CheckOutcome,
+    /// 相手側の振り (success = 相手が勝ったか)。
+    pub opponent: CheckOutcome,
+    /// player 視点のラウンド帰結: `win` / `lose` / `tie`。
+    pub outcome: String,
+    /// 適用された帰結スロットの narration / sound (無ければ空)。
+    pub narration: String,
+    pub sound: String,
+    /// 帰結 effects が振ったダイスと発火ビート。
+    pub rolls: Vec<RollOutcome>,
+    pub stat_rolls: Vec<StatRollOutcome>,
+    pub fired: Vec<FiredTrigger>,
+    /// 決着したら Some (このラウンドで対決が閉じた)。
+    pub ended: Option<ContestEnd>,
+}
+
+/// 対決の決着 (digest の素)。
+#[derive(Debug, Clone, Serialize)]
+pub struct ContestEnd {
+    pub contest: String,
+    pub description: String,
+    pub rounds: u32,
+    pub wins: u32,
+    pub losses: u32,
+    pub ties: u32,
+    /// 決着理由: `until` (決着条件成立) / `max_rounds` (上限打ち切り) / `goal` (goal 到達)。
+    pub reason: String,
+}
+
+/// 対決ラウンドの失敗 (UI が正しく回していれば起きない防御的エラー)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum ContestError {
+    /// 進行中の対決が無い。
+    NoContest,
+    /// contest 定義が見つからない (セーブ後に content が変わった等)。進行中の帳簿は破棄済み。
+    UnknownContest,
+}
+
+/// percentile degree の強さ順位 (対抗比較用)。大きいほど良い。
+fn degree_rank(degree: &str) -> u8 {
+    match degree {
+        "critical" => 5,
+        "extreme" => 4,
+        "hard" => 3,
+        "regular" => 2,
+        "failure" => 1,
+        _ => 0, // fumble
+    }
+}
+
+/// 対決を 1 ラウンド進める (spec 18 Phase C の中枢)。
+///
+/// RNG は player → 相手の順で消費する (決定論)。帰結スロットの適用・トリガー settle・
+/// flag_turns は resolve_decision と同じ流儀。決着 (until / max_rounds / goal 到達) で
+/// `pending_contest` を閉じ、[`ContestEnd`] を返す。turn は増えない (対決は 1 ターンの内側)。
+pub fn contest_round(
+    state: &mut GameState,
+    scenario: &Scenario,
+) -> Result<ContestRound, ContestError> {
+    let Some(pending) = state.pending_contest.clone() else {
+        return Err(ContestError::NoContest);
+    };
+    let Some(def) = scenario.contest(&pending.contest) else {
+        state.pending_contest = None; // 定義が消えた対決は続行不能 — 帳簿を破棄 (防御)
+        return Err(ContestError::UnknownContest);
+    };
+    let is_percentile = def.resolution == crate::spine::Resolution::Percentile;
+    // validate 済みの定義なので解決は成功するはずだが、防御的に inline 0 面へフォールバック。
+    let p_spec = scenario.resolve_roll(PLAYER, &def.player_roll).unwrap_or_default();
+    let o_spec = scenario.resolve_roll(&def.opponent, &def.opponent_roll).unwrap_or_default();
+
+    // 1 振り (side): additive = 1d{sides}+stat+bonus / percentile = 1d100 ≤ stat+bonus。
+    let mut roll_side = |entity: &str, spec: &crate::spine::RollSpec| -> CheckOutcome {
+        let stat_mod = spec.stat.as_ref().map_or(0, |s| state.stat_of(entity, s));
+        if is_percentile {
+            let roll = state.rng.roll(100);
+            let target = stat_mod + spec.bonus;
+            let (degree, _) = percentile_degree(roll, target);
+            CheckOutcome {
+                entity: entity.to_string(),
+                stat: spec.stat.clone().unwrap_or_default(),
+                sides: 100,
+                roll,
+                modifier: spec.bonus,
+                total: i64::from(roll),
+                dc: target.clamp(0, i64::from(u32::MAX)) as u32,
+                success: false, // 勝敗確定後に上書き
+                tier: None,
+                narration: String::new(),
+                sound: String::new(),
+                degree: Some(degree.to_string()),
+                pushed: false,
+                spent: 0,
+                pending: false,
+            }
+        } else {
+            let roll = state.rng.roll(spec.sides.max(1));
+            let modifier = stat_mod + spec.bonus;
+            CheckOutcome {
+                entity: entity.to_string(),
+                stat: spec.stat.clone().unwrap_or_default(),
+                sides: spec.sides.max(1),
+                roll,
+                modifier,
+                total: i64::from(roll) + modifier,
+                dc: 0, // 対抗は DC でなく相手の合計と比べる
+                success: false,
+                tier: None,
+                narration: String::new(),
+                sound: String::new(),
+                degree: None,
+                pushed: false,
+                spent: 0,
+                pending: false,
+            }
+        }
+    };
+    let mut player = roll_side(PLAYER, &p_spec);
+    let mut opponent = roll_side(&def.opponent, &o_spec);
+
+    // 比較: additive = 合計 / percentile = degree 順位 → 同位なら目標値の高い側 (CoC7 準拠)。
+    let outcome: &str = if is_percentile {
+        let pr = degree_rank(player.degree.as_deref().unwrap_or("failure"));
+        let or = degree_rank(opponent.degree.as_deref().unwrap_or("failure"));
+        match pr.cmp(&or) {
+            std::cmp::Ordering::Greater => "win",
+            std::cmp::Ordering::Less => "lose",
+            std::cmp::Ordering::Equal => match player.dc.cmp(&opponent.dc) {
+                std::cmp::Ordering::Greater => "win",
+                std::cmp::Ordering::Less => "lose",
+                std::cmp::Ordering::Equal => "tie",
+            },
+        }
+    } else {
+        match player.total.cmp(&opponent.total) {
+            std::cmp::Ordering::Greater => "win",
+            std::cmp::Ordering::Less => "lose",
+            std::cmp::Ordering::Equal => "tie",
+        }
+    };
+    player.success = outcome == "win";
+    opponent.success = outcome == "lose";
+
+    // 帰結スロット (player 視点) を原子適用 — resolve_decision と同じ流儀。
+    let slot = match outcome {
+        "win" => def.on_win.as_ref(),
+        "lose" => def.on_lose.as_ref(),
+        _ => def.on_tie.as_ref(),
+    };
+    let flags_before: BTreeSet<String> =
+        state.flags.iter().filter(|(_, v)| **v).map(|(k, _)| k.clone()).collect();
+    let mut rolls = Vec::new();
+    let mut scratch_checks = Vec::new();
+    let mut stat_rolls = Vec::new();
+    let (mut narration, mut sound) = (String::new(), String::new());
+    if let Some(o) = slot {
+        if let Some(flag) = &o.flag {
+            state.flags.insert(flag.clone(), true);
+        }
+        if !o.effects.is_empty() {
+            let effect_delta = StateDelta::new(String::new(), o.effects.clone());
+            apply_ops(state, scenario, &effect_delta, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+        }
+        narration = o.narration.clone();
+        sound = o.sound.clone();
+    }
+    let fired = fire_triggers(state, scenario, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+    let newly_true: Vec<String> = state
+        .flags
+        .iter()
+        .filter(|(k, v)| **v && !flags_before.contains(*k))
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in newly_true {
+        state.flag_turns.insert(key, state.turn);
+    }
+
+    // 帳簿の更新と決着判定。
+    let mut tally = pending;
+    tally.rounds += 1;
+    match outcome {
+        "win" => tally.wins += 1,
+        "lose" => tally.losses += 1,
+        _ => tally.ties += 1,
+    }
+    let reason = if def.until.as_ref().is_some_and(|g| g.eval(state)) {
+        Some("until")
+    } else if scenario.reached(state).is_some() {
+        // 決着条件の書き漏れでも goal 到達 (死亡等) で必ず閉じる安全弁。
+        Some("goal")
+    } else if tally.rounds >= def.max_rounds.max(1) {
+        Some("max_rounds")
+    } else {
+        None
+    };
+    let ended = reason.map(|r| ContestEnd {
+        contest: tally.contest.clone(),
+        description: def.description.clone(),
+        rounds: tally.rounds,
+        wins: tally.wins,
+        losses: tally.losses,
+        ties: tally.ties,
+        reason: r.to_string(),
+    });
+    state.pending_contest = if ended.is_some() { None } else { Some(tally) };
+
+    Ok(ContestRound {
+        player,
+        opponent,
+        outcome: outcome.to_string(),
+        narration,
+        sound,
+        rolls,
+        stat_rolls,
+        fired,
+        ended,
+    })
 }
 
 // =============================================================================
@@ -1334,6 +1587,17 @@ fn apply_ops(
                         pending: false,
                     });
                 }
+            }
+            StateOp::AttemptContest { contest } => {
+                // 対決を開く (spec 18 Phase C)。この apply ではダイスを振らない —
+                // ラウンドは決着まで contest_round がプレイヤーと直接回す (LLM 非関与)。
+                state.pending_contest = Some(crate::state::PendingContest {
+                    contest: contest.clone(),
+                    rounds: 0,
+                    wins: 0,
+                    losses: 0,
+                    ties: 0,
+                });
             }
             StateOp::GrantSkill { entity, skill } => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
@@ -5313,6 +5577,199 @@ locations:
         let authored = sc2.authored_only_flags();
         assert!(authored.contains("worse"), "on_push_failure のフラグは専権");
         assert!(authored.contains("fumbled"), "degree スロット (on_fumble) のフラグも専権");
+    }
+
+    // =========================================================================
+    // spec 18 Phase C: 対決 (contest) — 決着まで LLM を介さない交互振り
+    // =========================================================================
+
+    /// 対決テスト用の盤面。player d1+STR5 vs mob d1+腕力3 = 常に player 勝ち (決定論)。
+    /// on_win が mob HP -1、until = mob HP 0 → 2 ラウンドで決着。
+    fn contest_yaml() -> &'static str {
+        r#"
+title: t
+start: room
+initial_stats: { STR: 5, HP: 10 }
+allowed_flags: [battle_open, first_blood]
+characters:
+  mob:
+    name: 石くれ
+    stats:
+      HP: { initial: 2, min: 0 }
+      "腕力": { initial: 3 }
+    rolls:
+      "体当たり": { stat: "腕力", sides: 1 }
+contests:
+  brawl:
+    description: 石くれとの殴り合い
+    opponent: mob
+    requires: { kind: flag_is, key: battle_open, value: true }
+    player_roll: { stat: STR, sides: 1 }
+    opponent_roll: "体当たり"
+    on_win:
+      flag: first_blood
+      narration: 拳が石くれを砕く。
+      effects:
+        - { op: adjust_stat, entity: mob, key: HP, delta: -1 }
+    on_lose:
+      effects:
+        - { op: adjust_stat, key: HP, delta: -2 }
+    until: { kind: stat_at_most, entity: mob, key: HP, value: 0 }
+    max_rounds: 10
+triggers:
+  - id: cheer
+    when: { kind: flag_is, key: first_blood, value: true }
+    narration: どこかで歓声が上がった。
+goal: { kind: flag_is, key: escaped, value: true }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#
+    }
+
+    /// 【対決の全周: 解禁 gate → 開始 → ラウンド → 決着】attempt_contest は requires で
+    /// 却下され、解禁後は pending を開き、contest_round が LLM 抜きで帰結を原子適用し、
+    /// until 成立で閉じる。
+    #[test]
+    fn contest_opens_rounds_and_settles_without_llm() {
+        let sc = Scenario::from_yaml(contest_yaml()).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(1);
+
+        // 解禁前は ContestLocked で却下 (delta 全体が無効 = 原子性)。
+        let open_op = d(vec![StateOp::AttemptContest { contest: "brawl".into() }]);
+        assert!(matches!(adjudicate(&s, &sc, &open_op), Verdict::Reject { .. }));
+        // ラウンドを回す対象も無い。
+        assert!(matches!(contest_round(&mut s, &sc), Err(ContestError::NoContest)));
+
+        // 解禁 → 開始。apply はダイスを振らない (開くだけ)。
+        s.flags.insert("battle_open".into(), true);
+        let o = apply(&mut s, &sc, &open_op).unwrap();
+        assert!(o.checks.is_empty(), "開始の apply は振らない");
+        assert_eq!(s.pending_contest.as_ref().unwrap().contest, "brawl");
+
+        // ラウンド 1: 1d1+5=6 vs 1d1+3=4 → player 勝ち。帰結 (mob HP-1) + トリガー発火。
+        let r1 = contest_round(&mut s, &sc).unwrap();
+        assert_eq!(r1.outcome, "win");
+        assert!(r1.player.success && !r1.opponent.success);
+        assert_eq!(r1.narration, "拳が石くれを砕く。");
+        assert_eq!(s.entities["mob"]["HP"], 1, "on_win の効果が原子適用される");
+        assert!(s.flag("first_blood"));
+        assert_eq!(r1.fired.len(), 1, "帰結からトリガーが発火する (歓声)");
+        assert!(r1.ended.is_none(), "mob HP 1 なので続く");
+
+        // ラウンド 2: mob HP 0 → until 成立で決着。
+        let r2 = contest_round(&mut s, &sc).unwrap();
+        let end = r2.ended.expect("決着する");
+        assert_eq!((end.rounds, end.wins, end.losses, end.ties), (2, 2, 0, 0));
+        assert_eq!(end.reason, "until");
+        assert!(s.pending_contest.is_none(), "帳簿は閉じられた");
+        // 進行中でなくなったので再度開ける (requires は真のまま)。
+        assert!(matches!(adjudicate(&s, &sc, &open_op), Verdict::Accept));
+    }
+
+    /// 【percentile 対抗 + max_rounds 打ち切り + 進行中の再開始却下】degree 順位で勝敗、
+    /// 同順位は目標値の高い側 (CoC7 準拠)。上限で必ず停止する。
+    #[test]
+    fn percentile_contest_compares_degrees_and_max_rounds_backstops() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { "腕力": 70 }
+allowed_flags: []
+characters:
+  rival:
+    name: 好敵手
+    stats: { "腕力": { initial: 40 } }
+contests:
+  arm_wrestle:
+    description: 腕相撲
+    resolution: percentile
+    opponent: rival
+    player_roll: { stat: "腕力" }
+    opponent_roll: { stat: "腕力" }
+    max_rounds: 3
+goal: { kind: flag_is, key: escaped, value: true }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(7);
+        apply(&mut s, &sc, &d(vec![StateOp::AttemptContest { contest: "arm_wrestle".into() }]))
+            .unwrap();
+
+        // 進行中の再開始は却下 (ContestInProgress)。
+        assert!(matches!(
+            adjudicate(&s, &sc, &d(vec![StateOp::AttemptContest { contest: "arm_wrestle".into() }])),
+            Verdict::Reject { .. }
+        ));
+
+        // 3 ラウンド回すと max_rounds で必ず決着。各ラウンドの勝敗は degree 順位 →
+        // 同順位なら目標値 (70 > 40 = player) — 返った checks から独立に検証する。
+        for i in 0..3 {
+            let r = contest_round(&mut s, &sc).unwrap();
+            let pr = super::degree_rank(r.player.degree.as_deref().unwrap());
+            let or = super::degree_rank(r.opponent.degree.as_deref().unwrap());
+            let expect = match pr.cmp(&or) {
+                std::cmp::Ordering::Greater => "win",
+                std::cmp::Ordering::Less => "lose",
+                std::cmp::Ordering::Equal => "win", // 目標値 70 > 40 のタイブレーク
+            };
+            assert_eq!(r.outcome, expect, "round {i}: degree 比較と一致する");
+            if i == 2 {
+                assert_eq!(r.ended.unwrap().reason, "max_rounds", "上限で必ず停止");
+            } else {
+                assert!(r.ended.is_none());
+            }
+        }
+        assert!(s.pending_contest.is_none());
+    }
+
+    /// 【validate + 専権】幻の相手・解決不能テンプレート・percentile の stat 欠落は load 時に
+    /// 弾かれ、contest 帰結フラグは authored 専権 (GM は set_flag できない)。
+    #[test]
+    fn contest_validation_and_authored_only_flags() {
+        use crate::spine::ScenarioError as E;
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { STR: 5 }
+allowed_flags: [won]
+characters:
+  mob:
+    name: m
+    stats: { "腕力": { initial: 3 } }
+contests:
+  bad1:
+    opponent: ghost
+    player_roll: { stat: STR, sides: 6 }
+    opponent_roll: { sides: 6 }
+  bad2:
+    resolution: percentile
+    opponent: mob
+    player_roll: { sides: 6 }
+    opponent_roll: "存在しない技"
+  ok:
+    opponent: mob
+    player_roll: { stat: STR, sides: 6 }
+    opponent_roll: { stat: "腕力", sides: 6 }
+    on_win: { flag: won }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let errs = sc.validate();
+        assert!(errs.iter().any(|e| matches!(e, E::ContestOpponentUnknown { entity, .. } if entity == "ghost")));
+        assert!(
+            errs.iter().any(|e| matches!(e, E::ContestRollInvalid { detail, .. } if detail.contains("percentile"))),
+            "percentile の stat 欠落を弾く: {errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| matches!(e, E::ContestRollInvalid { detail, .. } if detail.contains("存在しない技"))),
+            "解決不能テンプレートを名指しする: {errs:?}"
+        );
+        assert!(sc.authored_only_flags().contains("won"), "contest 帰結フラグは専権");
     }
 
     /// 【旧セーブ互換】pending_decisions 欠落の GameState が読める + 凍結込みで roundtrip する。

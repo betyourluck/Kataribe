@@ -262,6 +262,11 @@ pub struct CharacterDef {
     /// 硬い禁忌: これが true になる delta を却下する (Phase B でエンジン強制)。
     #[serde(default)]
     pub taboos: Vec<Gate>,
+    /// **このキャラの振り方テンプレート** (spec 18 Phase C)。「このキャラが振るときはこれ」を
+    /// 一度書き、contest の `opponent_roll` が名前で参照する (同じキャラを別シナリオで
+    /// 別の contest から使い回せる)。キー = テンプレート名 (例「噛みつき」「回避」)。
+    #[serde(default)]
+    pub rolls: BTreeMap<String, RollSpec>,
 }
 
 /// 反応ビート (Phase C)。禁忌 ([`CharacterDef::taboos`]) の双対 — 真化を**却下**する代わりに、
@@ -502,6 +507,78 @@ impl ChallengeDef {
     }
 }
 
+/// キャラの「振り方」1 つ (spec 18 Phase C)。additive なら `1d{sides} + stat + bonus`、
+/// percentile (contest 側の宣言) なら `1d100 ≤ stat + bonus`。engine 非解釈の閉じた素性 —
+/// LLM は選べず author だけが書く。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RollSpec {
+    /// 修正に使う stat (その entity が宣言済みであること)。省略 = 純粋な運試し (修正 0)。
+    /// percentile では必須 (目標値の素)。
+    #[serde(default)]
+    pub stat: Option<StatKey>,
+    /// additive の面数。percentile では書かない (無視される)。
+    #[serde(default)]
+    pub sides: u32,
+    /// 常時修正 (additive: 出目に加算 / percentile: 目標値に加算)。
+    #[serde(default)]
+    pub bonus: i64,
+}
+
+/// contest の振り方の参照: インライン定義 or テンプレート名 (`CharacterDef.rolls` のキー)。
+/// テンプレートは「このキャラが振るときはこれ」をキャラファイル (inline キャラならシナリオ)
+/// に一度書いて使い回す (2026-07-20 ユーザー決定)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RollRef {
+    /// `CharacterDef.rolls` のテンプレート名 (player 側は不可 — player はキャラファイルを持たない)。
+    Template(String),
+    /// その場で書く振り方。
+    Inline(RollSpec),
+}
+
+/// authored contest — **決着まで LLM を介さない対決** (spec 18 Phase C・一括型 cadence)。
+/// 「1 交換 = 双方が振って比較 → 帰結適用」を `until` が真になるまで繰り返す。
+/// ボス戦のように毎交換を GM に語らせたい場面は従来の challenge (逐次型) を使う —
+/// **どちらの刻みで戦うかは作者専権** (LLM にもプレイヤーにも選ばせない)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContestDef {
+    /// GM への提示文 (どんな対決か。`scenario_brief` に出して GM に開かせる)。
+    #[serde(default)]
+    pub description: String,
+    /// 判定様式。**contest 単位で双方に適用** (様式跨ぎの対抗は構造的に存在しない)。
+    #[serde(default)]
+    pub resolution: Resolution,
+    /// 相手の entity (既知のキャラ必須)。
+    pub opponent: EntityId,
+    /// player 側の振り方 (通常はインライン)。
+    pub player_roll: RollRef,
+    /// 相手側の振り方 (インライン or 相手キャラの `rolls` テンプレート名)。
+    pub opponent_roll: RollRef,
+    /// 開始できる前提条件 (Gate)。偽なら `attempt_contest` を却下。
+    #[serde(default)]
+    pub requires: Option<Gate>,
+    /// 1 交換の帰結 (player 視点)。win = player 勝ち。flag/effects/narration/sound を毎交換適用。
+    #[serde(default)]
+    pub on_win: Option<ChallengeOutcome>,
+    #[serde(default)]
+    pub on_lose: Option<ChallengeOutcome>,
+    /// 引き分けの帰結 (任意。percentile の同 degree は目標値の高い側が勝つ = CoC7 準拠なので、
+    /// 真の引き分けは目標値まで同じ時だけ)。
+    #[serde(default)]
+    pub on_tie: Option<ChallengeOutcome>,
+    /// 決着条件 (毎交換後に評価)。None = 1 交換で終わる単発対抗ロール。
+    #[serde(default)]
+    pub until: Option<Gate>,
+    /// 交換回数の上限 (バックストップ = 無限対決を構造的に断つ)。既定 1。
+    /// `until` を書く対決は 20〜30 程度を明示すること。
+    #[serde(default = "default_max_rounds")]
+    pub max_rounds: u32,
+}
+
+fn default_max_rounds() -> u32 {
+    1
+}
+
 /// 差分買いの支払い規則 (spec 18 Phase B・scenario 単位の opt-in)。
 /// 失敗した出目と目標の差分を `from` stat から `rate` 倍で支払い、成功に変える。
 /// **engine は stat 名を解釈しない** — `幸運` は CoC7 が宣言した一例で、`所持金`/`霊力` でも
@@ -613,6 +690,17 @@ pub enum ScenarioError {
         entity: EntityId,
         stat: StatKey,
     },
+    /// contest の相手 (`opponent`) が既知の entity でない (幻の対戦相手。spec 18 Phase C)。
+    ContestOpponentUnknown { contest: String, entity: EntityId },
+    /// contest の振り方が解決できない (テンプレート不在 / stat 未宣言 / percentile なのに
+    /// stat 無し / additive なのに sides 0。spec 18 Phase C)。
+    ContestRollInvalid {
+        contest: String,
+        entity: EntityId,
+        detail: String,
+    },
+    /// contest の帰結フラグが `allowed_flags` に無い (幻フラグ。spec 18 Phase C)。
+    ContestFlagUndeclared { contest: String, flag: FlagKey },
     /// `spend_rules.from` が player の宣言済み stat でない (幻の財布。spec 18 Phase B)。
     SpendStatUndeclared { key: StatKey },
     /// `push_cost.from` が player の宣言済み stat でない (幻の代償元。spec 18 Phase B)。
@@ -857,6 +945,10 @@ pub struct Scenario {
     /// authored challenge (技能判定の素性と帰結)。LLM は `AttemptChallenge` で選ぶだけ。
     #[serde(default)]
     pub challenges: BTreeMap<ChallengeId, ChallengeDef>,
+    /// authored contest (対決) の定義 (spec 18 Phase C)。キー = contest id。
+    /// 決着まで LLM を介さない一括型 cadence — 雑魚戦・単発対抗ロール用。
+    #[serde(default)]
+    pub contests: BTreeMap<String, ContestDef>,
     /// 差分買いの支払い規則 (spec 18 Phase B・opt-in)。None = この盤面に差分買いは無い。
     /// Some で `pushable`/`spendable` な challenge の失敗が「stat を払って成功に変える」決断になる。
     #[serde(default)]
@@ -952,6 +1044,22 @@ impl Scenario {
         self.challenges.get(id)
     }
 
+    pub fn contest(&self, id: &str) -> Option<&ContestDef> {
+        self.contests.get(id)
+    }
+
+    /// contest の振り方参照を実体へ解決する (spec 18 Phase C)。Inline はそのまま、
+    /// Template は相手キャラの `rolls` から引く (player はキャラファイルを持たないので
+    /// Template 不可 = None。validate が load 時に名指しする)。
+    pub fn resolve_roll(&self, entity: &str, rref: &RollRef) -> Option<RollSpec> {
+        match rref {
+            RollRef::Inline(spec) => Some(spec.clone()),
+            RollRef::Template(name) => {
+                self.characters.get(entity).and_then(|c| c.rolls.get(name)).cloned()
+            }
+        }
+    }
+
     /// **authored 専権フラグ** — トリガー効果・challenge 帰結 (on_success/on_failure/tier の
     /// `.flag` 欄 **と `effects` 内の `set_flag`**) が engine 経由で書くフラグ。LLM が set_flag
     /// すべきでない (立てても筋書きの先取り＝ノイズ)。宣言の走査だけで機械的に判別できる。
@@ -985,6 +1093,15 @@ impl Scenario {
                     set.insert(flag.clone());
                 }
                 collect_setflags(&tier.effects, &mut set);
+            }
+        }
+        // contest の帰結 (spec 18 Phase C) も authored 専権 — GM は set_flag できない。
+        for c in self.contests.values() {
+            for outcome in [&c.on_win, &c.on_lose, &c.on_tie].into_iter().flatten() {
+                if let Some(flag) = &outcome.flag {
+                    set.insert(flag.clone());
+                }
+                collect_setflags(&outcome.effects, &mut set);
             }
         }
         set
@@ -1147,6 +1264,75 @@ impl Scenario {
                             });
                         }
                         _ => {}
+                    }
+                }
+            }
+        }
+        // contest (spec 18 Phase C): 相手・振り方・帰結フラグの閉世界検査。
+        for (cid, def) in &self.contests {
+            if !self.knows_entity(&def.opponent) {
+                errs.push(ScenarioError::ContestOpponentUnknown {
+                    contest: cid.clone(),
+                    entity: def.opponent.clone(),
+                });
+            }
+            // 双方の振り方が実体へ解決でき、様式に対して健全であること。
+            for (entity, rref) in
+                [(PLAYER.to_string(), &def.player_roll), (def.opponent.clone(), &def.opponent_roll)]
+            {
+                let Some(spec) = self.resolve_roll(&entity, rref) else {
+                    let name = match rref {
+                        RollRef::Template(n) => n.clone(),
+                        RollRef::Inline(_) => "(inline)".into(),
+                    };
+                    errs.push(ScenarioError::ContestRollInvalid {
+                        contest: cid.clone(),
+                        entity: entity.clone(),
+                        detail: format!("振り方テンプレート '{name}' が見つからない (player はインラインのみ)"),
+                    });
+                    continue;
+                };
+                if let Some(stat) = &spec.stat {
+                    if !self.knows_stat(&entity, stat) {
+                        errs.push(ScenarioError::ContestRollInvalid {
+                            contest: cid.clone(),
+                            entity: entity.clone(),
+                            detail: format!("stat '{stat}' が宣言されていない"),
+                        });
+                    }
+                }
+                match def.resolution {
+                    Resolution::Percentile if spec.stat.is_none() => {
+                        errs.push(ScenarioError::ContestRollInvalid {
+                            contest: cid.clone(),
+                            entity: entity.clone(),
+                            detail: "percentile の振り方には stat が必須".into(),
+                        });
+                    }
+                    Resolution::Additive if spec.sides == 0 => {
+                        errs.push(ScenarioError::ContestRollInvalid {
+                            contest: cid.clone(),
+                            entity: entity.clone(),
+                            detail: "additive の振り方には sides (1 以上) が必須".into(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            // 帰結フラグは allowed_flags 宣言必須 (challenge と同じ閉世界)。
+            for outcome in [&def.on_win, &def.on_lose, &def.on_tie].into_iter().flatten() {
+                if let Some(flag) = &outcome.flag {
+                    if !self.allowed_flags.contains(flag) {
+                        errs.push(ScenarioError::ContestFlagUndeclared {
+                            contest: cid.clone(),
+                            flag: flag.clone(),
+                        });
+                    }
+                }
+                // 帰結 effects の attempt_challenge/attempt_contest 入れ子は再帰の芽なので弾く。
+                for op in &outcome.effects {
+                    if matches!(op, StateOp::AttemptChallenge { .. } | StateOp::AttemptContest { .. }) {
+                        errs.push(ScenarioError::ChallengeEffectRecursive { challenge: cid.clone() });
                     }
                 }
             }

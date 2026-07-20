@@ -106,6 +106,17 @@ pub enum RejectReason {
         #[serde(default)]
         unmet: Vec<Gate>,
     },
+    /// 宣言されていない contest への挑戦 (spec 18 Phase C)。
+    UnknownContest { contest: String },
+    /// requires gate 未達の contest (解禁前)。
+    ContestLocked {
+        contest: String,
+        requirement: Gate,
+        #[serde(default)]
+        unmet: Vec<Gate>,
+    },
+    /// 対決の進行中に新しい対決/ターンを始めようとした (決着が先)。
+    ContestInProgress,
 }
 
 // Gate を人間可読の条件文にする (却下理由用、Ja/En)。harness の `gate_brief` (prompt 用)
@@ -283,6 +294,15 @@ impl RejectReason {
             RejectReason::ChallengeLocked { challenge, requirement, unmet } => {
                 format!("'{challenge}' にはまだ挑めない (必要: {})", requirement_ja(requirement, unmet))
             }
+            RejectReason::UnknownContest { contest } => {
+                format!("このシナリオに対決 '{contest}' は存在しない")
+            }
+            RejectReason::ContestLocked { contest, requirement, unmet } => {
+                format!("対決 '{contest}' はまだ開けない (必要: {})", requirement_ja(requirement, unmet))
+            }
+            RejectReason::ContestInProgress => {
+                "対決が進行中 — 決着がつくまで他の行動はできない".to_string()
+            }
         }
     }
 
@@ -349,6 +369,15 @@ impl RejectReason {
             }
             RejectReason::ChallengeLocked { challenge, requirement, unmet } => {
                 format!("'{challenge}' cannot be attempted yet (requires: {})", requirement_en(requirement, unmet))
+            }
+            RejectReason::UnknownContest { contest } => {
+                format!("there is no contest '{contest}' in this scenario")
+            }
+            RejectReason::ContestLocked { contest, requirement, unmet } => {
+                format!("contest '{contest}' cannot be opened yet (requires: {})", requirement_en(requirement, unmet))
+            }
+            RejectReason::ContestInProgress => {
+                "a contest is in progress — nothing else can happen until it is settled".to_string()
             }
             RejectReason::UnknownChallenge { challenge } => {
                 format!("there is no challenge '{challenge}' in this scenario")

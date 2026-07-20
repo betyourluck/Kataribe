@@ -23,7 +23,7 @@ use serde_yaml::Value;
 use crate::spine::{
     AttrRequirement, ChallengeDef, ChallengeMod, ChallengeOutcome, CharacterDef, Exit, Gate,
     GoalDef, Location, Protagonist, PushCost, RoleAssignment, Scenario, SpendRules, StatDecl,
-    TierDef, Trigger, VoteRule,
+    ContestDef, RollSpec, TierDef, Trigger, VoteRule,
 };
 use crate::state::StateOp;
 
@@ -63,6 +63,8 @@ enum Ctx {
     AttrRequirement,
     SpendRules,
     PushCost,
+    Contest,
+    RollSpec,
 }
 
 /// 各文脈の既知キー集合。実際の型から導出する ([`Tables::build`])。
@@ -87,6 +89,8 @@ struct Tables {
     attr_requirement: BTreeSet<String>,
     spend_rules: BTreeSet<String>,
     push_cost: BTreeSet<String>,
+    contest: BTreeSet<String>,
+    roll_spec: BTreeSet<String>,
 }
 
 /// 最小 YAML から型 `T` を作り、**シリアライズして全フィールド名**を得る
@@ -170,6 +174,7 @@ fn op_samples() -> Vec<StateOp> {
         StateOp::Check { entity: e(), stat: "s".into(), sides: 20, dc: 10 },
         StateOp::CheckUnder { entity: e(), key: "s".into() },
         StateOp::AttemptChallenge { entity: e(), challenge: "c".into() },
+        StateOp::AttemptContest { contest: "c".into() },
         StateOp::AdjustStat { entity: e(), key: "s".into(), delta: 1 },
         StateOp::ScaleStat { entity: e(), key: "s".into(), num: 1, den: 1 },
         StateOp::GrantSkill { entity: e(), skill: "s".into() },
@@ -195,6 +200,7 @@ fn _op_exhaustive_guard(op: &StateOp) {
         | StateOp::Check { .. }
         | StateOp::CheckUnder { .. }
         | StateOp::AttemptChallenge { .. }
+        | StateOp::AttemptContest { .. }
         | StateOp::AdjustStat { .. }
         | StateOp::ScaleStat { .. }
         | StateOp::GrantSkill { .. }
@@ -231,6 +237,10 @@ impl Tables {
             attr_requirement: struct_keys::<AttrRequirement>("key: k\nvalue: v"),
             spend_rules: struct_keys::<SpendRules>("from: x"),
             push_cost: struct_keys::<PushCost>("from: x\namount: 1"),
+            contest: struct_keys::<ContestDef>(
+                "opponent: o\nplayer_roll: { sides: 6 }\nopponent_roll: { sides: 6 }",
+            ),
+            roll_spec: struct_keys::<RollSpec>("{}"),
         }
     }
 
@@ -256,6 +266,8 @@ impl Tables {
             Ctx::AttrRequirement => &self.attr_requirement,
             Ctx::SpendRules => &self.spend_rules,
             Ctx::PushCost => &self.push_cost,
+            Ctx::Contest => &self.contest,
+            Ctx::RollSpec => &self.roll_spec,
         }
     }
 }
@@ -289,6 +301,14 @@ fn child_of(ctx: Ctx, key: &str) -> Child {
         (Ctx::Scenario, "role_assignment") => Child::Direct(Ctx::RoleAssignment),
         (Ctx::Scenario, "spend_rules") => Child::Direct(Ctx::SpendRules),
         (Ctx::Scenario, "push_cost") => Child::Direct(Ctx::PushCost),
+        (Ctx::Scenario, "contests") => Child::MapValues(Ctx::Contest),
+        (Ctx::Contest, "requires" | "until") => Child::Direct(Ctx::Gate),
+        // player_roll/opponent_roll は文字列 (テンプレート名) or mapping (RollSpec) の両受け。
+        // 文字列は walker が mapping でないため素通りし、mapping だけ RollSpec 検査になる。
+        (Ctx::Contest, "player_roll" | "opponent_roll") => Child::Direct(Ctx::RollSpec),
+        (Ctx::Contest, "on_win" | "on_lose" | "on_tie") => Child::Direct(Ctx::Outcome),
+        // キャラの振り方テンプレート: キーはテンプレート名 (データ)、値が RollSpec。
+        (Ctx::Character, "rolls") => Child::MapValues(Ctx::RollSpec),
         (Ctx::Scenario, "vote_rules") => Child::Seq(Ctx::VoteRule),
         (Ctx::Location, "items") => Child::ItemMap,
         (Ctx::Location, "exits") => Child::Seq(Ctx::Exit),

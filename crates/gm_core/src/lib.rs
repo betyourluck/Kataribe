@@ -16,19 +16,20 @@ pub mod spine;
 pub mod state;
 
 pub use engine::{
-    adjudicate, apply, decision_options, is_goal, percentile_degree, resolve_decision,
-    ApplyOutcome, BuyOption, CheckOutcome, DecisionChoice, DecisionError, DecisionOptions,
-    DecisionResolution, FiredTrigger, RollOutcome, StatRollOutcome, Verdict,
+    adjudicate, apply, contest_round, decision_options, is_goal, percentile_degree,
+    resolve_decision, ApplyOutcome, BuyOption, CheckOutcome, ContestEnd, ContestError,
+    ContestRound, DecisionChoice, DecisionError, DecisionOptions, DecisionResolution,
+    FiredTrigger, RollOutcome, StatRollOutcome, Verdict,
 };
 pub use reason::{Lang, RejectReason};
 pub use lint::unknown_key_lints;
 pub use spine::{
-    ChallengeDef, CharacterDef, CheckStyle, Exit, Gate, GoalDef, ImageMode, Location, LocationItem,
-    Natural, Protagonist, Resolution, RoleAssignment, Scenario, ScenarioError, StatDecl, TakeMode,
-    TierDef, Trigger,
+    ChallengeDef, CharacterDef, CheckStyle, ContestDef, Exit, Gate, GoalDef, ImageMode, Location,
+    LocationItem, Natural, Protagonist, Resolution, RoleAssignment, RollRef, RollSpec, Scenario,
+    ScenarioError, StatDecl, TakeMode, TierDef, Trigger,
 };
 pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
-    PendingDecision, RngState, SkillId, StatKey, StateDelta, StateOp, TriggerId, AUTHORED_ONLY_OPS,
-    DEFAULT_GOAL, PLAYER,
+    PendingContest, PendingDecision, RngState, SkillId, StatKey, StateDelta, StateOp, TriggerId,
+    AUTHORED_ONLY_OPS, DEFAULT_GOAL, PLAYER,
 };
