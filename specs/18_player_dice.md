@@ -242,7 +242,12 @@ engine は stat の名前（幸運/SAN/…）を解釈しない — 閉世界の
     即興 Check/CheckUnder op は対象外 (authored の代償構造が無い判定に決断は成立しない)。
   - PoC 7 本 (engine) + 1 本 (harness 還流)。workspace 277 green・app backend 22 green・
     frontend build green。ドッグフード: dice_trial に spend_rules(幸運 30)+全 challenge
-    pushable+on_push_failure。**実 LLM プレイでの手触りが残**。
+    pushable+on_push_failure。
+  - **✅実機目視 (2026-07-20, gemini-flash-latest)**: 開帳 1d20(5)+12=17 vs DC18 の
+    1 差失敗 → 決断パネル三択が表示 (「幸運 を 1 払って成功に (残 29)」= 差分計算が
+    僅差の緊張をそのまま値札にする)。GM の語りが判定前に「力無き者には、道は開かれん」と
+    煽る構図も成立。磨き込み候補: パネルの entity 表示が id (`player`) のまま —
+    protagonist name への写像は判定行と共通の課題 (Phase A から同じ・低優先)。
 - **Phase C（交互）**: `Contest` プリミティブ + digest 還流 + UI。着手前にスコープの線を
   data_contract に凍結する。
 
