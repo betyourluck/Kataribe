@@ -5088,7 +5088,9 @@ locations:
             entity: PLAYER.into(), challenge: "door".into(),
         }])).unwrap();
 
+        let cursor_before = s.rng.cursor;
         let r = resolve_decision(&mut s, &sc, DecisionChoice::Push).unwrap();
+        assert!(s.rng.cursor > cursor_before, "振り直しは本流 RNG を実際に消費する (固着しない)");
         assert_eq!(r.push_paid, Some(("HP".into(), 1)), "押す代償を払う");
         assert_eq!(s.stat_of(PLAYER, "HP"), 9, "HP 10-1 (on_failure の -2 は起きない)");
         assert!(r.check.pushed, "押した判定として確定");
