@@ -146,6 +146,61 @@ struct CheckView {
     /// d100 ロールアンダー判定の成功度 (spec 16)。critical/extreme/hard/regular/failure/fumble
     /// の機械 id (表示は frontend の言語表)。加算式判定は None。
     degree: Option<String>,
+    /// spec 18 Phase B: プッシュ (振り直し) を経て確定した判定か。
+    pushed: bool,
+    /// spec 18 Phase B: 差分買いで支払った量 (0 = 買っていない)。
+    spent: i64,
+    /// spec 18 Phase B: 決断待ちで凍結中か (帰結未適用・結末文なし。決断 UI が続く)。
+    pending: bool,
+}
+
+/// 差分買いの 1 段 (決断 UI のボタン素材。spec 18 Phase B)。
+#[derive(Serialize)]
+struct BuyOptionView {
+    /// 買い上げ先: percentile = regular/hard/extreme、additive = success。
+    degree: String,
+    cost: i64,
+    /// 支払い元 stat (表示用)。
+    from: String,
+    /// 支払い後の残量 (表示用 —「残 41」)。
+    remaining: i64,
+}
+
+/// 決断待ちの判定と選択肢 (spec 18 Phase B)。TurnView/GameView に載り、frontend が
+/// 開帳後に決断パネルを出す。決断が確定するまで次のターンは回せない。
+#[derive(Serialize)]
+struct DecisionView {
+    challenge: String,
+    entity: String,
+    stat: String,
+    can_push: bool,
+    /// プッシュの代償 (stat, 量)。無償なら None。
+    push_cost_from: Option<String>,
+    push_cost_amount: Option<i64>,
+    buys: Vec<BuyOptionView>,
+}
+
+/// 先頭の決断待ちを view にする (無ければ None)。
+fn decision_view(state: &GameState, scenario: &Scenario) -> Option<DecisionView> {
+    let opts = gm_core::decision_options(state, scenario)?;
+    Some(DecisionView {
+        challenge: opts.pending.challenge.clone(),
+        entity: opts.pending.entity.clone(),
+        stat: opts.pending.stat.clone(),
+        can_push: opts.can_push,
+        push_cost_from: opts.push_cost.as_ref().map(|(f, _)| f.clone()),
+        push_cost_amount: opts.push_cost.as_ref().map(|(_, a)| *a),
+        buys: opts
+            .buys
+            .into_iter()
+            .map(|b| BuyOptionView {
+                remaining: state.stat_of(PLAYER, &b.from) - b.cost,
+                degree: b.degree,
+                cost: b.cost,
+                from: b.from,
+            })
+            .collect(),
+    })
 }
 
 /// 可変量ダイス (`roll_stat`) の監査 view (spec 16)。「SAN -4 (1d6=4)」の素材。
@@ -218,6 +273,8 @@ struct GameView {
     recent_log: Vec<LogLineView>,
     /// マップ (spec 15) — 訪問済み+1歩先の有向グラフ。
     map: MapView,
+    /// 決断待ちの判定 (spec 18 Phase B)。再開時にセーブから復元される (決断はセーブを跨いで生きる)。
+    decision: Option<DecisionView>,
 }
 
 /// scenario の lint を作者向けの表示文にする (非 fatal — load は拒否せず開幕に ⚠ で報せる。
@@ -296,6 +353,9 @@ struct TurnView {
     /// マップ (spec 15) — 訪問済み+1歩先の有向グラフ。移動/遷移で変わるので毎ターン返す
     /// (却下ターンは state 不変ゆえ現状スナップショット)。
     map: MapView,
+    /// 決断待ちの判定 (spec 18 Phase B)。Some の間、frontend は開帳後に決断パネルを出し、
+    /// resolve_dice_decision が確定するまで入力を締める。
+    decision: Option<DecisionView>,
 }
 
 /// campaign のモジュール遷移 (前モジュールの goal 到達 → 次モジュールへ state を糸通しして差し替え)。
@@ -1902,6 +1962,7 @@ async fn new_game(
         synopsis: Vec::new(),
         recent_log: Vec::new(),
         map: map_view(&scenario, &state, &[], &pkg_dir),
+        decision: None, // 新規開始に決断の持ち越しは無い
     };
 
     let save_path = autosave_path(&app, &pkg_dir);
@@ -2021,6 +2082,8 @@ async fn restore_session(
             save.history.iter().filter(|l| l.turn > upto).map(log_line_view).collect()
         },
         map: map_view(&scenario, &state, &save.history, &pkg_dir),
+        // 決断待ちはセーブを跨いで生きる (spec 18 Phase B) — 再開直後に決断パネルを復元する。
+        decision: decision_view(&state, &scenario),
     };
 
     // オートセーブの書き先 (ロード元がスロットでも常に autosave パス = スロットは凍結点のまま)。
@@ -2178,6 +2241,12 @@ async fn play_turn(
         .as_mut()
         .ok_or("ゲームが開始されていません (先に new_game を呼んでください)")?;
 
+    // spec 18 Phase B: 決断待ちの間はターンを回さない (frontend の入力ロックと二層)。
+    // 凍結された帰結が未確定のまま GM に語らせると、確定前の世界を既成事実化してしまう。
+    if !sess.state.pending_decisions.is_empty() {
+        return Err("ダイスの決断が残っています。先に受け入れる/押す/払うを選んでください".into());
+    }
+
     // spec 10: このターンで増えた分の差分計上用スナップショット (あらすじ / chronicle)。
     let syn_before = sess.synopsis.entries.len();
     let hist_before = sess.history.len();
@@ -2273,6 +2342,9 @@ async fn play_turn(
                         .flatten()
                         .map(|p| p.to_string_lossy().into_owned()),
                     degree: c.degree.clone(),
+                    pushed: c.pushed,
+                    spent: c.spent,
+                    pending: c.pending,
                 })
                 .collect();
             let stat_roll_views: Vec<StatRollView> = stat_rolls
@@ -2327,6 +2399,8 @@ async fn play_turn(
                 new_log: Vec::new(),
                 epilogue: None, // 終端判定の後に埋める (spec 11)
                 map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
+                // spec 18 Phase B: 決断つき判定が凍結されたらパネル素材を載せる。
+                decision: decision_view(&sess.state, &sess.scenario),
             }
         }
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
@@ -2355,6 +2429,9 @@ async fn play_turn(
             new_log: Vec::new(),
             epilogue: None,
             map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
+            // 却下 = state 無傷 (決断があったならそのまま残っているはずだが、そもそも決断中は
+            // play_turn 自体をガードで弾く)。
+            decision: decision_view(&sess.state, &sess.scenario),
         },
     };
 
@@ -2483,6 +2560,169 @@ async fn play_turn(
     Ok(view)
 }
 
+/// 決断の確定結果 view (spec 18 Phase B)。frontend が最終の判定行・語り・発火ビートを
+/// 会話ログへ差し込み、state パネルを更新する。
+#[derive(Serialize)]
+struct DecisionResultView {
+    /// 最終の判定 (narration/sound/pushed/spent 込み)。プッシュは新しい出目 = 開帳カードで出す。
+    check: CheckView,
+    stat_rolls: Vec<StatRollView>,
+    beats: Vec<BeatView>,
+    /// 支払い (差分買い / プッシュ代償)。表示用。
+    spent_from: Option<String>,
+    spent_amount: Option<i64>,
+    push_paid_from: Option<String>,
+    push_paid_amount: Option<i64>,
+    state: StateView,
+    goal_reached: bool,
+    goal_id: Option<String>,
+    goal_title: Option<String>,
+    goal_narration: Option<String>,
+    /// 続けて次の決断が待っているか (1 ターン複数凍結時)。
+    decision: Option<DecisionView>,
+    map: MapView,
+}
+
+/// 決断 (受け入れ / プッシュ / 差分買い) を確定する (spec 18 Phase B)。
+///
+/// LLM を呼ばない「プレイヤー op」— engine が凍結していた帰結をここで原子適用する。
+/// choice: "accept" | "push" | "buy" (+ degree)。確定後は autosave (正本が動いたので)。
+/// 制限 (v1): 決断の帰結で campaign 遷移 goal に達しても自動遷移しない (次の通常ターンの
+/// play_turn が advance する)。エピローグ生成もここでは行わない (goal バナーと結末文のみ)。
+#[tauri::command]
+async fn resolve_dice_decision(
+    session: tauri::State<'_, SharedSession>,
+    choice: String,
+    degree: Option<String>,
+) -> Result<DecisionResultView, String> {
+    let mut guard = session.lock().await;
+    let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+
+    let choice = match choice.as_str() {
+        "accept" => gm_core::DecisionChoice::Accept,
+        "push" => gm_core::DecisionChoice::Push,
+        "buy" => gm_core::DecisionChoice::Buy {
+            degree: degree.ok_or("buy には degree が必要です")?,
+        },
+        other => return Err(format!("不明な決断です: {other}")),
+    };
+    let r = gm_core::resolve_decision(&mut sess.state, &sess.scenario, choice).map_err(|e| {
+        match e {
+            gm_core::DecisionError::NoPending => "決断待ちの判定がありません".to_string(),
+            gm_core::DecisionError::UnknownChallenge => {
+                "この判定の定義が見つかりません (パッケージが更新された可能性)".to_string()
+            }
+            gm_core::DecisionError::NotPushable => "この判定は押せません".to_string(),
+            gm_core::DecisionError::NotBuyable => "買い取れません (支払いが足りません)".to_string(),
+        }
+    })?;
+
+    // 発火ビートの解決 (play_turn と同経路) と、次ターンへの語り素材の持ち越し。
+    let resolved = resolve_recall(&sess.lore, &r.fired);
+    let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
+    // 継続文脈: 直前の語りに決断の結末を継ぎ足す (判定結末文・ビートを含む)。
+    let base = std::mem::take(&mut sess.last_narration);
+    sess.last_narration = carryover_narration(&base, &beat_texts, &[r.check.clone()]);
+    // 経緯ログ: このターンの行に決断を併記する (中期記憶にも決断が残る)。
+    if let Some(last) = sess.history.last_mut() {
+        let what = if r.check.pushed {
+            format!("／決断: 押して振り直し→{}", if r.check.success { "成功" } else { "失敗" })
+        } else if r.check.spent > 0 {
+            format!("／決断: {} を {} 払って成功に変えた",
+                r.spent.as_ref().map(|(f, _)| f.as_str()).unwrap_or("代償"), r.check.spent)
+        } else {
+            "／決断: 失敗を受け入れた".to_string()
+        };
+        last.summary.push_str(&what);
+    }
+    // 還流: 凍結行を最終結果で差し替え (pending のままだと note から除外され GM が知らない)。
+    if let Some(slot) = sess.pending_checks.iter_mut().find(|c| c.pending) {
+        *slot = r.check.clone();
+    }
+    sess.pending_lore.extend(resolved.iter().flat_map(|b| b.recalled.clone()));
+
+    let beats: Vec<BeatView> = resolved
+        .iter()
+        .map(|b| BeatView {
+            narration: normalize(&b.narration),
+            recalled: b.recalled.iter().map(|f| normalize(&f.text)).collect(),
+            image: b.image.as_ref().and_then(|id| {
+                resolve_asset(&sess.package_root, AssetKind::Images, id)
+                    .map(|p| p.to_string_lossy().into_owned())
+            }),
+            image_mode: b.image_mode.map(|m| match m {
+                ImageMode::Background => "background".to_string(),
+                ImageMode::Overlay => "overlay".to_string(),
+            }),
+            sound: b.sound.as_ref().and_then(|id| {
+                resolve_asset(&sess.package_root, AssetKind::Audios, id)
+                    .map(|p| p.to_string_lossy().into_owned())
+            }),
+        })
+        .collect();
+    let check = CheckView {
+        entity: r.check.entity.clone(),
+        stat: r.check.stat.clone(),
+        sides: r.check.sides,
+        roll: r.check.roll,
+        modifier: r.check.modifier,
+        total: r.check.total,
+        dc: r.check.dc,
+        success: r.check.success,
+        narration: normalize(&r.check.narration),
+        sound: (!r.check.sound.is_empty())
+            .then(|| resolve_asset(&sess.package_root, AssetKind::Audios, &r.check.sound))
+            .flatten()
+            .map(|p| p.to_string_lossy().into_owned()),
+        degree: r.check.degree.clone(),
+        pushed: r.check.pushed,
+        spent: r.check.spent,
+        pending: false,
+    };
+    let stat_roll_views: Vec<StatRollView> = r
+        .stat_rolls
+        .iter()
+        .map(|sr| StatRollView {
+            entity: sr.entity.clone(),
+            key: sr.key.clone(),
+            count: sr.count,
+            sides: sr.sides,
+            bonus: sr.bonus,
+            rolls: sr.rolls.clone(),
+            amount: sr.amount,
+        })
+        .collect();
+
+    // 決断で正本が動いた → autosave (受理ターンと同じ流儀。失敗は警告のみ)。
+    if let Some(path) = sess.save_path.clone() {
+        let save = session_save_of(sess);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = save_session(&path, &save) {
+            eprintln!("[警告] オートセーブ失敗: {e}");
+        }
+    }
+
+    let (goal_id, goal_title, goal_narration) = goal_view(&sess.state, &sess.scenario);
+    Ok(DecisionResultView {
+        check,
+        stat_rolls: stat_roll_views,
+        beats,
+        spent_from: r.spent.as_ref().map(|(f, _)| f.clone()),
+        spent_amount: r.spent.as_ref().map(|(_, a)| *a),
+        push_paid_from: r.push_paid.as_ref().map(|(f, _)| f.clone()),
+        push_paid_amount: r.push_paid.as_ref().map(|(_, a)| *a),
+        state: state_view(&sess.state, &sess.scenario, &sess.history),
+        goal_reached: is_goal(&sess.state, &sess.scenario),
+        goal_id,
+        goal_title,
+        goal_narration,
+        decision: decision_view(&sess.state, &sess.scenario),
+        map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
@@ -2501,6 +2741,7 @@ pub fn run() {
             new_game,
             resume_game,
             play_turn,
+            resolve_dice_decision,
             list_packages,
             list_save_slots,
             save_slot,

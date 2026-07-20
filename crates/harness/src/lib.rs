@@ -1118,6 +1118,32 @@ mod tests {
             "narration 無しは LLM に語らせるため還流する");
     }
 
+    /// 【spec 18 Phase B の還流】プッシュ/差分買いを経た判定は、その決断ごと語りに織り込む
+    /// 指示が note に載る。凍結中 (pending) の判定は最終結果ではないので還流しない。
+    #[test]
+    fn check_note_carries_push_and_spend_and_skips_pending() {
+        use gm_core::CheckOutcome;
+        let base = CheckOutcome {
+            entity: "player".into(), stat: "STR".into(), sides: 20,
+            roll: 5, modifier: 0, total: 5, dc: 15, success: false,
+            tier: None, narration: String::new(), sound: String::new(), degree: None,
+            pushed: false, spent: 0, pending: false,
+        };
+        // プッシュ経由: 押した経緯を語らせる。
+        let pushed = CheckOutcome { pushed: true, ..base.clone() };
+        let note = prompt::check_outcome_note(&[pushed]);
+        assert!(note.contains("押して振り直された"), "プッシュの決断を語りに含めさせる: {note}");
+
+        // 差分買い経由: 代償を払った手応えを語らせる。
+        let bought = CheckOutcome { success: true, spent: 7, ..base.clone() };
+        let note2 = prompt::check_outcome_note(&[bought]);
+        assert!(note2.contains("代償を支払って買い取られた"), "支払いの決断を語りに含めさせる");
+
+        // 凍結中: 最終結果ではないので還流しない (final は resolve_decision 後に差し替え)。
+        let frozen = CheckOutcome { pending: true, ..base };
+        assert!(prompt::check_outcome_note(&[frozen]).is_empty(), "凍結中は還流しない");
+    }
+
     /// GM_SYSTEM が「判定結果の後付け（なぜ成功/失敗したか）」を刷り込む。
     #[test]
     fn gm_system_demands_post_hoc_reason_for_checks() {

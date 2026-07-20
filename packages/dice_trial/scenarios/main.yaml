@@ -13,8 +13,15 @@
 #      成功=敵 HP 1d8 減 / 失敗=反撃で自分 HP 1d6 減 / 自然 20=会心 +1d8)。
 #      命中カード → ダメージカードが直列で開く。番人 HP 0 → 試練突破。
 #   5. 未開帳中に入力欄が締まるか / 設定オフ (グラフィック) で即時表示に戻るか
+#   6. (Phase B) 失敗すると決断パネルが出る:
+#      - 受け入れる / 押して振り直す (押した失敗はより悪い) / 幸運を払って買い上げる
+#      - 岩のプッシュ失敗 = 岩のしくじり (落石) / 碑文のプッシュ失敗 = SAN 1d10 /
+#        番人へのプッシュ失敗 = 反撃 1d10
 title: ダイスの試練
 start: trial_hall
+
+# spec 18 Phase B: 差分買いの支払い元 (幸運 30 は package の player.stats で宣言)。
+spend_rules: { from: 幸運 }
 
 # 番人 — 「今日できる戦闘」の相手。engine がキャラ別 HP を握り、challenge の帰結が
 # roll_stat でダメージを振る (LLM は挑戦を選ぶだけ = 数値を持てない閉世界)。
@@ -56,10 +63,15 @@ challenges:
       sound: chime.wav
     on_failure:
       narration: 岩はびくともしない。掌が擦り剝け、番人の声が低く嗤った気がした。
+    pushable: true
+    on_push_failure:
+      # 押した失敗はより悪い: 無理な力みが岩を揺らし、しくじり (落石) と同じ帰結へ。
+      flag: rock_slip
+      narration: 無理に力んだ拍子に足場が崩れ、岩がぐらりと戻った。天井が軋む——まずい。
     tiers:
-      # 自然出目 1..4 (20%) = しくじり。rock_slip → rockfall トリガーが同一適用で発火
-      # = ビート/SE/roll_stat が開帳まで伏せられるかのテスト経路 (tier threshold の実 content)。
-      slip: { natural: at_most, threshold: 4, flag: rock_slip, narration: 手が滑った。岩がぐらりと戻り、天井から不吉な軋みが降ってくる。 }
+      # 自然出目 1..2 (10%) = しくじり (tier 該当は final = 決断なしで即落石)。
+      # 3..5 の素の失敗は決断パネル (押す/買う/受け入れる) が出る — Phase B のテスト経路。
+      slip: { natural: at_most, threshold: 2, flag: rock_slip, narration: 手が滑った。岩がぐらりと戻り、天井から不吉な軋みが降ってくる。 }
 
   # ④ 戦闘の定石: 攻撃 1 回 = challenge 1 個。命中判定 → 与ダメ/被ダメまで engine が
   # 同一ターンに原子解決する (帰結は authored = LLM は選ぶだけ)。勝敗は HP goal が裁く。
@@ -79,6 +91,12 @@ challenges:
       sound: rumble.wav
       effects:
         - { op: roll_stat, key: HP, count: 1, sides: 6, negate: true }
+    pushable: true
+    on_push_failure:
+      narration: 隙を晒してまで踏み込んだ二撃目も逸れた。番人の豪腕が、今度は容赦なく叩きつけられる。
+      sound: rumble.wav
+      effects:
+        - { op: roll_stat, key: HP, count: 1, sides: 10, negate: true }
     tiers:
       # 自然 20 = 会心。tier 効果は on_success に加算される (打ち消さない)。
       crit:
@@ -100,6 +118,11 @@ challenges:
       narration: 文字が視界の中で蠢き、意味を結ばない。読んではいけない箇所を読んだ気がする。
       effects:
         - { op: roll_stat, key: SAN, count: 1, sides: 6, negate: true }
+    pushable: true
+    on_push_failure:
+      narration: 目を凝らしすぎた。渦巻く文字列が、今度はこちらの内側に書き込まれていく。
+      effects:
+        - { op: roll_stat, key: SAN, count: 1, sides: 10, negate: true }
     on_fumble:
       narration: 碑文がこちらを読み返してきた。頭の奥で何かが千切れる音がした。
       effects:

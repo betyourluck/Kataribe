@@ -892,7 +892,10 @@ pub fn moved_note(scenario: &Scenario, state: &GameState, history: &[crate::Turn
 pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
     // authored 結末ナレーション付きの判定は同ターンに語られ済み → LLM に再描写させない (二重語り回避)。
     // narration の無い判定 (素の Check / 結末文なし challenge) だけを LLM に還流して語らせる。
-    let checks: Vec<&CheckOutcome> = checks.iter().filter(|c| c.narration.is_empty()).collect();
+    // 凍結中 (pending=決断待ち) は最終結果ではないので還流しない — 決断確定後の final check を
+    // 呼び出し側 (app) が差し替えて還流する (spec 18 Phase B)。
+    let checks: Vec<&CheckOutcome> =
+        checks.iter().filter(|c| c.narration.is_empty() && !c.pending).collect();
     if checks.is_empty() {
         return String::new();
     }
@@ -903,6 +906,15 @@ pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
         （差が大きいほど決定的・鮮やかに、僅差なら辛うじて・紙一重に、大失敗/大成功なら劇的に）。\n",
     );
     for c in checks {
+        // spec 18 Phase B: プッシュ/差分買いを経た判定は、その決断ごと語りに織り込ませる
+        // (押した無茶・支払った代償は物語の素材 — 黙って結果だけ語ると決断が消える)。
+        let decision = if c.pushed {
+            "／この判定は**押して振り直された** — 一度失敗し、代償を覚悟で無理を通した経緯を語りに含めよ"
+        } else if c.spent > 0 {
+            "／この成功は**代償を支払って買い取られた** — 何かをすり減らして成功に変えた手応えを語りに含めよ"
+        } else {
+            ""
+        };
         // percentile (spec 16): degree が「どのくらい良かったか」を担う (margin の代替)。
         // 表示は d100=出目 ≤/> 目標値 → 成功度 (ロールアンダー = 低いほど良い)。
         if let Some(degree) = &c.degree {
@@ -910,7 +922,7 @@ pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
             let rel = if c.success { "≤" } else { ">" };
             s.push_str(&format!(
                 "- {} の「{}」判定: d100={} {rel} 目標値{} → {label}（成功度に応じた強さで因果を語れ。\
-                 クリティカル/ファンブルは劇的に、イクストリーム/ハードは鮮やかに、僅差は紙一重に）\n",
+                 クリティカル/ファンブルは劇的に、イクストリーム/ハードは鮮やかに、僅差は紙一重に）{decision}\n",
                 c.entity, c.stat, c.roll, c.dc
             ));
             continue;
@@ -927,7 +939,7 @@ pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
             None => String::new(),
         };
         s.push_str(&format!(
-            "- {} の「{}」判定: 1d{}({}) + 修正{:+} = {} vs DC {} → {mark}（{gap}{tier}）\n",
+            "- {} の「{}」判定: 1d{}({}) + 修正{:+} = {} vs DC {} → {mark}（{gap}{tier}）{decision}\n",
             c.entity, c.stat, c.sides, c.roll, c.modifier, c.total, c.dc
         ));
     }

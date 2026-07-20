@@ -11,6 +11,8 @@ import type {
   InstalledPackage,
   PackageUpdate,
   UpdateResult,
+  DecisionView,
+  DecisionResultView,
   StatRollView,
   SynopsisView,
   LogLineView,
@@ -286,6 +288,11 @@ interface GameState {
   pendingSe: (string | null)[];
   // 保留中の見た目 (イベント CG 背景 / BGM)。発火 CG は結果の漏洩そのものなので開帳まで遅延。
   pendingVisual: { background: string | null; bgm: string | null } | null;
+  // --- 決断つき判定 (spec 18 Phase B) ---
+  // 決断待ち (受け入れ/押す/払う)。非 null の間は入力を締め、全開帳後に決断パネルを出す。
+  decision: DecisionView | null;
+  // 決断の確定を backend に送信中 (パネルのボタンを二重押しさせない)。
+  deciding: boolean;
   // 右ペイン (状態パネル) の幅 px。ドラッグハンドルで可変。
   panelWidth: number;
   // 音量 0..100 (BGM/SE 共通)。サウンド設定。
@@ -370,6 +377,8 @@ export const useGameStore = defineStore("game", {
       pendingTail: [],
       pendingSe: [],
       pendingVisual: null,
+      decision: null,
+      deciding: false,
       msgFont: loadMsgFont(),
       msgColor: loadMsgColor(),
       msgShadow: loadMsgShadow(),
@@ -416,6 +425,11 @@ export const useGameStore = defineStore("game", {
           (e.kind === "checks" && e.revealed < e.checks.length) ||
           (e.kind === "statrolls" && e.revealed < e.stat_rolls.length),
       ),
+    // 決断パネルを出すか (spec 18 Phase B): 決断待ちがあり、開帳がすべて済んでいる。
+    // (開帳前に選択肢が見えたら、失敗したことがカードより先に漏れる。)
+    showDecision(): boolean {
+      return this.decision !== null && !this.hasUnrevealedDice;
+    },
     // いま開けるダイス行 (log の index)。開帳は古い方から直列 = 常に最初の未開帳 entry のみ。
     revealTargetIndex: (s): number =>
       s.log.findIndex(
@@ -950,6 +964,9 @@ export const useGameStore = defineStore("game", {
       this.pendingTail = [];
       this.pendingSe = [];
       this.pendingVisual = null;
+      // 決断待ち (Phase B) はセーブを跨いで生きる — 再開時に復元する (新規は null)。
+      this.decision = view.decision ?? null;
+      this.deciding = false;
       // あらすじ (spec 10): 新規開始は空、再開はセーブから全量復元。
       this.synopsis = view.synopsis ?? [];
       this.recentLog = view.recent_log ?? [];
@@ -1088,6 +1105,70 @@ export const useGameStore = defineStore("game", {
       this.flushPendingDice();
     },
 
+    // --- 決断つき判定 (spec 18 Phase B) ---
+
+    // 決断 (受け入れ / 押す / 買う) を backend で確定し、結果をログへ差し込む。
+    // LLM は呼ばれない (トークン消費ゼロのプレイヤー op)。
+    async resolveDecision(choice: "accept" | "push" | "buy", degree?: string) {
+      if (!this.decision || this.deciding) return;
+      this.deciding = true;
+      try {
+        const r = await invoke<DecisionResultView>("resolve_dice_decision", {
+          choice,
+          degree: degree ?? null,
+        });
+        // 凍結されていた判定行 (pending) を最終結果で差し替える。
+        const entryIdx = this.log.findIndex(
+          (e) => e.kind === "checks" && e.checks.some((c) => c.pending),
+        );
+        const isPush = choice === "push" && this.diceReveal;
+        if (entryIdx >= 0) {
+          const entry = this.log[entryIdx];
+          if (entry.kind === "checks") {
+            const itemIdx = entry.checks.findIndex((c) => c.pending);
+            entry.checks[itemIdx] = r.check;
+            if (isPush) {
+              // 振り直し = 新しい出目 → もう一度伏せて開かせる (緊張の山場を二度作る)。
+              entry.revealed = itemIdx;
+            } else {
+              // 受け入れ/買いは出目が変わらない → その場で確定表示 + 結末 SE。
+              this.playSe(assetUrl(r.check.sound));
+            }
+          }
+        }
+        // 帰結 (可変量ダイス/ビート/goal バナー): push の再開帳中は保留し、開帳完了で flush
+        // (漏洩防止は Phase A と同じ機構を使い回す)。それ以外は直接ログへ。
+        const pushTail = (e: LogEntry) => (isPush ? this.pendingTail.push(e) : this.log.push(e));
+        if (r.stat_rolls.length) {
+          pushTail({ kind: "statrolls", stat_rolls: r.stat_rolls, revealed: r.stat_rolls.length });
+        }
+        for (const b of r.beats) {
+          if (b.narration.trim() || b.recalled.length) {
+            pushTail({ kind: "beat", narration: b.narration, recalled: b.recalled, expanded: false });
+          }
+          if (isPush) this.pendingSe.push(assetUrl(b.sound));
+          else this.playSe(assetUrl(b.sound));
+        }
+        // 決断の帰結で goal に達しうる (押して失敗 → HP0 の死など)。
+        if (r.goal_reached) {
+          if (r.goal_narration) pushTail({ kind: "narration", text: r.goal_narration });
+          const goalLabel = r.goal_title ?? r.goal_id;
+          const label = goalLabel
+            ? t("store.clearedNamed", { goal: goalLabel })
+            : t("store.clearedGeneric");
+          pushTail({ kind: "system", text: label });
+        }
+        this.state = r.state;
+        if (r.map) this.map = r.map;
+        // 次の決断 (1 ターン複数凍結時) または null。
+        this.decision = r.decision;
+      } catch (e) {
+        this.logToast = String(e);
+      } finally {
+        this.deciding = false;
+      }
+    },
+
     // 開帳完了: 保留していた後続行 (ビート/goal バナー/エピローグ) と SE・CG を解き放つ。
     flushPendingDice() {
       for (const entry of this.pendingTail) this.log.push(entry);
@@ -1120,6 +1201,8 @@ export const useGameStore = defineStore("game", {
           else this.log.push(e);
         };
         if (turn.accepted) {
+          // 決断待ち (spec 18 Phase B)。開帳がすべて済んだ後にパネルが出る (表示条件は getter)。
+          this.decision = turn.decision ?? null;
           if (turn.narration) this.log.push({ kind: "narration", text: turn.narration });
           // ダイス系 3 行は伏せて積む (revealed=0)。演出オフなら全開 (= 従来動作)。
           if (turn.rolls.length) {

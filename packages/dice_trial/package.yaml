@@ -17,4 +17,4 @@ world: |
 player:
   name: 挑戦者
   profile: 試練の間に足を踏み入れた冒険者。腕力と学識の両方を試される。
-  stats: { HP: 10, STR: 12, 知識: 60, SAN: 30 }
+  stats: { HP: 10, STR: 12, 知識: 60, SAN: 30, 幸運: 30 }

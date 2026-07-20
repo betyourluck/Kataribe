@@ -7,10 +7,13 @@ const game = useGameStore();
 const text = ref("");
 const ta = ref<HTMLTextAreaElement | null>(null);
 
-// 入力できる状態か (未開始/思案中/クリア後/ダイス未開帳は不可)。
-// 未開帳ブロック (spec 18): 積み残しは体験を壊すので、全部開くまで次の行動は打てない。
+// 入力できる状態か (未開始/思案中/クリア後/ダイス未開帳/決断待ちは不可)。
+// 未開帳ブロック (spec 18-A): 積み残しは体験を壊すので、全部開くまで次の行動は打てない。
+// 決断ブロック (spec 18-B): 凍結された帰結が未確定のままターンを回さない (backend ガードと二層)。
 const disabled = computed(
-  () => !game.started || game.loading || game.cleared || game.hasUnrevealedDice,
+  () =>
+    !game.started || game.loading || game.cleared || game.hasUnrevealedDice ||
+    game.decision !== null,
 );
 // 送信できるか (中身がある & 入力可)。
 const canSend = computed(() => !!text.value.trim() && !disabled.value);

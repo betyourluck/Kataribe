@@ -3,6 +3,7 @@ import { useGameStore, degreeLabel, statRollLine } from "../stores/game";
 import type { StatRollView } from "../types/api";
 import { t } from "../i18n";
 import DiceReveal from "./DiceReveal.vue";
+import DecisionPanel from "./DecisionPanel.vue";
 
 const game = useGameStore();
 
@@ -163,6 +164,9 @@ function statRollFinal(sr: StatRollView): number {
         {{ entry.text }}
       </p>
     </template>
+
+    <!-- 決断パネル (spec 18 Phase B): 開帳がすべて済んだ失敗に「受け入れる/押す/買う」を出す -->
+    <DecisionPanel />
 
     <p v-if="game.loading" class="text-parchment/40 text-sm animate-pulse">
       {{

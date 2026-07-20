@@ -530,6 +530,16 @@ Map:                                # spec 15 (2026-07-16, ユーザー要望): 
   layout: "frontend: 現在地起点の BFS 距離でランク列 (x=rank)、同ランク縦分配 (y)。SVG 矢印。ノード数は数〜十数で簡易レイアウトで足りる (force-directed は過剰)。現在地=ember 強調、frontier=淡い破線枠、🔒 辺=破線"
   out_of_scope: "モジュール跨ぎの全体マップ / 手動レイアウト / 作者の per-location 秘匿 (可視範囲は霧固定、全図/作者制御は将来 spec)"
 
+# --- プレイヤーが振るダイス (spec 18。開帳 / 決断 / 交互) ------------------------
+player_dice:
+  reveal: "Phase A (提示層のみ・engine 無改修): ダイス系 3 行 (rolls/checks/stat_rolls) の LogEntry に revealed カウンタ。伏せカード DiceReveal.vue = クリック→数字スクランブル 1.1s 減速→確定出目に着地→本物の行へ差し替え。1 クリック 1 判定の直列 (revealTargetIndex=最初の未開帳 entry のみ)。漏洩防止: ダイスより後ろの行 (ビート/goal バナー/遷移/エピローグ) + ビート SE + イベント CG/BGM を pendingTail/pendingSe/pendingVisual に保留し全開帳で flush。結末 SE は開帳と同時。未開帳中は入力ロック。設定 kataribe.diceReveal (既定 on・オフ切替=revealAll=脱出口)。揮発 (リロード=自動開帳は許容)"
+  decision: "Phase B (第三の権能=プレイヤー op。LLM 非関与=トークン消費ゼロ): pushable/spendable challenge の**素の失敗** (fumble/tier 該当は final・player 主体のみ・実行可能な選択肢が在る時のみ) は帰結を適用せず GameState.pending_decisions に凍結 (PendingDecision{challenge,entity,stat,sides,roll(生の出目=差分計算の基準),modifier,total,dc,degree,pushed}・セーブ対象)。resolve_decision(Accept/Push/Buy{degree}) が確定時に初めてスロット適用→トリガー settle→flag_turns (帰結の確定遅延=apply 済み帰結は巻き戻せないため)。turn は増えない"
+  push: "プッシュ = 失敗した判定を 1 度だけ振り直す (本流 RNG 消費・成否に依らず final)。失敗連鎖 on_push_failure→(fumble なら on_fumble)→on_failure (「押した失敗はより悪い」は authored の帰結が本線)。Scenario.push_cost{from,amount} は任意の上乗せ (既定 None=CoC7 原典どおり無償)。additive の振り直しは tier を判定しない (会心/大失敗の二重抽選を作らない)"
+  buy: "差分買い = 失敗の差分を stat から払って成功に変える。Scenario.spend_rules{from,rate=1} (opt-in・from は player 宣言済み stat 必須=SpendStatUndeclared)。**engine は stat 名を解釈しない** (幸運は一例・金/正気度/霊力でも同じ機構=LUCK 固定変数を作らない、2026-07-20 ユーザー決定)。percentile は regular/hard/extreme の段階買い (閾値=dc, dc/2, dc/5・費用=(roll-閾値)×rate)、additive は success 一段 (費用=(dc-total)×rate)。払える段だけ提示 (上限=現在値−宣言 min。払って死ぬ設計も作者が書ける)。critical/fumble は買えない・プッシュとは排他 (どちらも final)"
+  defaults: "pushable 既定 **false (opt-in)** — spec rev2 の true から実装時改訂: ①既存 content の挙動 (即時適用・spec 09 共通効果射影) を黙って変えない ②一発勝負 challenge の事故防止。spendable 既定 true (scenario の spend_rules が主 opt-in)。決断つき challenge は spec 09 の全帰結共通射影から除外 (最終スロットが決断次第で広がり静的保証が成り立たない=安全側)。NPC 主体 (ChallengeDef.entity) の判定は凍結しない。即興 Check/CheckUnder op は対象外 (authored の代償構造が無い)"
+  surfacing: "CheckOutcome.pushed/spent/pending (serde default=旧セーブ互換)。check_outcome_note が「押して振り直された/代償を支払って買い取られた」を GM へ還流 (決断は物語の素材)・pending は還流しない (final を app が差し替え)。app: TurnView/GameView.decision (DecisionView=can_push/push_cost/buys[{degree,cost,from,remaining}]・再開でセーブから復元) + resolve_dice_decision command (確定後 autosave・chronicle に決断併記)。frontend: DecisionPanel は全開帳後に表示 (開帳前に選択肢が見えたら失敗が漏れる)・プッシュの振り直しはもう一度伏せカードで開く・入力は決断確定まで締める。CLI は自動 Accept (決断 UI は GUI の責務)"
+  v1_limits: "決断の帰結で campaign 遷移 goal に達しても自動遷移しない (次の通常ターンの play_turn が advance)。エピローグ生成も決断経由の goal では行わない (バナー+結末文のみ)。cadence (交互振り・一括型) は Phase C"
+
 # --- パッケージ更新 (spec 17。書庫取得物の更新検知と上書き取得) -----------------
 package_updates:
   source_meta: ".kataribe_source.json (展開フォルダ直下・spec 17 機構①)。SourceMeta{site_url(正規化済み取得元), id(書庫 UUID), version: Option<String>(package.yaml の写し・欠落 None→表示は「(不明)」), content_hash(DL した zip の sha256・クライアント自前計算), tree_hash(展開直後のフォルダ正規化ハッシュ), installed_at_unix: u64(表示は提示層が locale 変換=chrono 依存を足さない)}。メタの無い/壊れたフォルダ = 手動配置扱いで更新機構は触らない (聖域)。zip 内に混入した同名ファイルは展開時 skip (メタは常に受領側クライアントが書いた値だけ)"

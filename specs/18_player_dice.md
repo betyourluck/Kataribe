@@ -1,6 +1,6 @@
 # spec 18: プレイヤーが振るダイス — 開帳・選択・交互
 
-**Status**: rev2 / Phase A 実装済み（2026-07-20 起草 → 同日査読 7+CoC7 準拠表反映 → 同日 Phase A。B/C は Draft、B は spec 16 実測後）
+**Status**: rev2 / Phase A+B 実装済み（2026-07-20 起草 → 同日査読 rev2 → Phase A（実機目視 Green）→ 同日 Phase B（実 LLM プレイ残）。C は Draft）
 **依存**: spec 16（d100 ロールアンダー・成功度）/ spec 09（逐次射影）/ spec 14（入力キャッシュ）
 
 ## 動機（ユーザー、2026-07-20）
@@ -216,9 +216,33 @@ engine は stat の名前（幸運/SAN/…）を解釈しない — 閉世界の
     （breakthrough CG 差し替え・goal バナー・エピローグまで動線一式）。GM が world の
     「運命は既に転がっており、挑む者はそれを開くだけ」を語りに自発的に織り込む副産物も。
     未知 1（緊張）・2（テンポ）の定量は継続プレイで。
-- **Phase B（選択）**: `GameState` の押下可能判定 + プレイヤー op 2 種 + authored 代償 +
-  還流。gm_core に触る（PoC 必須）。**spec 16 の実 LLM 実測を先に片付けてから**着手する
-  （percentile の土台が未実測のまま上物を積まない）。
+- **✅Phase B（選択、2026-07-20 実装）**: 全層 (gm_core/harness/app/frontend) 縦貫。
+  - **engine**: 帰結の確定遅延 — pushable/spendable challenge の素の失敗 (fumble/tier 該当を
+    除く・player 主体のみ・選択肢が実行可能な時のみ) は `GameState.pending_decisions` に凍結、
+    `resolve_decision(Accept/Push/Buy)` が確定時にスロット適用→トリガー settle→flag_turns。
+    プッシュは 1 度だけ・成否に依らず final・失敗連鎖 on_push_failure→on_fumble→on_failure。
+    買いは regular/hard/extreme の段階制 (critical/fumble 不可・払える段だけ提示)。
+    **pushable 既定は false へ改訂** (rev2 の true から): ①既存 content の挙動 (即時適用・
+    spec 09 共通効果射影) を黙って変えない ②一発勝負 challenge の事故防止。決断つき
+    challenge は共通効果射影から除外 (安全側)。
+  - **副産物 2 件**: authored_only_flags が degree スロットのフラグを見ていなかった #50
+    バックストップの穴 / lint が degree スロット内を検査していなかった盲点、を同時に閉鎖。
+  - **harness**: check_outcome_note が「押して振り直された/代償を支払って買い取られた」を
+    GM へ還流 (決断は物語の素材)。pending (凍結中) は還流しない。CLI は自動 Accept
+    (決断 UI は GUI の責務・台本流し込みと衝突させない)。
+  - **app**: `TurnView/GameView.decision` (再開でセーブから復元) + `resolve_dice_decision`
+    command (LLM 非呼出・確定後 autosave・chronicle に決断併記・pending_checks 差し替え)。
+    play_turn は決断待ち中を拒否 (frontend ロックと二層)。
+  - **frontend**: DecisionPanel (受け入れる/押す (代償表示)/買いボタン群 (費用+残))、
+    表示は全開帳後 (開帳前に選択肢が見えたら失敗が漏れる)。**プッシュの振り直しは
+    もう一度伏せカードで開く** (緊張の山場を二度作る — Phase A の機構を使い回す)。
+    帰結ビート/バナーは push 中のみ保留。入力は決断確定まで締める。
+  - **v1 制限 (明記)**: 決断の帰結で campaign 遷移 goal に達しても自動遷移しない (次の
+    通常ターンが advance)。エピローグ生成も決断経由の goal では行わない (バナー+結末文)。
+    即興 Check/CheckUnder op は対象外 (authored の代償構造が無い判定に決断は成立しない)。
+  - PoC 7 本 (engine) + 1 本 (harness 還流)。workspace 277 green・app backend 22 green・
+    frontend build green。ドッグフード: dice_trial に spend_rules(幸運 30)+全 challenge
+    pushable+on_push_failure。**実 LLM プレイでの手触りが残**。
 - **Phase C（交互）**: `Contest` プリミティブ + digest 還流 + UI。着手前にスコープの線を
   data_contract に凍結する。
 

@@ -77,6 +77,51 @@ export interface CheckView {
   sound: string | null;
   /** d100 ロールアンダー判定の成功度 (spec 16)。critical/extreme/hard/regular/failure/fumble。加算式は null。 */
   degree: string | null;
+  /** spec 18 Phase B: プッシュ (振り直し) を経て確定した判定か。 */
+  pushed: boolean;
+  /** spec 18 Phase B: 差分買いで支払った量 (0 = 買っていない)。 */
+  spent: number;
+  /** spec 18 Phase B: 決断待ちで凍結中か (帰結未適用・結末文なし)。 */
+  pending: boolean;
+}
+
+/** 差分買いの 1 段 (決断パネルのボタン素材。spec 18 Phase B)。 */
+export interface BuyOptionView {
+  /** 買い上げ先: percentile = regular/hard/extreme、additive = success。 */
+  degree: string;
+  cost: number;
+  from: string;
+  /** 支払い後の残量 (「残 41」)。 */
+  remaining: number;
+}
+
+/** 決断待ちの判定と選択肢 (spec 18 Phase B)。 */
+export interface DecisionView {
+  challenge: string;
+  entity: string;
+  stat: string;
+  can_push: boolean;
+  push_cost_from: string | null;
+  push_cost_amount: number | null;
+  buys: BuyOptionView[];
+}
+
+/** 決断の確定結果 (resolve_dice_decision の戻り)。 */
+export interface DecisionResultView {
+  check: CheckView;
+  stat_rolls: StatRollView[];
+  beats: BeatView[];
+  spent_from: string | null;
+  spent_amount: number | null;
+  push_paid_from: string | null;
+  push_paid_amount: number | null;
+  state: StateView;
+  goal_reached: boolean;
+  goal_id: string | null;
+  goal_title: string | null;
+  goal_narration: string | null;
+  decision: DecisionView | null;
+  map: MapView;
 }
 
 /** 可変量ダイス (roll_stat) の監査記録 (spec 16)。「SAN -4 (1d6=4)」の素材。 */
@@ -129,6 +174,8 @@ export interface GameView {
   recent_log: LogLineView[];
   /** マップ (spec 15) — 訪問済み+1歩先の有向グラフ。 */
   map: MapView;
+  /** 決断待ちの判定 (spec 18 Phase B)。再開時にセーブから復元される。 */
+  decision: DecisionView | null;
 }
 
 /** あらすじ 1 章 (spec 10)。一度確定したら不変 (append-only)。リスト key は upto_turn。 */
@@ -261,6 +308,8 @@ export interface TurnView {
   epilogue: string | null;
   /** マップ (spec 15) — 訪問済み+1歩先の有向グラフ (移動/遷移で変わるので毎ターン)。 */
   map: MapView;
+  /** 決断待ちの判定 (spec 18 Phase B)。非 null の間、開帳後に決断パネルを出し入力を締める。 */
+  decision: DecisionView | null;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

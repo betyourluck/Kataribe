@@ -487,6 +487,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                 }
                 pending_checks = checks; // 次ターンへ持ち越し
+                // spec 18 Phase B: 決断つき判定 (プッシュ/差分買い) の決断 UI は GUI の責務 —
+                // CLI (作者テスト用) は**自動 Accept** で失敗帰結を確定して進む (対話プロンプトは
+                // 台本流し込みと衝突するため足さない)。最終 check を還流用に差し替える。
+                while !state.pending_decisions.is_empty() {
+                    match gm_core::resolve_decision(&mut state, &scenario, gm_core::DecisionChoice::Accept) {
+                        Ok(r) => {
+                            println!(
+                                "  [決断つき判定 → CLI は自動で失敗を受け入れた (プッシュ/買いは GUI で)]"
+                            );
+                            if !r.check.narration.is_empty() {
+                                println!("  {}", r.check.narration);
+                            }
+                            for b in resolve_recall(&lore, &r.fired) {
+                                println!("  ✦ {}", b.narration);
+                            }
+                            // 凍結行を最終結果で差し替え (pending は還流されないため)。
+                            if let Some(slot) = pending_checks.iter_mut().find(|c| c.pending) {
+                                *slot = r.check;
+                            }
+                        }
+                        Err(_) => break, // 防御 (UnknownChallenge 等) — 凍結は engine 側で破棄済み
+                    }
+                }
                 // 反応ビート (Phase C) + memoria_bridge: 発火点で伏線を recall して語りに注入。
                 for beat in beats {
                     println!("  ✦ {}", beat.narration);
