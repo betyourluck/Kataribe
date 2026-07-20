@@ -881,6 +881,16 @@ mod tests {
             brief.contains("d100 ロールアンダー (技能値以下で成功)"),
             "percentile challenge の明示: {brief}"
         );
+        // 再挑戦の規律 (2026-07-20 実測 FB-B): 同一条件の振り直しスパムを抑止しつつ、
+        // 状況が変われば新しい判定として振れる道 (保護) を対で残す (#41 の区別の適用)。
+        assert!(
+            brief.contains("振り直させてはならない"),
+            "抑止: 同一条件の再判定スパム: {brief}"
+        );
+        assert!(
+            brief.contains("状況の変化"),
+            "保護: 状況が変われば新しい判定: {brief}"
+        );
 
         // additive (既定) 盤面には様式節が出ない。
         let plain = Scenario::from_yaml(concat!(

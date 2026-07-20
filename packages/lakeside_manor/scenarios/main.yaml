@@ -2,6 +2,8 @@
 # 動線: 玄関 → 書斎で日記を見つける (目星 check_under を GM が即興で振る想定) →
 # 日記を読んで found_diary → 地下室が開く → 祭壇で SAN チェック (1/1d6) →
 # 真相 goal / SAN 0 なら発狂 goal。
+# 素の失敗は truth_witnessed を立てない (像を結ばない) — SAN だけ削れて再挑戦の
+# 消耗ループが開き、発狂エンドが生きた分岐になる (成功=理解 / fumble=見すぎた、は真相へ)。
 title: 湖畔の洋館
 start: entrance_hall
 check_style: percentile
@@ -46,8 +48,7 @@ challenges:
       effects:
         - { op: adjust_stat, key: SAN, delta: -1 }
     on_failure:
-      flag: truth_witnessed
-      narration: 見てはならないものを見た。悲鳴が地下室に反響し、しばらく自分のものだと気づけなかった。
+      narration: 何かを見た——だが心が像を結ぶことを拒んだ。悲鳴が地下室に反響し、しばらく自分のものだと気づけなかった。水面はまだ、そこにある。
       effects:
         - { op: roll_stat, key: SAN, count: 1, sides: 6, negate: true }
     on_fumble:
