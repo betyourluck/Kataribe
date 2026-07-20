@@ -15,4 +15,15 @@ fn bundled_packages_load_and_validate() {
     // gnosia_village) は配布から削除した。houkago fixture は loader/package テストが検証する。
     harness::load_campaign_package(&repo_root().join("packages").join("escape"))
         .unwrap_or_else(|e| panic!("escape: {e}"));
+
+    // 単発エントリの同梱パッケージ (validate + 未知キー lint がクリーンであること)。
+    for name in ["lakeside_manor", "dice_trial", "friday_lemmon"] {
+        let loaded = harness::load_package(&repo_root().join("packages").join(name))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(
+            loaded.warnings.is_empty(),
+            "{name} の lint 警告: {:?}",
+            loaded.warnings
+        );
+    }
 }

@@ -1,0 +1,108 @@
+# ダイスの試練 — spec 18 Phase A (開帳) の GUI テスト盤面。
+#
+# テスト動線 (推奨入力):
+#   1.「岩を持ち上げる」→ boulder (加算式 1d20+STR vs DC18)。
+#      - 通常失敗: 結末文が毎回・開帳後に出るか
+#      - 自然出目 1..4 = しくじり: rock_slip → 落石トリガー (ビート+SE+HP 1d4 減の
+#        roll_stat) が「全開帳まで伏せられる」か = 漏洩防止の本丸
+#   2.「碑文を読み解く」→ sigil (percentile d100 ≤ 知識60、成功度つき)。
+#      - 失敗/ファンブルで SAN が roll_stat で減る (statrolls カードの開帳)
+#   3. 両方成功 → breakthrough トリガー (CG 差し替え+SE) と goal バナーが
+#      開帳完了まで保留されるか
+#   4. 未開帳中に入力欄が締まるか / 設定オフ (グラフィック) で即時表示に戻るか
+title: ダイスの試練
+start: trial_hall
+
+allowed_flags: [rock_moved, sigil_read, rock_slip]
+flag_titles:
+  rock_moved: 封印岩の移動
+  sigil_read: 碑文の解読
+  rock_slip: 岩のしくじり
+
+locations:
+  trial_hall:
+    title: 試練の間
+    description: >-
+      松明が石壁を舐める広間。出口を塞ぐ封印岩と、壁面いっぱいに刻まれた古代の碑文。
+      番人の声が反響する——「二つの試練を制した者だけが先へ進む」。
+    image: trial_hall.svg
+    exits: []
+
+challenges:
+  # ① 加算式: 伏せカード → 開帳 → 結末文+SE 同期のテスト。
+  boulder:
+    description: 封印岩を持ち上げて動かす (STR 1d20 vs DC18)
+    stat: STR
+    sides: 20
+    dc: 18
+    on_success:
+      flag: rock_moved
+      narration: 全身の筋が軋む。封印岩はゆっくりと傾ぎ、床を擦って動いた。
+      sound: chime.wav
+    on_failure:
+      narration: 岩はびくともしない。掌が擦り剝け、番人の声が低く嗤った気がした。
+    tiers:
+      # 自然出目 1..4 (20%) = しくじり。rock_slip → rockfall トリガーが同一適用で発火
+      # = ビート/SE/roll_stat が開帳まで伏せられるかのテスト経路 (tier threshold の実 content)。
+      slip: { natural: at_most, threshold: 4, flag: rock_slip, narration: 手が滑った。岩がぐらりと戻り、天井から不吉な軋みが降ってくる。 }
+
+  # ② percentile: d100 ロールアンダー + 成功度の開帳テスト。失敗系は roll_stat で SAN 減。
+  sigil:
+    resolution: percentile
+    description: 壁の碑文を読み解く知識ロール (d100 ≤ 知識)
+    stat: 知識
+    on_success:
+      flag: sigil_read
+      narration: 螺旋の文字列が意味を結ぶ。これは封印の手順書だ——読める、読めるぞ。
+      sound: chime.wav
+    on_failure:
+      narration: 文字が視界の中で蠢き、意味を結ばない。読んではいけない箇所を読んだ気がする。
+      effects:
+        - { op: roll_stat, key: SAN, count: 1, sides: 6, negate: true }
+    on_fumble:
+      narration: 碑文がこちらを読み返してきた。頭の奥で何かが千切れる音がした。
+      effects:
+        - { op: roll_stat, key: SAN, count: 1, sides: 10, negate: true }
+
+triggers:
+  # しくじりの帰結: ビート+SE+可変量ダイス。開帳前に鳴ったら/見えたら漏洩 = テストの本丸。
+  - id: rockfall
+    when: { kind: flag_is, key: rock_slip, value: true }
+    effects:
+      - { op: roll_stat, key: HP, count: 1, sides: 4, negate: true }
+    narration: 天井の石が剝がれ落ち、肩を掠めた。番人の試練は容赦がない。
+    sound: rumble.wav
+
+  # 両試練の制覇: CG 差し替え+SE+直後の goal バナー。全部が開帳完了まで保留されるか。
+  - id: breakthrough
+    when:
+      kind: all
+      of:
+        - { kind: flag_is, key: rock_moved, value: true }
+        - { kind: flag_is, key: sigil_read, value: true }
+    narration: 封印岩の奥で錠の外れる音が響き、碑文が金色に輝いて出口が姿を現した。
+    image: breakthrough.svg
+    sound: chime.wav
+
+goals:
+  # 敗北条件を先に (authored 順 = reached の優先順)。
+  - id: collapsed
+    title: 力尽きた
+    hint: HP が尽きるとここで終わる
+    when: { kind: stat_at_most, entity: player, key: HP, value: 0 }
+    narration: 落石の痛みが遠のき、松明の火が滲んで消えた。試練の間は静けさを取り戻す。
+  - id: broken
+    title: 心が折れた
+    hint: SAN が尽きるとここで終わる
+    when: { kind: stat_at_most, entity: player, key: SAN, value: 0 }
+    narration: あなたは碑文の前に座り込み、読めなかった文字を指でなぞり続けている。
+  - id: trial_cleared
+    title: 試練突破
+    hint: 封印岩を動かし、碑文を読み解け
+    when:
+      kind: all
+      of:
+        - { kind: flag_is, key: rock_moved, value: true }
+        - { kind: flag_is, key: sigil_read, value: true }
+    narration: 番人の声が初めて労いの色を帯びた——「行け、挑戦者。運命は開かれた」。
+    epilogue_prompt: 試練を終えた挑戦者の後日談を短く。HP と SAN の残量を踏まえた余韻で。
