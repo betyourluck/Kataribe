@@ -878,7 +878,7 @@ export const useGameStore = defineStore("game", {
               }
               const mod = c.modifier >= 0 ? `+${c.modifier}` : `${c.modifier}`;
               lines.push(
-                `🎯 ${t("log.checkLabel", { entity: c.entity, stat: c.stat })}: 1d${c.sides}(${c.roll})${mod} = ${c.total} (DC ${c.dc}) → ${c.success ? t("log.success") : t("log.fail")}`,
+                `🎯 ${t("log.checkLabel", { entity: c.entity, stat: c.stat })}: ${c.count > 1 ? c.count : 1}d${c.sides}(${c.roll})${c.times > 1 ? '×' + c.times : ''}${mod} = ${c.total} (DC ${c.dc}) → ${c.success ? t("log.success") : t("log.fail")}`,
               );
               if (c.narration) lines.push(c.narration);
             }

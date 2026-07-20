@@ -948,6 +948,13 @@ pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
             continue;
         }
         let mark = if c.success { "成功" } else { "失敗" };
+        // 複数ダイス/乗数 (3D6×5 系) は素の合計と乗数を明示する (既定 1d/×1 は従来書式)。
+        let dice = if c.count > 1 || c.times > 1 {
+            let mult = if c.times > 1 { format!("×{}", c.times) } else { String::new() };
+            format!("{}d{}(合計{}){}", c.count, c.sides, c.roll, mult)
+        } else {
+            format!("1d{}({})", c.sides, c.roll)
+        };
         let margin = c.total - c.dc as i64;
         let gap = if margin >= 0 {
             format!("DC を {margin} 上回った")
@@ -959,8 +966,8 @@ pub fn check_outcome_note(checks: &[CheckOutcome]) -> String {
             None => String::new(),
         };
         s.push_str(&format!(
-            "- {} の「{}」判定: 1d{}({}) + 修正{:+} = {} vs DC {} → {mark}（{gap}{tier}）{decision}\n",
-            c.entity, c.stat, c.sides, c.roll, c.modifier, c.total, c.dc
+            "- {} の「{}」判定: {dice} + 修正{:+} = {} vs DC {} → {mark}（{gap}{tier}）{decision}\n",
+            c.entity, c.stat, c.modifier, c.total, c.dc
         ));
     }
     s

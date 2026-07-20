@@ -8,6 +8,15 @@ import ContestPanel from "./ContestPanel.vue";
 
 const game = useGameStore();
 
+/** 加算式判定のダイス表記: 既定 1d20(5)、複数/乗数なら 3d6(合計11)×5 (2026-07-20)。 */
+function diceLabel(c: { count: number; sides: number; roll: number; times: number }): string {
+  if (c.count > 1 || c.times > 1) {
+    const mult = c.times > 1 ? `×${c.times}` : "";
+    return `${c.count}d${c.sides}(合計${c.roll})${mult}`;
+  }
+  return `1d${c.sides}(${c.roll})`;
+}
+
 /** 可変量ダイスの開帳ラベル (結果を含めない): 「player SAN 1d6」。 */
 function statRollLabel(sr: StatRollView): string {
   const bonus = sr.bonus !== 0 ? (sr.bonus > 0 ? `+${sr.bonus}` : `${sr.bonus}`) : "";
@@ -103,7 +112,7 @@ function statRollFinal(sr: StatRollView): number {
             <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ degreeLabel(c.degree) }}</span>
           </p>
           <p v-else class="text-sm text-parchment/70">
-            🎯 {{ t("log.checkLabel", { entity: c.entity, stat: c.stat }) }}: 1d{{ c.sides }}({{ c.roll }}){{ c.modifier >= 0 ? "+" + c.modifier : c.modifier }} = {{ c.total }} (DC {{ c.dc }}) →
+            🎯 {{ t("log.checkLabel", { entity: c.entity, stat: c.stat }) }}: {{ diceLabel(c) }}{{ c.modifier >= 0 ? "+" + c.modifier : c.modifier }} = {{ c.total }} (DC {{ c.dc }}) →
             <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ c.success ? t("log.success") : t("log.fail") }}</span>
           </p>
           <!-- authored 結末ナレーション (毎回・同ターン)。失敗を必ず描く。 -->
@@ -113,7 +122,7 @@ function statRollFinal(sr: StatRollView): number {
           v-if="entry.revealed < entry.checks.length && i === game.revealTargetIndex"
           :label="t('log.checkLabel', { entity: entry.checks[entry.revealed].entity, stat: entry.checks[entry.revealed].stat })"
           :final="entry.checks[entry.revealed].roll"
-          :max="entry.checks[entry.revealed].degree ? 100 : entry.checks[entry.revealed].sides"
+          :max="entry.checks[entry.revealed].degree ? 100 : entry.checks[entry.revealed].sides * entry.checks[entry.revealed].count"
           @revealed="game.revealNext(i)"
         />
       </div>

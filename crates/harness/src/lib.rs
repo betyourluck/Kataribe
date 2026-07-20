@@ -526,7 +526,7 @@ mod tests {
             tier: None,
             narration: "気配を殺して槍を突き出し、見事に仕留めた。".into(),
             sound: String::new(),
-            degree: None, pushed: false, spent: 0, pending: false,
+            degree: None, count: 1, times: 1, pushed: false, spent: 0, pending: false,
         };
         // 継続文脈: 結末文が「判定の結末」として連結され、次ターンの GM が知る。
         let carry =
@@ -911,7 +911,7 @@ mod tests {
             tier: None,
             narration: String::new(),
             sound: String::new(),
-            degree: Some("hard".into()), pushed: false, spent: 0, pending: false,
+            degree: Some("hard".into()), count: 1, times: 1, pushed: false, spent: 0, pending: false,
         };
         let note = prompt::check_outcome_note(&[c]);
         assert!(note.contains("d100=23 ≤ 目標値60"), "ロールアンダー書式: {note}");
@@ -1064,7 +1064,7 @@ mod tests {
             tier: None,
             narration: String::new(),
             sound: String::new(),
-            degree: None, pushed: false, spent: 0, pending: false,
+            degree: None, count: 1, times: 1, pushed: false, spent: 0, pending: false,
         }];
 
         run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[], &[]).await.unwrap();
@@ -1083,7 +1083,7 @@ mod tests {
         let win = vec![CheckOutcome {
             entity: "player".into(), stat: "話術".into(), sides: 20,
             roll: 18, modifier: 3, total: 21, dc: 15, success: true, tier: None,
-            narration: String::new(), sound: String::new(), degree: None, pushed: false, spent: 0, pending: false,
+            narration: String::new(), sound: String::new(), degree: None, count: 1, times: 1, pushed: false, spent: 0, pending: false,
         }];
         let note = prompt::check_outcome_note(&win);
         assert!(note.contains("なぜ"), "なぜその結果になったかの後付けを要求する");
@@ -1094,7 +1094,7 @@ mod tests {
         let fumble = vec![CheckOutcome {
             entity: "player".into(), stat: "str".into(), sides: 20,
             roll: 1, modifier: 2, total: 3, dc: 6, success: false, tier: Some("crit_fail".into()),
-            narration: String::new(), sound: String::new(), degree: None, pushed: false, spent: 0, pending: false,
+            narration: String::new(), sound: String::new(), degree: None, count: 1, times: 1, pushed: false, spent: 0, pending: false,
         }];
         let note2 = prompt::check_outcome_note(&fumble);
         assert!(note2.contains("DC に 3 届かなかった"), "失敗 margin (-3) を surface する");
@@ -1109,7 +1109,7 @@ mod tests {
         let mk = |narration: &str| CheckOutcome {
             entity: "player".into(), stat: "STR".into(), sides: 20,
             roll: 5, modifier: 0, total: 5, dc: 15, success: false,
-            tier: None, narration: narration.into(), sound: String::new(), degree: None, pushed: false, spent: 0, pending: false,
+            tier: None, narration: narration.into(), sound: String::new(), degree: None, count: 1, times: 1, pushed: false, spent: 0, pending: false,
         };
         // authored 文ありの判定だけ → note は空 (再描写不要)。
         assert!(prompt::check_outcome_note(&[mk("扉はびくともしない。")]).is_empty(),
@@ -1128,7 +1128,7 @@ mod tests {
             entity: "player".into(), stat: "STR".into(), sides: 20,
             roll: 5, modifier: 0, total: 5, dc: 15, success: false,
             tier: None, narration: String::new(), sound: String::new(), degree: None,
-            pushed: false, spent: 0, pending: false,
+            count: 1, times: 1, pushed: false, spent: 0, pending: false,
         };
         // プッシュ経由: 押した経緯を語らせる。
         let pushed = CheckOutcome { pushed: true, ..base.clone() };

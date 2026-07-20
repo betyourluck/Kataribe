@@ -124,6 +124,13 @@ pub struct PendingContest {
     pub ties: u32,
 }
 
+fn default_one_u32() -> u32 {
+    1
+}
+fn default_one_i64() -> i64 {
+    1
+}
+
 /// 決断待ちの判定の凍結素性 (spec 18 Phase B)。**raw_roll (出目そのもの) を必ず持つ** —
 /// 差分買いの費用は `出目 − 買いたい成功度の閾値` の計算に生の出目が要る (degree だけでは
 /// 導けない、rev2 査読 I-5)。帰結スロットは持たない (challenge 定義から決断確定時に解決 =
@@ -138,6 +145,12 @@ pub struct PendingDecision {
     pub stat: StatKey,
     /// ダイス面数 (additive)。percentile は 100。
     pub sides: u32,
+    /// ダイス個数 (既定 1・serde default = 旧セーブ互換)。プッシュの振り直しが同じ式で振るための素性。
+    #[serde(default = "default_one_u32")]
+    pub count: u32,
+    /// 出目の乗数 (既定 1)。同上。
+    #[serde(default = "default_one_i64")]
+    pub times: i64,
     /// **生の出目** (差分買いの費用計算の基準)。
     pub roll: u32,
     /// additive の修正値 (stat + modifiers)。percentile は目標値への修正合算。

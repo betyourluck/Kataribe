@@ -545,6 +545,10 @@ player_dice:
 player_stat_bounds:
   stat_init: "Scenario.initial_stats / package player.stats を **素の数値と StatDecl の untagged 両受け** (StatInit) に。従来形 `hp: 10` は無改修で挙動不変 (min 0・max なし)、境界が要るときだけ `SAN: { initial: 60, min: 0, max: 99 }`。stat_bounds(player) が宣言境界を読み、clamp は adjust/scale/roll_stat の全経路 + spec 18 の差分買い上限 (現在値−min) に自動で効く。負の min で借金も書ける。動機 = initial_stats が StatDecl より古い素の i64 マップだった歴史的非対称 (NPC は境界宣言可・player は不可)。CoC7 の SAN 上限 99 で実害化したため解消。Location.items の旧/新形式両受けと同じ後方互換パターン。lint は mapping 値だけ StatDecl 検査 (StatMap 意味論)"
 
+# --- 複数ダイス×乗数 (2026-07-20。3D6×5 系の判定式) --------------------------------
+multi_dice:
+  count_times: "ChallengeDef/RollSpec に count (個数・既定 1)/times (乗数・既定 1)。additive の出目 = **count 個の d{sides} の合計 × times + 修正** (乗算は素の合計だけ・stat/modifiers は後から加算)。tier は素の合計で判定 (min=全部 1=合計==count / max=全部最大 / threshold 範囲は 1..=count×sides)。percentile は 1d100 固定 (count/times 指定は load 時 PercentileChallengeShape)。additive で count 0/times<1 は ChallengeShapeInvalid。CheckOutcome/PendingDecision に count/times (serde default 1=旧セーブ互換)、プッシュの振り直しも同じ式。表示 = 既定 1d/×1 は従来書式のまま、複数/乗数は「3d6(合計11)×5」(prompt/CLI/GUI 3 経路)。既定 1/1 で挙動・表示とも完全後方互換"
+
 # --- 式修正 (spec 19。判定の修正値/目標値を stat の式で書く) ---------------------
 stat_expressions:
   expr: "ChallengeDef.expr / RollSpec.expr (stat と排他・validate が併記を弾く)。`(CON + SIZ) / 2` の整数式を engine が**判定のたびに現在値で評価** (CON が削られれば補正も落ちる=生きた派生値)。additive=修正値 / percentile=目標値。文法 = 整数・stat 名 (日本語可)・+ - * / ( )・単項マイナス (全角 × ÷ （） も受理)。除算は 0 方向切り捨て (CoC 端数切り捨て準拠)。リテラル /0 は load 時拒否・実行時の stat 由来ゼロ除算は 0 (判定を落とさない)。authored 専権 (LLM は式を持てない)・参照 stat は判定主体の宣言済みキー必須 (load 時 ChallengeExprInvalid/ContestRollInvalid + 裁定時 UnknownStat の二層)。実装 = gm_core::expr (依存ゼロ純関数) + stat_or_expr() 3 適用点 (challenge additive/percentile/contest roll_side)。スコープ外 = DB 帯テーブル (modifiers の Gate 帯で書く)・派生 stat の初期化 (作者の手書き=ユーザー決定)・Gate への式"

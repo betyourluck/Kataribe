@@ -133,6 +133,10 @@ struct CheckView {
     entity: String,
     stat: String,
     sides: u32,
+    /// ダイス個数 (既定 1)。roll は素の合計 (3D6×5 系、2026-07-20)。
+    count: u32,
+    /// 出目の乗数 (既定 1)。total = 合計×times+修正。
+    times: i64,
     roll: u32,
     modifier: i64,
     total: i64,
@@ -2375,6 +2379,8 @@ async fn play_turn(
                     entity: c.entity.clone(),
                     stat: c.stat.clone(),
                     sides: c.sides,
+                    count: c.count,
+                    times: c.times,
                     roll: c.roll,
                     modifier: c.modifier,
                     total: c.total,
@@ -2670,7 +2676,7 @@ async fn resolve_dice_decision(
     let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
     // 継続文脈: 直前の語りに決断の結末を継ぎ足す (判定結末文・ビートを含む)。
     let base = std::mem::take(&mut sess.last_narration);
-    sess.last_narration = carryover_narration(&base, &beat_texts, &[r.check.clone()]);
+    sess.last_narration = carryover_narration(&base, &beat_texts, std::slice::from_ref(&r.check));
     // 経緯ログ: このターンの行に決断を併記する (中期記憶にも決断が残る)。
     if let Some(last) = sess.history.last_mut() {
         let what = if r.check.pushed {
@@ -2712,6 +2718,8 @@ async fn resolve_dice_decision(
         entity: r.check.entity.clone(),
         stat: r.check.stat.clone(),
         sides: r.check.sides,
+        count: r.check.count,
+        times: r.check.times,
         roll: r.check.roll,
         modifier: r.check.modifier,
         total: r.check.total,
@@ -2847,6 +2855,8 @@ async fn play_contest_round(
         entity: c.entity.clone(),
         stat: c.stat.clone(),
         sides: c.sides,
+        count: c.count,
+        times: c.times,
         roll: c.roll,
         modifier: c.modifier,
         total: c.total,
@@ -2870,7 +2880,7 @@ async fn play_contest_round(
     let ended = r.ended.as_ref().map(|end| {
         let digest = harness::contest_digest(end);
         let base = std::mem::take(&mut sess.last_narration);
-        sess.last_narration = carryover_narration(&base, &[digest.clone()], &[]);
+        sess.last_narration = carryover_narration(&base, std::slice::from_ref(&digest), &[]);
         if let Some(h) = sess.history.last_mut() {
             h.summary.push_str(&format!("／{digest}"));
         }

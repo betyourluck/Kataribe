@@ -482,6 +482,14 @@ pub struct ChallengeDef {
     /// additive で 0 は load 時 `ChallengeShapeInvalid` (従来の必須性を validate で保証)。
     #[serde(default)]
     pub sides: u32,
+    /// additive のダイス個数 (既定 1)。`count: 3, sides: 20` で 3d20 の**合計**が出目になる。
+    /// tier (極) は素の合計で判定 (min=全部 1、max=全部最大、threshold は 1..=count×sides)。
+    #[serde(default = "default_dice_count")]
+    pub count: u32,
+    /// 出目の乗数 (既定 1)。`times: 5` で合計 ×5 (CoC 系の 3D6×5 等)。**出目だけに掛かる**
+    /// (stat/modifiers の修正は乗算の後に加算)。percentile では書かない。
+    #[serde(default = "default_dice_times")]
+    pub times: i64,
     /// additive の難易度。percentile では書かない (validate `PercentileChallengeShape`)。
     #[serde(default)]
     pub dc: u32,
@@ -546,10 +554,10 @@ impl ChallengeDef {
     }
 }
 
-/// キャラの「振り方」1 つ (spec 18 Phase C)。additive なら `1d{sides} + stat + bonus`、
+/// キャラの「振り方」1 つ (spec 18 Phase C)。additive なら `{count}d{sides}×times + stat + bonus`、
 /// percentile (contest 側の宣言) なら `1d100 ≤ stat + bonus`。engine 非解釈の閉じた素性 —
 /// LLM は選べず author だけが書く。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollSpec {
     /// 修正に使う stat (その entity が宣言済みであること)。省略 = 純粋な運試し (修正 0)。
     /// percentile では必須 (目標値の素。`expr` でも可)。
@@ -562,9 +570,29 @@ pub struct RollSpec {
     /// additive の面数。percentile では書かない (無視される)。
     #[serde(default)]
     pub sides: u32,
+    /// ダイス個数 (既定 1)。`count: 3, sides: 20` で 3d20 の合計。
+    #[serde(default = "default_dice_count")]
+    pub count: u32,
+    /// 出目の乗数 (既定 1)。合計 ×times (修正 bonus/stat は乗算の後に加算)。
+    #[serde(default = "default_dice_times")]
+    pub times: i64,
     /// 常時修正 (additive: 出目に加算 / percentile: 目標値に加算)。
     #[serde(default)]
     pub bonus: i64,
+}
+
+fn default_dice_count() -> u32 {
+    1
+}
+fn default_dice_times() -> i64 {
+    1
+}
+
+impl Default for RollSpec {
+    /// serde 既定と一致させる (count/times は 1 — std の derive だと 0 になり食い違う)。
+    fn default() -> Self {
+        Self { stat: None, expr: None, sides: 0, count: 1, times: 1, bonus: 0 }
+    }
 }
 
 /// contest の振り方の参照: インライン定義 or テンプレート名 (`CharacterDef.rolls` のキー)。
@@ -1200,7 +1228,9 @@ impl Scenario {
             // (自然出目帯と degree の二重クリティカルは authored 意図が曖昧)。
             match def.resolution {
                 Resolution::Additive => {
-                    if def.sides == 0 {
+                    // sides 0 (欠落) / count 0 (ゼロダイス) / times < 1 (出目が常に 0 以下) は
+                    // 壊れた挑戦 — 実行経路に乗せない。
+                    if def.sides == 0 || def.count == 0 || def.times < 1 {
                         errs.push(ScenarioError::ChallengeShapeInvalid { challenge: cid.clone() });
                     }
                 }
@@ -1215,6 +1245,12 @@ impl Scenario {
                         errs.push(ScenarioError::PercentileChallengeShape {
                             challenge: cid.clone(),
                             detail: "sides/dc は書かない (d100 と目標値=stat が様式で確定)".into(),
+                        });
+                    }
+                    if def.count != 1 || def.times != 1 {
+                        errs.push(ScenarioError::PercentileChallengeShape {
+                            challenge: cid.clone(),
+                            detail: "count/times は書かない (percentile は 1d100 固定)".into(),
                         });
                     }
                     if !def.tiers.is_empty() {
@@ -1255,14 +1291,16 @@ impl Scenario {
             if def.resolution == Resolution::Additive {
                 for (tname, tier) in &def.tiers {
                     if matches!(tier.natural, Natural::AtMost | Natural::AtLeast) {
-                        // 欠落は 0 として報告 (1..=sides 外なので同じ経路で弾かれる)。
+                        // 欠落は 0 として報告 (範囲外なので同じ経路で弾かれる)。判定は素の
+                        // **合計** (count 個の和) なので範囲は 1..=count×sides。
                         let n = tier.threshold.unwrap_or(0);
-                        if n < 1 || n > def.sides {
+                        let max = def.sides.saturating_mul(def.count.max(1));
+                        if n < 1 || n > max {
                             errs.push(ScenarioError::TierThresholdOutOfRange {
                                 challenge: cid.clone(),
                                 tier: tname.clone(),
                                 threshold: n,
-                                sides: def.sides,
+                                sides: max,
                             });
                         }
                     }
@@ -1411,11 +1449,18 @@ impl Scenario {
                             detail: "percentile の振り方には stat (か expr) が必須".into(),
                         });
                     }
-                    Resolution::Additive if spec.sides == 0 => {
+                    Resolution::Percentile if spec.count != 1 || spec.times != 1 => {
                         errs.push(ScenarioError::ContestRollInvalid {
                             contest: cid.clone(),
                             entity: entity.clone(),
-                            detail: "additive の振り方には sides (1 以上) が必須".into(),
+                            detail: "count/times は書かない (percentile は 1d100 固定)".into(),
+                        });
+                    }
+                    Resolution::Additive if spec.sides == 0 || spec.count == 0 || spec.times < 1 => {
+                        errs.push(ScenarioError::ContestRollInvalid {
+                            contest: cid.clone(),
+                            entity: entity.clone(),
+                            detail: "additive の振り方は sides/count 1 以上・times 1 以上".into(),
                         });
                     }
                     _ => {}

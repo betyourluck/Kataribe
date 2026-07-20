@@ -466,9 +466,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         continue;
                     }
                     let mark = if c.success { "成功" } else { "失敗" };
+                    let dice = if c.count > 1 || c.times > 1 {
+                        let mult = if c.times > 1 { format!("×{}", c.times) } else { String::new() };
+                        format!("{}d{}(合計{}){}", c.count, c.sides, c.roll, mult)
+                    } else {
+                        format!("1d{}({})", c.sides, c.roll)
+                    };
                     println!(
-                        "  🎯 {} {} 判定: 1d{}({}){:+} = {} (DC {}) → {mark}",
-                        c.entity, c.stat, c.sides, c.roll, c.modifier, c.total, c.dc
+                        "  🎯 {} {} 判定: {dice}{:+} = {} (DC {}) → {mark}",
+                        c.entity, c.stat, c.modifier, c.total, c.dc
                     );
                 }
                 // 可変量ダイス (spec 16): 「SAN -4 (1d6=4)」— 出目まで監査可能に表示。
@@ -503,7 +509,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         harness::prompt::degree_label_ja(deg)
                                     )
                                 } else {
-                                    format!("{} 1d{}({}){:+}={}", c.entity, c.sides, c.roll, c.modifier, c.total)
+                                    format!("{} {}d{}({}){:+}={}", c.entity, c.count, c.sides, c.roll, c.modifier, c.total)
                                 }
                             };
                             let mark = match r.outcome.as_str() {

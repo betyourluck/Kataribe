@@ -66,6 +66,10 @@ export interface CheckView {
   entity: string;
   stat: string;
   sides: number;
+  /** ダイス個数 (既定 1)。roll は素の合計 (3D6×5 系)。 */
+  count: number;
+  /** 出目の乗数 (既定 1)。total = 合計×times+修正。 */
+  times: number;
   roll: number;
   modifier: number;
   total: number;

@@ -46,12 +46,26 @@ pub struct StatRollOutcome {
     pub amount: i64,
 }
 
-/// 技能判定の結果。`1d{sides} + modifier` を振り `total >= dc` で成否。LLM は出目も合計も持てない。
+fn one_u32() -> u32 {
+    1
+}
+fn one_i64() -> i64 {
+    1
+}
+
+/// 技能判定の結果。`{count}d{sides} × times + modifier` を振り `total >= dc` で成否
+/// (既定 1d・×1 = 従来形)。LLM は出目も合計も持てない。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckOutcome {
     pub entity: String,
     pub stat: String,
     pub sides: u32,
+    /// ダイス個数 (既定 1)。`{count}d{sides}` — roll は**素の合計** (2026-07-20)。
+    #[serde(default = "one_u32")]
+    pub count: u32,
+    /// 出目の乗数 (既定 1)。`total = 合計 × times + 修正` (3D6×5 系。乗算は出目だけ)。
+    #[serde(default = "one_i64")]
+    pub times: i64,
     pub roll: u32,
     pub modifier: i64,
     pub total: i64,
@@ -785,6 +799,8 @@ pub fn contest_round(
                 entity: entity.to_string(),
                 stat: spec.stat.clone().unwrap_or_default(),
                 sides: 100,
+                count: 1,
+                times: 1,
                 roll,
                 modifier: spec.bonus,
                 total: i64::from(roll),
@@ -799,15 +815,18 @@ pub fn contest_round(
                 pending: false,
             }
         } else {
-            let roll = state.rng.roll(spec.sides.max(1));
+            let cnt = spec.count.max(1);
+            let roll: u32 = (0..cnt).map(|_| state.rng.roll(spec.sides.max(1))).sum();
             let modifier = stat_mod + spec.bonus;
             CheckOutcome {
                 entity: entity.to_string(),
                 stat: spec.stat.clone().unwrap_or_default(),
                 sides: spec.sides.max(1),
+                count: spec.count.max(1),
+                times: spec.times.max(1),
                 roll,
                 modifier,
-                total: i64::from(roll) + modifier,
+                total: i64::from(roll) * spec.times.max(1) + modifier,
                 dc: 0, // 対抗は DC でなく相手の合計と比べる
                 success: false,
                 tier: None,
@@ -938,6 +957,8 @@ fn pending_check(p: &crate::state::PendingDecision) -> CheckOutcome {
         entity: p.entity.clone(),
         stat: p.stat.clone(),
         sides: p.sides,
+        count: p.count.max(1),
+        times: p.times.max(1),
         roll: p.roll,
         modifier: p.modifier,
         total: p.total,
@@ -1191,9 +1212,9 @@ pub fn resolve_decision(
                 }
             } else {
                 // additive の振り直し。tier は最初の自然出目だけの劇 — 振り直しでは判定しない
-                // (会心/大失敗の二重抽選を作らない)。
-                let roll2 = state.rng.roll(p.sides);
-                let total2 = i64::from(roll2) + p.modifier;
+                // (会心/大失敗の二重抽選を作らない)。count/times も元の式のまま振り直す。
+                let roll2: u32 = (0..p.count.max(1)).map(|_| state.rng.roll(p.sides)).sum();
+                let total2 = i64::from(roll2) * p.times.max(1) + p.modifier;
                 let success2 = total2 >= i64::from(p.dc);
                 check.roll = roll2;
                 check.total = total2;
@@ -1391,6 +1412,8 @@ fn apply_ops(
                     entity: entity.clone(),
                     stat: stat.clone(),
                     sides: *sides,
+                    count: 1,
+                    times: 1,
                     roll,
                     modifier,
                     total,
@@ -1415,6 +1438,8 @@ fn apply_ops(
                     entity: entity.clone(),
                     stat: key.clone(),
                     sides: 100,
+                    count: 1,
+                    times: 1,
                     roll,
                     modifier: 0,
                     total: i64::from(roll),
@@ -1473,6 +1498,8 @@ fn apply_ops(
                                 entity: subject.clone(),
                                 stat: def.stat.clone().unwrap_or_default(),
                                 sides: 100,
+                                count: 1,
+                                times: 1,
                                 roll,
                                 modifier: cond_mod,
                                 total: i64::from(roll),
@@ -1502,6 +1529,8 @@ fn apply_ops(
                             entity: subject.clone(),
                             stat: def.stat.clone().unwrap_or_default(),
                             sides: 100,
+                            count: 1,
+                            times: 1,
                             roll,
                             // percentile の modifier は「目標値への修正」(出目加算ではない)。
                             modifier: cond_mod,
@@ -1518,7 +1547,10 @@ fn apply_ops(
                         });
                         continue;
                     }
-                    let roll = state.rng.roll(def.sides);
+                    // 素の合計: count 個の d{sides} (既定 1 = 従来形)。tier は素の合計で判定し、
+                    // times (乗数) は**合計だけ**に掛かる (修正は乗算の後 — 3D6×5 系)。
+                    let count = def.count.max(1);
+                    let roll: u32 = (0..count).map(|_| state.rng.roll(def.sides)).sum();
                     // 判定主体: authored 固定 (def.entity) が op の entity を上書きする。
                     let subject = def.entity.as_ref().unwrap_or(entity);
                     // stat 無し = 能力に依らない純粋ダイス (修正値 0)。式修正 (spec 19) があれば
@@ -1527,7 +1559,7 @@ fn apply_ops(
                     // 条件付き修正: when (Gate) が真の分だけ bonus を加える (導師の教えで +5 等)。
                     let cond_mod: i64 = def.modifiers.iter().filter(|m| m.when.eval(state)).map(|m| m.bonus).sum();
                     let modifier = stat_mod + cond_mod;
-                    let total = roll as i64 + modifier;
+                    let total = i64::from(roll) * def.times.max(1) + modifier;
                     let success = total >= def.dc as i64;
                     // 極 (tier): 自然出目が min/max/閾値に該当する authored tier を引く。
                     // 複数該当時は BTreeMap のキー名昇順で最初が勝つ (決定論)。
@@ -1535,8 +1567,9 @@ fn apply_ops(
                     // 閾値欠落 (validate が弾く前提だが) は発火させない安全側 (map_or false)。
                     // 凍結判定 (spec 18) に tier 該当の有無が要るため、成否帰結より先に引く。
                     let hit = def.tiers.iter().find(|(_, t)| match t.natural {
-                        crate::spine::Natural::Min => roll == 1,
-                        crate::spine::Natural::Max => roll == def.sides,
+                        // 素の合計で判定: min = 全部 1 (合計 == count) / max = 全部最大。
+                        crate::spine::Natural::Min => roll == count,
+                        crate::spine::Natural::Max => roll == def.sides * count,
                         crate::spine::Natural::AtMost => t.threshold.is_some_and(|n| roll <= n),
                         crate::spine::Natural::AtLeast => t.threshold.is_some_and(|n| roll >= n),
                     });
@@ -1549,6 +1582,8 @@ fn apply_ops(
                             entity: subject.clone(),
                             stat: def.stat.clone().unwrap_or_default(),
                             sides: def.sides,
+                            count: def.count.max(1),
+                            times: def.times.max(1),
                             roll,
                             modifier,
                             total,
@@ -1604,6 +1639,8 @@ fn apply_ops(
                         entity: subject.clone(),
                         stat: def.stat.clone().unwrap_or_default(),
                         sides: def.sides,
+                        count: def.count.max(1),
+                        times: def.times.max(1),
                         roll,
                         modifier,
                         total,
@@ -5848,6 +5885,65 @@ locations:
             entity: PLAYER.into(), key: "hp".into(), delta: 100,
         }])).unwrap();
         assert_eq!(s.stat_of(PLAYER, "hp"), 110, "従来形に上限は生えない (後方互換)");
+    }
+
+    /// 【複数ダイス×乗数 (3D6×5 系、2026-07-20)】challenge の出目を `{count}d{sides}×times` に
+    /// 一般化。乗算は素の合計だけに掛かり (修正は後から加算)、tier は素の合計で判定
+    /// (min=全部 1)。既定 1d/×1 は従来と完全一致 (後方互換)。
+    #[test]
+    fn challenge_multi_dice_with_multiplier() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { BONUS: 7 }
+allowed_flags: [botch]
+challenges:
+  gen:
+    description: 3d1×5 (決定論)
+    stat: BONUS
+    count: 3
+    sides: 1
+    times: 5
+    dc: 20
+    tiers:
+      slip: { natural: min, flag: botch, narration: 全部 1 だ。 }
+goal: { kind: flag_is, key: never, value: true }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(1);
+        let o = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(), challenge: "gen".into(),
+        }])).unwrap();
+        let c = &o.checks[0];
+        assert_eq!((c.count, c.sides, c.times), (3, 1, 5), "素性が surface される");
+        assert_eq!(c.roll, 3, "roll は素の合計 (3d1 = 3)");
+        assert_eq!(c.total, 3 * 5 + 7, "合計×times + 修正 = 22");
+        assert!(c.success, "22 >= DC20");
+        assert_eq!(c.tier.as_deref(), Some("slip"), "min = 全部 1 (合計 == count) で tier 発火");
+        assert!(s.flag("botch"));
+
+        // percentile に count/times は書けない (1d100 固定)。
+        let bad = r#"
+title: t
+start: room
+initial_stats: { "知識": 60 }
+allowed_flags: []
+challenges:
+  p: { resolution: percentile, description: d, stat: "知識", count: 3, times: 5 }
+goal: { kind: flag_is, key: never, value: true }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc2 = Scenario::from_yaml(bad).unwrap();
+        assert!(
+            sc2.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::PercentileChallengeShape { detail, .. }
+                if detail.contains("count/times"))),
+            "percentile への count/times は load 時に弾く"
+        );
     }
 
     // =========================================================================
