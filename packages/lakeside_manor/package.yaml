@@ -2,9 +2,9 @@
 # check_under (目星/図書館の即興判定)・percentile challenge + roll_stat (SAN 1/1d6)・
 # stat_at_most goal (発狂エンド) を実 LLM プレイで踏むための盤面。
 title: 湖畔の洋館
-description: 消息を絶った蒐集家の洋館を訪ねる、ひと晩の探索譚。正気度が試される。
+description: 消息を絶った蒐集家の洋館を訪ねる、ひと晩の探索譚。正気度が試される。覗いて知るか、封じて守るか。
 author: Kataribe
-version: "0.1"
+version: "0.2"
 entry: scenarios/main.yaml
 world: |
   1920 年代風の湖畔の田舎町。電灯はまだ心許なく、夜は深い。

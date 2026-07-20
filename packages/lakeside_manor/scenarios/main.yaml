@@ -1,47 +1,112 @@
-# 湖畔の洋館 — percentile 様式 (spec 16) のドッグフード。
-# 動線: 玄関 → 書斎で日記を見つける (目星 check_under を GM が即興で振る想定) →
-# 日記を読んで found_diary → 地下室が開く → 祭壇で SAN チェック (1/1d6) →
-# 真相 goal / SAN 0 なら発狂 goal。
-# 素の失敗は truth_witnessed を立てない (像を結ばない) — SAN だけ削れて再挑戦の
-# 消耗ループが開き、発狂エンドが生きた分岐になる (成功=理解 / fumble=見すぎた、は真相へ)。
+# 湖畔の洋館 — percentile 様式 (spec 16) のドッグフード兼配布用短編 (30〜40 分)。
+# 動線 (三枝):
+#   玄関 → 書斎で日記 (found_diary) → 地下が開く。
+#   [調査ルート] 寝室の手紙 (read_letter, 研究に +10) → 書斎で図書館判定 (research_spiral)
+#     → 螺旋の知識 (spiral_knowledge, 覗きに +10 / 封印の前提)。イクストリームで封印の手順まで。
+#   [結末] 覗く (altar_gaze) = 真相 / 封じる (seal_ritual) = 封印 / SAN 0 = 発狂。
+# 素の失敗は帰結フラグを立てない — SAN だけ削れて再挑戦の消耗ループが開き、
+# 発狂エンドが生きた分岐になる (成功=理解 / fumble=見すぎた、は真相へ)。
+# SAN を目標値に使う判定 (覗き/封印) は、削れるほど成功しにくくなる死のスパイラルを併発する。
 title: 湖畔の洋館
 start: entrance_hall
 check_style: percentile
 
-allowed_flags: [found_diary, truth_witnessed]
+allowed_flags: [found_diary, read_letter, spiral_knowledge, ritual_insight, sealed, truth_witnessed]
 flag_hints:
   found_diary: 書斎で湖山の日記を見つけて読んだら立てる
+  read_letter: 寝室で湖山の書きかけの手紙を読んだら立てる
 flag_rules:
   found_diary: { kind: location_is, at: study }
+  read_letter: { kind: location_is, at: bedroom }
 flag_titles:
   found_diary: 湖山の日記
+  read_letter: 湖山の手紙
+  spiral_knowledge: 螺旋の知識
+  ritual_insight: 封印の手順
+  sealed: 祭壇の封印
   truth_witnessed: 湖底の真実
 
 locations:
   entrance_hall:
     title: 玄関ホール
-    description: 埃をかぶったシャンデリア。呼び鈴を鳴らしても、誰も出ない。扉は開いていた。
+    description: 埃をかぶったシャンデリア。呼び鈴を鳴らしても、誰も出ない。扉は開いていた。奥に書斎、二階へ上がる階段、外へ戻れば湖岸へ降りる小径がある。
     exits:
       - to: study
+      - to: bedroom
+      - to: lakeshore
   study:
     title: 書斎
-    description: 書架が壁を埋める。机の上だけが不自然に整頓され、抽斗が半開きになっている。
+    description: 書架が壁を埋める。机の上だけが不自然に整頓され、抽斗が半開きになっている。蔵書には湖の伝承や紋様学の稀覯本が交じっている。
     exits:
       - to: entrance_hall
       - to: cellar
         gate: { kind: flag_is, key: found_diary, value: true }
+  bedroom:
+    title: 湖山の寝室
+    description: 二階の角部屋。寝台は整えられたまま埃を被り、書き物机に封をされていない手紙が残されている。窓からは黒い湖面が見下ろせる。
+    items:
+      湖山の懐中時計: { kind: always }
+    exits:
+      - to: entrance_hall
+  lakeshore:
+    title: 湖岸の桟橋
+    description: 朽ちかけた桟橋が黒い水面へ伸びる。風が止むと、湖はいっさいの音を失う。洋館の明かりのない窓が、水面にだけ映っている。
+    exits:
+      - to: entrance_hall
   cellar:
     title: 地下室
     description: 湿った石段の先。壁一面に螺旋の紋様が刻まれ、中央に黒い水を湛えた祭壇がある。
     exits:
       - to: study
 
+triggers:
+  # 初めて地下に踏み込んだ瞬間の空気 (一度きり)。
+  - id: first_descent
+    when: { kind: location_is, at: cellar }
+    effects: []
+    narration: 石段を降りきった瞬間、風もないのに祭壇の水面がひとつ、小さく波打った——まるで、来客に気づいたかのように。
+  # 正気が磨り減ってきた者にだけ聞こえるもの (一度きり)。
+  - id: whispers
+    when: { kind: stat_at_most, entity: player, key: SAN, value: 40 }
+    effects: []
+    narration: ふとした静寂の底で、水音に紛れて誰かが自分の名を呼んだ気がした。振り返っても、誰もいない。それきり声は止んだが、耳の奥の湿り気だけが残った。
+
 challenges:
+  research_spiral:
+    resolution: percentile
+    description: 書架の稀覯本で螺旋の紋様を調べる (図書館)。日記を読んで初めて、何を調べるべきかが分かる
+    stat: 図書館
+    requires:
+      kind: all
+      of:
+        - { kind: location_is, at: study }
+        - { kind: flag_is, key: found_diary, value: true }
+    modifiers:
+      - when: { kind: flag_is, key: read_letter, value: true }
+        bonus: 10
+    on_success:
+      flag: spiral_knowledge
+      narration: 稀覯本の記述が日記の走り書きと噛み合った。螺旋は「境界」の紋——湖の底のものは、覗く者の心を通ってこちらへ滲み出す。知っていれば、心構えはできる。
+    on_extreme:
+      flag: spiral_knowledge
+      effects:
+        - { op: set_flag, key: ritual_insight, value: true }
+      narration: 紋様の意味だけではない——蔵書の欄外に、湖山自身の手で封印の手順が書き足されていた。「境界は、正気をもって描き直せる」。
+    on_failure:
+      narration: 古文書は膨大で、異国の文字が目を滑っていく。手がかりの糸口すら掴めない——湖山が何を読んでいたのか、彼の私室にでも痕跡があれば。
+    on_fumble:
+      narration: 読み耽るうち、頁の螺旋が眼の奥で回り始めた。気づけば窓の外が暗い。読んではならない行を、読んでしまった気がする。
+      effects:
+        - { op: roll_stat, key: SAN, count: 1, sides: 3, negate: true }
+
   altar_gaze:
     resolution: percentile
-    description: 祭壇の黒い水を覗き込む正気度ロール (SAN)
+    description: 祭壇の黒い水を覗き込む正気度ロール (SAN)。螺旋の知識があれば心構えができる
     stat: SAN
     requires: { kind: location_is, at: cellar }
+    modifiers:
+      - when: { kind: flag_is, key: spiral_knowledge, value: true }
+        bonus: 10
     on_success:
       flag: truth_witnessed
       narration: 水面の奥に、湖山が「向こう側」へ渡った理由を見た。理解はできたが、忘れられない。
@@ -57,7 +122,56 @@ challenges:
       effects:
         - { op: roll_stat, key: SAN, count: 1, sides: 10, negate: true }
 
+  seal_ritual:
+    resolution: percentile
+    description: 螺旋の知識をもって祭壇の境界を描き直し、黒い水を封じる儀式 (SAN)。真実を見ずに終わらせる道
+    stat: SAN
+    requires:
+      kind: all
+      of:
+        - { kind: location_is, at: cellar }
+        - { kind: flag_is, key: spiral_knowledge, value: true }
+    modifiers:
+      - when: { kind: flag_is, key: ritual_insight, value: true }
+        bonus: 10
+    on_success:
+      flag: sealed
+      narration: 指先で描き直した螺旋が、一瞬だけ白く発光した。水面が初めて音を立てて揺れ——それきり、ただの黒い水になった。境界は閉じた。
+      effects:
+        - { op: roll_stat, key: SAN, count: 1, sides: 3, negate: true }
+    on_failure:
+      narration: 描線が乱れ、螺旋が軋む。水面の下から押し返す圧が指を伝い、頭の中を直接掻き毟った。境界はまだ開いている。
+      effects:
+        - { op: roll_stat, key: SAN, count: 1, sides: 4, negate: true }
+    on_fumble:
+      flag: truth_witnessed
+      narration: 描きかけた境界が裂けた。閉じようとしたその隙間から——見てしまった。封じるべきだったものの、全容を。
+      effects:
+        - { op: roll_stat, key: SAN, count: 1, sides: 10, negate: true }
+
 goals:
+  # 順序 = 優先順位 (最初に成立した goal が勝つ)。SAN 0 は何を成し遂げていようと発狂
+  # (封印と同時に正気が尽きれば、封じ切って、壊れる)。
+  - id: madness_ending
+    title: 発狂
+    hint: 正気を使い果たすとここで終わる
+    when: { kind: stat_at_most, entity: player, key: SAN, value: 0 }
+    narration: |
+      翌朝、湖畔で発見されたあなたは、螺旋の紋様を指でなぞり続けていたという。
+      洋館の扉は、もう二度と開かなかった。
+    epilogue_prompt: |
+      正気を失った調査員のその後を、三人称で短く。何を見たのかは決して語らず、
+      周囲の人々から見えた変化 (療養先での仕草・繰り返す言葉・水を避けること) だけで余韻を。
+  - id: sealed_ending
+    title: 封印
+    hint: 洋館を調べ尽くし、湖の底のものを封じる道もある
+    when: { kind: flag_is, key: sealed, value: true }
+    narration: |
+      夜明け前、あなたは洋館を後にした。湖山は戻らない。だが、これ以上誰も
+      「向こう側」へ渡ることはない。真実を見ないまま、あなたはそれを選んだ。
+    epilogue_prompt: |
+      封じた者のその後を短く。真実を見ずに守り抜いたことの重さ——知らないままでいる
+      不安と、誰にも誇れない達成を、SAN の残量 (高ければ静かな誇り・低ければ代償の影) を踏まえて余韻を。
   - id: truth_ending
     title: 真相
     hint: 洋館を調べ、湖山の身に起きたことを突き止めよう
@@ -68,10 +182,3 @@ goals:
     epilogue_prompt: |
       調査員のその後を短く。目撃した真実が日常にどんな影を落とすか、
       SAN の残量 (高ければ気丈に・低ければ危うく) を踏まえて余韻を。
-  - id: madness_ending
-    title: 発狂
-    hint: 正気を使い果たすとここで終わる
-    when: { kind: stat_at_most, entity: player, key: SAN, value: 0 }
-    narration: |
-      翌朝、湖畔で発見されたあなたは、螺旋の紋様を指でなぞり続けていたという。
-      洋館の扉は、もう二度と開かなかった。
