@@ -1,4 +1,4 @@
-# ダイスの試練 — spec 18 Phase A (開帳) の GUI テスト盤面。
+# ダイスの試練 — spec 18 Phase A (開帳) の GUI テスト盤面 + 「今日できる戦闘」のサンプル。
 #
 # テスト動線 (推奨入力):
 #   1.「岩を持ち上げる」→ boulder (加算式 1d20+STR vs DC18)。
@@ -7,24 +7,39 @@
 #        roll_stat) が「全開帳まで伏せられる」か = 漏洩防止の本丸
 #   2.「碑文を読み解く」→ sigil (percentile d100 ≤ 知識60、成功度つき)。
 #      - 失敗/ファンブルで SAN が roll_stat で減る (statrolls カードの開帳)
-#   3. 両方成功 → breakthrough トリガー (CG 差し替え+SE) と goal バナーが
-#      開帳完了まで保留されるか
-#   4. 未開帳中に入力欄が締まるか / 設定オフ (グラフィック) で即時表示に戻るか
+#   3. 両方成功 → breakthrough トリガー (CG 差し替え+SE+番人の登場=set_presence) と
+#      戦闘解禁バナーが開帳完了まで保留されるか
+#   4.「番人に斬りかかる」→ attack_guardian (戦闘の定石: 攻撃 1 回=challenge 1 個、
+#      成功=敵 HP 1d8 減 / 失敗=反撃で自分 HP 1d6 減 / 自然 20=会心 +1d8)。
+#      命中カード → ダメージカードが直列で開く。番人 HP 0 → 試練突破。
+#   5. 未開帳中に入力欄が締まるか / 設定オフ (グラフィック) で即時表示に戻るか
 title: ダイスの試練
 start: trial_hall
 
-allowed_flags: [rock_moved, sigil_read, rock_slip]
+# 番人 — 「今日できる戦闘」の相手。engine がキャラ別 HP を握り、challenge の帰結が
+# roll_stat でダメージを振る (LLM は挑戦を選ぶだけ = 数値を持てない閉世界)。
+# 敵の技量は DC が代役 (真の対抗ロールは spec 18 Phase C の Contest)。
+characters:
+  guardian:
+    name: 石の番人
+    profile: 試練の間を守り続けた古の石像。二つの試練を制した者だけに、最後の試練として立ちはだかる。
+    stats:
+      HP: { initial: 12, min: 0 }
+
+allowed_flags: [rock_moved, sigil_read, rock_slip, battle_started]
 flag_titles:
   rock_moved: 封印岩の移動
   sigil_read: 碑文の解読
   rock_slip: 岩のしくじり
+  battle_started: 番人戦の開幕
 
 locations:
   trial_hall:
     title: 試練の間
     description: >-
       松明が石壁を舐める広間。出口を塞ぐ封印岩と、壁面いっぱいに刻まれた古代の碑文。
-      番人の声が反響する——「二つの試練を制した者だけが先へ進む」。
+      奥の壁龕には巨大な石像が沈黙している。番人の声が反響する——
+      「二つの試練を制した者だけが、最後の試練に見える」。
     image: trial_hall.svg
     exits: []
 
@@ -45,6 +60,32 @@ challenges:
       # 自然出目 1..4 (20%) = しくじり。rock_slip → rockfall トリガーが同一適用で発火
       # = ビート/SE/roll_stat が開帳まで伏せられるかのテスト経路 (tier threshold の実 content)。
       slip: { natural: at_most, threshold: 4, flag: rock_slip, narration: 手が滑った。岩がぐらりと戻り、天井から不吉な軋みが降ってくる。 }
+
+  # ④ 戦闘の定石: 攻撃 1 回 = challenge 1 個。命中判定 → 与ダメ/被ダメまで engine が
+  # 同一ターンに原子解決する (帰結は authored = LLM は選ぶだけ)。勝敗は HP goal が裁く。
+  attack_guardian:
+    description: 番人に斬りかかる (STR 1d20 vs DC18。外せば反撃を受ける)
+    stat: STR
+    sides: 20
+    dc: 18
+    requires: { kind: flag_is, key: battle_started, value: true }
+    on_success:
+      narration: 刃が石の外殻を裂き、罅から鈍い光が漏れた。
+      sound: chime.wav
+      effects:
+        - { op: roll_stat, entity: guardian, key: HP, count: 1, sides: 8, negate: true }
+    on_failure:
+      narration: 斬撃は空を切った。石の腕が唸りを上げて胴を打つ。
+      sound: rumble.wav
+      effects:
+        - { op: roll_stat, key: HP, count: 1, sides: 6, negate: true }
+    tiers:
+      # 自然 20 = 会心。tier 効果は on_success に加算される (打ち消さない)。
+      crit:
+        natural: max
+        narration: 会心の一撃——刃は罅を正確に穿ち、番人の胸奥で何かが砕けた。
+        effects:
+          - { op: roll_stat, entity: guardian, key: HP, count: 1, sides: 8, negate: true }
 
   # ② percentile: d100 ロールアンダー + 成功度の開帳テスト。失敗系は roll_stat で SAN 減。
   sigil:
@@ -73,16 +114,22 @@ triggers:
     narration: 天井の石が剝がれ落ち、肩を掠めた。番人の試練は容赦がない。
     sound: rumble.wav
 
-  # 両試練の制覇: CG 差し替え+SE+直後の goal バナー。全部が開帳完了まで保留されるか。
+  # 両試練の制覇: CG 差し替え+SE+番人の登場 (set_presence=authored 専権)。
+  # ビート/CG/顔アイコンの変化が開帳完了まで保留されるかのテスト。
   - id: breakthrough
     when:
       kind: all
       of:
         - { kind: flag_is, key: rock_moved, value: true }
         - { kind: flag_is, key: sigil_read, value: true }
-    narration: 封印岩の奥で錠の外れる音が響き、碑文が金色に輝いて出口が姿を現した。
+    effects:
+      - { op: set_flag, key: battle_started, value: true }
+      - { op: set_presence, entity: guardian, present: true }
+    narration: >-
+      碑文が金色に輝き、封印岩の奥で錠の外れる音が響いた——だが出口の前で、
+      壁龕の石像が軋みを上げて動き出す。最後の試練、石の番人が立ちはだかった。
     image: breakthrough.svg
-    sound: chime.wav
+    sound: rumble.wav
 
 goals:
   # 敗北条件を先に (authored 順 = reached の優先順)。
@@ -98,11 +145,9 @@ goals:
     narration: あなたは碑文の前に座り込み、読めなかった文字を指でなぞり続けている。
   - id: trial_cleared
     title: 試練突破
-    hint: 封印岩を動かし、碑文を読み解け
-    when:
-      kind: all
-      of:
-        - { kind: flag_is, key: rock_moved, value: true }
-        - { kind: flag_is, key: sigil_read, value: true }
-    narration: 番人の声が初めて労いの色を帯びた——「行け、挑戦者。運命は開かれた」。
-    epilogue_prompt: 試練を終えた挑戦者の後日談を短く。HP と SAN の残量を踏まえた余韻で。
+    hint: 封印岩を動かし、碑文を読み解き、目覚めた番人を討て
+    when: { kind: stat_at_most, entity: guardian, key: HP, value: 0 }
+    narration: >-
+      石の番人は膝をつき、崩れながら初めて労いの声を発した——「行け、挑戦者。運命は開かれた」。
+      砕けた石片の向こうで、出口の光が揺れている。
+    epilogue_prompt: 三つの試練を終えた挑戦者の後日談を短く。HP と SAN の残量を踏まえた余韻で。
