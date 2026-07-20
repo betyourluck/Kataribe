@@ -372,6 +372,18 @@ onMounted(async () => {
               :style="game.backgroundStyle"
             />
             <p v-else class="text-parchment/40 text-xs">{{ t("settings.graphics.noPreview") }}</p>
+
+            <!-- ダイスの開帳演出 (spec 18 Phase A) -->
+            <label class="flex items-center gap-2 text-sm text-parchment/70 pt-2">
+              <input
+                type="checkbox"
+                :checked="game.diceReveal"
+                class="accent-ember"
+                @change="game.setDiceReveal(($event.target as HTMLInputElement).checked)"
+              />
+              {{ t("settings.graphics.diceReveal") }}
+            </label>
+            <p class="text-parchment/40 text-xs">{{ t("settings.graphics.diceRevealNote") }}</p>
           </section>
 
           <!-- サウンド -->

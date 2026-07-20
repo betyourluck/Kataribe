@@ -1,8 +1,21 @@
 <script setup lang="ts">
 import { useGameStore, degreeLabel, statRollLine } from "../stores/game";
+import type { StatRollView } from "../types/api";
 import { t } from "../i18n";
+import DiceReveal from "./DiceReveal.vue";
 
 const game = useGameStore();
+
+/** 可変量ダイスの開帳ラベル (結果を含めない): 「player SAN 1d6」。 */
+function statRollLabel(sr: StatRollView): string {
+  const bonus = sr.bonus !== 0 ? (sr.bonus > 0 ? `+${sr.bonus}` : `${sr.bonus}`) : "";
+  return `${sr.entity} ${sr.key} ${sr.count}d${sr.sides}${bonus}`;
+}
+
+/** 可変量ダイスの着地値 (出目の合計。amount は clamp 後の適用量なので出目とは別)。 */
+function statRollFinal(sr: StatRollView): number {
+  return sr.rolls.reduce((a, b) => a + b, 0);
+}
 </script>
 
 <template>
@@ -65,17 +78,24 @@ const game = useGameStore();
         </template>
       </div>
 
-      <!-- ダイス -->
+      <!-- ダイス (spec 18: 開帳済みの分だけ表示し、次の 1 個を伏せカードで出す) -->
       <div v-else-if="entry.kind === 'rolls'" class="space-y-0.5">
-        <p v-for="(r, j) in entry.rolls" :key="j" class="text-sm text-parchment/70">
+        <p v-for="(r, j) in entry.rolls.slice(0, entry.revealed)" :key="j" class="text-sm text-parchment/70">
           🎲 1d{{ r.sides }} = {{ r.result }} (DC {{ r.dc }}) →
           <span :class="r.success ? 'text-glow' : 'text-ember/60'">{{ r.success ? t("log.success") : t("log.fail") }}</span>
         </p>
+        <DiceReveal
+          v-if="entry.revealed < entry.rolls.length && i === game.revealTargetIndex"
+          :label="`1d${entry.rolls[entry.revealed].sides} (DC ${entry.rolls[entry.revealed].dc})`"
+          :final="entry.rolls[entry.revealed].result"
+          :max="entry.rolls[entry.revealed].sides"
+          @revealed="game.revealNext(i)"
+        />
       </div>
 
       <!-- 技能判定 (加算式 = 出目+修正 vs DC / percentile = d100 ロールアンダー + 成功度, spec 16) -->
       <div v-else-if="entry.kind === 'checks'" class="space-y-1">
-        <template v-for="(c, j) in entry.checks" :key="j">
+        <template v-for="(c, j) in entry.checks.slice(0, entry.revealed)" :key="j">
           <p v-if="c.degree" class="text-sm text-parchment/70">
             🎯 {{ t("log.checkLabel", { entity: c.entity, stat: c.stat }) }}: d100={{ c.roll }} {{ c.success ? "≤" : ">" }} {{ c.dc }} →
             <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ degreeLabel(c.degree) }}</span>
@@ -87,13 +107,27 @@ const game = useGameStore();
           <!-- authored 結末ナレーション (毎回・同ターン)。失敗を必ず描く。 -->
           <p v-if="c.narration" class="text-parchment/90 whitespace-pre-wrap" :style="game.narrationStyle">{{ c.narration }}</p>
         </template>
+        <DiceReveal
+          v-if="entry.revealed < entry.checks.length && i === game.revealTargetIndex"
+          :label="t('log.checkLabel', { entity: entry.checks[entry.revealed].entity, stat: entry.checks[entry.revealed].stat })"
+          :final="entry.checks[entry.revealed].roll"
+          :max="entry.checks[entry.revealed].degree ? 100 : entry.checks[entry.revealed].sides"
+          @revealed="game.revealNext(i)"
+        />
       </div>
 
       <!-- 可変量ダイス (roll_stat, spec 16): 「SAN -4 (1d6=4)」の監査行 -->
       <div v-else-if="entry.kind === 'statrolls'" class="space-y-0.5">
-        <p v-for="(sr, j) in entry.stat_rolls" :key="j" class="text-sm text-parchment/70">
+        <p v-for="(sr, j) in entry.stat_rolls.slice(0, entry.revealed)" :key="j" class="text-sm text-parchment/70">
           🎲 {{ statRollLine(sr) }}
         </p>
+        <DiceReveal
+          v-if="entry.revealed < entry.stat_rolls.length && i === game.revealTargetIndex"
+          :label="statRollLabel(entry.stat_rolls[entry.revealed])"
+          :final="statRollFinal(entry.stat_rolls[entry.revealed])"
+          :max="entry.stat_rolls[entry.revealed].count * entry.stat_rolls[entry.revealed].sides"
+          @revealed="game.revealNext(i)"
+        />
       </div>
 
       <!-- 却下 (正本が嘘を弾いた) -->

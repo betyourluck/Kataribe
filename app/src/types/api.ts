@@ -271,9 +271,11 @@ export type LogEntry =
   // narration は authored な物語ビート (常時表示)。recalled (memoria/伏線) は次ターンに GM が
   // 語りへ織り込むので既定で畳む (expanded で展開)。
   | { kind: "beat"; narration: string; recalled: string[]; expanded?: boolean }
-  | { kind: "rolls"; rolls: RollView[] }
-  | { kind: "checks"; checks: CheckView[] }
-  | { kind: "statrolls"; stat_rolls: StatRollView[] }
+  // ダイス系 3 種は開帳演出 (spec 18 Phase A) を持つ: revealed = 開帳済みの件数。
+  // 演出オフ/旧来動作では最初から全件 (= 配列長)。frontend 揮発 (リロードで自動開帳)。
+  | { kind: "rolls"; rolls: RollView[]; revealed: number }
+  | { kind: "checks"; checks: CheckView[]; revealed: number }
+  | { kind: "statrolls"; stat_rolls: StatRollView[]; revealed: number }
   | { kind: "reject"; reasons: string[]; attempts: number }
   // 自己修復 (GM が筋を通すまでの試行) — 既定で畳み、⚠ アイコンのみ表示。expanded で展開。
   | { kind: "selfrepair"; attempts: number; reasons: string[][]; expanded?: boolean }

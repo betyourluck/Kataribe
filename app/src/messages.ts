@@ -127,6 +127,9 @@ export const messages = {
         note:
           "背景画像にかける暗幕の濃さを調整します（右に動かすほど画像が明るく、左ほど暗く＝文字が読みやすく）。即時適用・localStorage に保存。",
         noPreview: "（ゲーム開始後、背景のあるパッケージでプレビューが出ます）",
+        diceReveal: "ダイスの開帳演出（クリックで振る）",
+        diceRevealNote:
+          "判定の結果を伏せ、ダイスをクリックして開きます。オフ＝従来どおり即時表示（テストプレイ向け）。",
       },
       sound: {
         heading: "サウンド",
@@ -230,6 +233,8 @@ export const messages = {
       success: "成功",
       fail: "失敗",
       checkLabel: "{entity} の{stat}判定",
+      diceOpen: "クリックで振る",
+      diceOpenTitle: "運命は既に転がっている — 開くだけだ",
       // d100 ロールアンダーの成功度 (spec 16)。内部 id は英語、表示は差し替え可能なこの表。
       degreeCritical: "クリティカル",
       degreeExtreme: "イクストリーム成功",
@@ -498,6 +503,9 @@ export const messages = {
         note:
           "Adjusts the dark overlay on the background image (drag right for a brighter image, left for darker = more readable text). Applied instantly, saved to localStorage.",
         noPreview: "(After a game starts, a preview appears for packages that have a background.)",
+        diceReveal: "Dice reveal (click to roll)",
+        diceRevealNote:
+          "Hides check results behind a die you click to open. Off = immediate display as before (for playtesting).",
       },
       sound: {
         heading: "Sound",
@@ -603,6 +611,8 @@ export const messages = {
       success: "Success",
       fail: "Fail",
       checkLabel: "{entity}'s {stat} check",
+      diceOpen: "Click to roll",
+      diceOpenTitle: "Fate has already been cast — you only open it",
       degreeCritical: "Critical",
       degreeExtreme: "Extreme success",
       degreeHard: "Hard success",

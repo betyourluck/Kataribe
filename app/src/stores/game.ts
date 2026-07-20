@@ -75,6 +75,11 @@ function loadAudioVolume(): number {
 function loadAudioMuted(): boolean {
   return localStorage.getItem(AUDIO_MUTED_KEY) === "true";
 }
+// ダイスの開帳演出 (spec 18 Phase A)。既定 on。off = 従来の即時開示 (作者テスト向け)。
+const DICE_REVEAL_KEY = "kataribe.diceReveal";
+function loadDiceReveal(): boolean {
+  return localStorage.getItem(DICE_REVEAL_KEY) !== "false";
+}
 // --- 本文テキスト設定 (GM の語りの見た目。提示層のみ・localStorage 永続) ---
 const MSG_FONT_KEY = "kataribe.msgFont";
 const MSG_COLOR_KEY = "kataribe.msgColor";
@@ -271,6 +276,16 @@ interface GameState {
   msgShadow: number;
   // ビート (✦) / 想起 (┊) ブロックの黒背景の濃さ 0..100 (0=なし)。表示設定。
   beatBgOpacity: number;
+  // --- ダイスの開帳 (spec 18 Phase A・提示層のみ) ---
+  // 開帳演出のオン/オフ (localStorage 永続)。off = 従来の即時開示。
+  diceReveal: boolean;
+  // 開帳待ちダイスの後ろに積まれるはずだった行 (ビート/goal バナー/エピローグ等)。
+  // 結果を先に漏らさないため全開帳まで保留し、開帳完了で flush する。frontend 揮発。
+  pendingTail: LogEntry[];
+  // 保留行に付随する SE (ビート効果音)。flush 時に one-shot 再生。
+  pendingSe: (string | null)[];
+  // 保留中の見た目 (イベント CG 背景 / BGM)。発火 CG は結果の漏洩そのものなので開帳まで遅延。
+  pendingVisual: { background: string | null; bgm: string | null } | null;
   // 右ペイン (状態パネル) の幅 px。ドラッグハンドルで可変。
   panelWidth: number;
   // 音量 0..100 (BGM/SE 共通)。サウンド設定。
@@ -351,6 +366,10 @@ export const useGameStore = defineStore("game", {
       bgm: null,
       presentCharacters: [],
       bgBrightness: loadBgBrightness(),
+      diceReveal: loadDiceReveal(),
+      pendingTail: [],
+      pendingSe: [],
+      pendingVisual: null,
       msgFont: loadMsgFont(),
       msgColor: loadMsgColor(),
       msgShadow: loadMsgShadow(),
@@ -389,6 +408,22 @@ export const useGameStore = defineStore("game", {
   getters: {
     // ゴール到達済みか (入力を締める判断に使う)。
     cleared: (s): boolean => s.state?.goal_reached ?? false,
+    // 開帳待ちのダイスが残っているか (spec 18 Phase A: 全部開くまで入力欄を締める)。
+    hasUnrevealedDice: (s): boolean =>
+      s.log.some(
+        (e) =>
+          (e.kind === "rolls" && e.revealed < e.rolls.length) ||
+          (e.kind === "checks" && e.revealed < e.checks.length) ||
+          (e.kind === "statrolls" && e.revealed < e.stat_rolls.length),
+      ),
+    // いま開けるダイス行 (log の index)。開帳は古い方から直列 = 常に最初の未開帳 entry のみ。
+    revealTargetIndex: (s): number =>
+      s.log.findIndex(
+        (e) =>
+          (e.kind === "rolls" && e.revealed < e.rolls.length) ||
+          (e.kind === "checks" && e.revealed < e.checks.length) ||
+          (e.kind === "statrolls" && e.revealed < e.stat_rolls.length),
+      ),
     // 会話ペインに敷く背景スタイル (画像の上に暗幕を重ねて文字可読性を確保)。
     // 暗幕の濃さは bgBrightness で可変 (明るいほど薄い暗幕)。
     backgroundStyle: (s): Record<string, string> => {
@@ -911,6 +946,10 @@ export const useGameStore = defineStore("game", {
       this.map = view.map ?? { nodes: [], edges: [] };
       this.log = [{ kind: "opening", text: view.description }];
       this.cacheWarned = false; // 新しいセッション = 新しいクライアント (計測もゼロから)
+      // 開帳の保留 (spec 18) は前のプレイの揮発状態 — 新規/再開/ロードで必ず捨てる。
+      this.pendingTail = [];
+      this.pendingSe = [];
+      this.pendingVisual = null;
       // あらすじ (spec 10): 新規開始は空、再開はセーブから全量復元。
       this.synopsis = view.synopsis ?? [];
       this.recentLog = view.recent_log ?? [];
@@ -1011,6 +1050,57 @@ export const useGameStore = defineStore("game", {
       }
     },
 
+    // --- ダイスの開帳 (spec 18 Phase A) ---
+
+    setDiceReveal(on: boolean) {
+      this.diceReveal = on;
+      localStorage.setItem(DICE_REVEAL_KEY, String(on));
+      // オフにした瞬間、開帳待ちが残っていれば全部開く (入力ロックの脱出口を兼ねる)。
+      if (!on) this.revealAll();
+    },
+
+    // 次の 1 個を開帳する (1 クリック 1 判定)。開けるのは常に最初の未開帳 entry のみ。
+    // 開いた判定の SE はこの瞬間に鳴らす (結末文と同期)。全部開いたら保留行を flush。
+    revealNext(entryIndex: number) {
+      if (entryIndex !== this.revealTargetIndex) return; // 直列規律 (先の行を先に開く)
+      const e = this.log[entryIndex];
+      if (e.kind === "rolls" && e.revealed < e.rolls.length) {
+        e.revealed++;
+      } else if (e.kind === "checks" && e.revealed < e.checks.length) {
+        const c = e.checks[e.revealed];
+        e.revealed++;
+        this.playSe(assetUrl(c.sound)); // 結末 SE は開帳と同時 (先に鳴ったら開帳の意味がない)
+      } else if (e.kind === "statrolls" && e.revealed < e.stat_rolls.length) {
+        e.revealed++;
+      } else {
+        return;
+      }
+      if (!this.hasUnrevealedDice) this.flushPendingDice();
+    },
+
+    // 全部開く (演出オフ切替や保険の脱出口)。SE は最後の 1 回だけ鳴らす (連打音を避ける)。
+    revealAll() {
+      for (const e of this.log) {
+        if (e.kind === "rolls") e.revealed = e.rolls.length;
+        else if (e.kind === "checks") e.revealed = e.checks.length;
+        else if (e.kind === "statrolls") e.revealed = e.stat_rolls.length;
+      }
+      this.flushPendingDice();
+    },
+
+    // 開帳完了: 保留していた後続行 (ビート/goal バナー/エピローグ) と SE・CG を解き放つ。
+    flushPendingDice() {
+      for (const entry of this.pendingTail) this.log.push(entry);
+      this.pendingTail = [];
+      for (const se of this.pendingSe) this.playSe(se);
+      this.pendingSe = [];
+      if (this.pendingVisual) {
+        this.background = this.pendingVisual.background;
+        if (this.pendingVisual.bgm !== this.bgm) this.bgm = this.pendingVisual.bgm;
+        this.pendingVisual = null;
+      }
+    },
+
     async playTurn(action: string) {
       const trimmed = action.trim();
       if (!trimmed || this.loading || !this.started) return;
@@ -1019,37 +1109,55 @@ export const useGameStore = defineStore("game", {
       this.error = null;
       try {
         const turn = await invoke<TurnView>("play_turn", { action: trimmed });
+        // 開帳演出が有効で、このターンにダイスが在るか (spec 18 Phase A)。
+        const hasDice =
+          turn.accepted &&
+          (turn.rolls.length > 0 || turn.checks.length > 0 || turn.stat_rolls.length > 0);
+        const revealing = this.diceReveal && hasDice;
+        // ダイスより後ろの行は開帳まで保留する (結果の漏洩防止)。revealing でなければ直挿し。
+        const pushLog = (e: LogEntry) => {
+          if (revealing) this.pendingTail.push(e);
+          else this.log.push(e);
+        };
         if (turn.accepted) {
           if (turn.narration) this.log.push({ kind: "narration", text: turn.narration });
-          if (turn.rolls.length) this.log.push({ kind: "rolls", rolls: turn.rolls });
+          // ダイス系 3 行は伏せて積む (revealed=0)。演出オフなら全開 (= 従来動作)。
+          if (turn.rolls.length) {
+            this.log.push({ kind: "rolls", rolls: turn.rolls, revealed: revealing ? 0 : turn.rolls.length });
+          }
           if (turn.checks.length) {
-            this.log.push({ kind: "checks", checks: turn.checks });
-            // challenge の結末効果音を one-shot 再生 (受理ターンのみ。ビート SE と同経路)。
-            for (const c of turn.checks) this.playSe(assetUrl(c.sound));
+            this.log.push({ kind: "checks", checks: turn.checks, revealed: revealing ? 0 : turn.checks.length });
+            // 結末効果音: 演出中は各判定の開帳時に鳴らす (revealNext)。オフなら従来どおり即時。
+            if (!revealing) for (const c of turn.checks) this.playSe(assetUrl(c.sound));
           }
           // 可変量ダイス (spec 16): 「SAN -4 (1d6=4)」の監査行。
           if (turn.stat_rolls.length) {
-            this.log.push({ kind: "statrolls", stat_rolls: turn.stat_rolls });
+            this.log.push({
+              kind: "statrolls",
+              stat_rolls: turn.stat_rolls,
+              revealed: revealing ? 0 : turn.stat_rolls.length,
+            });
           }
           for (const b of turn.beats) {
             // narration も recalled も無い「効果のみ」の発火はログに出さない (裸の ✦ を防ぐ)。
             // CG は turn.beats から、SE は下で別途処理するのでログに積まなくても失われない。
             if (b.narration.trim() || b.recalled.length) {
-              this.log.push({ kind: "beat", narration: b.narration, recalled: b.recalled, expanded: false });
+              pushLog({ kind: "beat", narration: b.narration, recalled: b.recalled, expanded: false });
             }
-            // 発火 SE を one-shot 再生 (受理ターンのみ。CG と同様、語りの瞬間に鳴らす)。
-            this.playSe(assetUrl(b.sound));
+            // 発火 SE (受理ターンのみ)。ビートは判定の帰結でありうる = 開帳前に鳴ると漏洩。
+            if (revealing) this.pendingSe.push(assetUrl(b.sound));
+            else this.playSe(assetUrl(b.sound));
           }
           if (turn.attempts > 1) {
             // 自己修復は既定で畳む (⚠ アイコンのみ) — メタ情報の没入低下を避ける。
             // クリックで「N 回目で筋を通した」+ 却下理由を展開 (author 診断)。
-            this.log.push({ kind: "selfrepair", attempts: turn.attempts, reasons: turn.retries, expanded: false });
+            pushLog({ kind: "selfrepair", attempts: turn.attempts, reasons: turn.retries, expanded: false });
           }
           // goal 到達: 単発/終端なら goal_reached、campaign 継続なら transition で signal。
           if (turn.goal_reached || turn.transition) {
             // 結末ナレーション (authored) があれば語りとして出す (遷移元モジュールの結末)。
             if (turn.goal_narration) {
-              this.log.push({ kind: "narration", text: turn.goal_narration });
+              pushLog({ kind: "narration", text: turn.goal_narration });
             }
             // 表示は authored title を優先し、無ければ id (機械用セレクタ) へフォールバック。
             const goalLabel = turn.goal_title ?? turn.goal_id;
@@ -1058,26 +1166,26 @@ export const useGameStore = defineStore("game", {
               const end = goalLabel
                 ? t("store.chapterEndNamed", { goal: goalLabel })
                 : t("store.chapterEndGeneric");
-              this.log.push({
+              pushLog({
                 kind: "system",
                 text: t("store.transitionTo", { end, module: turn.transition.module_title }),
               });
               // 遷移先モジュールの開幕描写。
-              this.log.push({ kind: "opening", text: turn.transition.description });
+              pushLog({ kind: "opening", text: turn.transition.description });
             } else {
               // 単発シナリオ/キャンペーン終端 = クリア。
               const label = goalLabel
                 ? t("store.clearedNamed", { goal: goalLabel })
                 : t("store.clearedGeneric");
-              this.log.push({ kind: "system", text: label });
+              pushLog({ kind: "system", text: label });
             }
           }
           // エピローグ (spec 11)。表示順 = 結末文 → バナー → エピローグで幕
           // (バナーが余韻をぶった切らない)。narration と同じ本文スタイルで積む
           // = 会話ログのテキスト保存にも自然に含まれる。
           if (turn.epilogue) {
-            this.log.push({ kind: "system", text: t("store.epilogueMarker") });
-            this.log.push({ kind: "narration", text: turn.epilogue });
+            pushLog({ kind: "system", text: t("store.epilogueMarker") });
+            pushLog({ kind: "narration", text: turn.epilogue });
           }
         } else {
           this.log.push({ kind: "reject", reasons: turn.reasons, attempts: turn.attempts });
@@ -1116,10 +1224,16 @@ export const useGameStore = defineStore("game", {
             : [...turn.beats]
                 .reverse()
                 .find((b) => b.image && (b.image_mode ?? "background") === "background");
-          this.background = cgBeat?.image ? assetUrl(cgBeat.image) : assetUrl(turn.background);
-          // BGM は場所変化で差し替え。同一 URL なら再代入せずループを切らさない (CG と違い持続)。
+          const nextBackground = cgBeat?.image ? assetUrl(cgBeat.image) : assetUrl(turn.background);
           const nextBgm = assetUrl(turn.bgm);
-          if (nextBgm !== this.bgm) this.bgm = nextBgm;
+          if (revealing) {
+            // 発火 CG・場面転換は判定の帰結でありうる = 開帳前に見えたら漏洩。flush で適用。
+            this.pendingVisual = { background: nextBackground, bgm: nextBgm };
+          } else {
+            this.background = nextBackground;
+            // BGM は場所変化で差し替え。同一 URL なら再代入せずループを切らさない (CG と違い持続)。
+            if (nextBgm !== this.bgm) this.bgm = nextBgm;
+          }
         }
       } catch (e) {
         this.error = String(e);

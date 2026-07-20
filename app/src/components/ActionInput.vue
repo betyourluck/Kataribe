@@ -7,8 +7,11 @@ const game = useGameStore();
 const text = ref("");
 const ta = ref<HTMLTextAreaElement | null>(null);
 
-// 入力できる状態か (未開始/思案中/クリア後は不可)。
-const disabled = computed(() => !game.started || game.loading || game.cleared);
+// 入力できる状態か (未開始/思案中/クリア後/ダイス未開帳は不可)。
+// 未開帳ブロック (spec 18): 積み残しは体験を壊すので、全部開くまで次の行動は打てない。
+const disabled = computed(
+  () => !game.started || game.loading || game.cleared || game.hasUnrevealedDice,
+);
 // 送信できるか (中身がある & 入力可)。
 const canSend = computed(() => !!text.value.trim() && !disabled.value);
 
