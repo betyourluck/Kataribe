@@ -9,12 +9,19 @@ import MemoPanel from "./MemoPanel.vue";
 const game = useGameStore();
 
 // 右ペインは縦タブ 5 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
-// ・ memo=共有メモ: GM とユーザーの覚え書き、spec 20 ・ map=マップ: 訪問済み+1歩先の
-// 有向グラフ、spec 15 ・ synopsis=あらすじ: 圧縮済み章 + 最近の出来事、spec 10)。
-// メモは編集で触る頻度が高いので 3 番目、あらすじは参照頻度が最も低いので末尾 (ユーザーFB)。
-const TABS = ["progress", "world", "memo", "map", "synopsis"] as const;
+// ・ map=マップ: 訪問済み+1歩先の有向グラフ、spec 15 ・ synopsis=あらすじ: 圧縮済み章 +
+// 最近の出来事、spec 10 ・ memo=共有メモ: GM とユーザーの覚え書き、spec 20)。
+// メモは末尾 (ユーザーFB 2026-07-21)。
+const TABS = ["progress", "world", "map", "synopsis", "memo"] as const;
 type Tab = (typeof TABS)[number];
 const activeTab = ref<Tab>("progress");
+
+// memo_policy=locked の盤面ではメモは GM 専用の内部記憶 — タブごと出さない (spec 20 Phase E)。
+// 表示中に locked へ変わる (campaign 遷移) 場合に備え、選択中なら進行タブへ逃がす。
+const memoVisible = computed(() => game.memoPolicy !== "locked");
+watch(memoVisible, (v) => {
+  if (!v && activeTab.value === "memo") activeTab.value = "progress";
+});
 
 // 顔アイコンをクリックして詳細を見るキャラ (presence → クリックでプロフィール)。
 const selectedId = ref<string | null>(null);
@@ -52,16 +59,19 @@ function onKeydown(e: KeyboardEvent) {
   // IME 変換中はショートカットを発火させない (変換候補操作のキーを奪わない)。
   if (e.isComposing) return;
   if (!e.ctrlKey || e.altKey || e.metaKey) return;
+  // locked 盤面ではメモタブは存在しない扱い (巡回にも直接選択にも出さない)。
+  const tabs = TABS.filter((x) => x !== "memo" || memoVisible.value);
   if (e.key === "Tab") {
     // Ctrl+Tab: タブ巡回 (Shift 併用で逆順)。
     e.preventDefault();
-    const i = TABS.indexOf(activeTab.value);
-    const step = e.shiftKey ? TABS.length - 1 : 1;
-    activeTab.value = TABS[(i + step) % TABS.length];
+    const i = tabs.indexOf(activeTab.value);
+    const step = e.shiftKey ? tabs.length - 1 : 1;
+    activeTab.value = tabs[(i + step) % tabs.length];
   } else if (["1", "2", "3", "4", "5"].includes(e.key)) {
     // Ctrl+1..5: 直接選択 (5 枚巡回は遠いので直接選択が主導線)。
     e.preventDefault();
-    activeTab.value = TABS[Number(e.key) - 1];
+    const target = tabs[Number(e.key) - 1];
+    if (target) activeTab.value = target;
   }
 }
 onMounted(() => window.addEventListener("keydown", onKeydown));
@@ -105,19 +115,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       <button
         class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
         :class="
-          activeTab === 'memo'
-            ? 'border-ember text-glow'
-            : 'border-transparent text-parchment opacity-40 hover:opacity-90'
-        "
-        :title="t('state.tabMemoTitle')"
-        @click="activeTab = 'memo'"
-      >
-        <Icon name="pencil" :size="12" />
-        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabMemo") }}</span>
-      </button>
-      <button
-        class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
-        :class="
           activeTab === 'map'
             ? 'border-ember text-glow'
             : 'border-transparent text-parchment opacity-40 hover:opacity-90'
@@ -140,6 +137,21 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       >
         <Icon name="book" :size="12" />
         <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabSynopsis") }}</span>
+      </button>
+      <!-- メモ (spec 20)。locked 盤面では GM 専用の内部記憶 = タブごと出さない。 -->
+      <button
+        v-if="memoVisible"
+        class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
+        :class="
+          activeTab === 'memo'
+            ? 'border-ember text-glow'
+            : 'border-transparent text-parchment opacity-40 hover:opacity-90'
+        "
+        :title="t('state.tabMemoTitle')"
+        @click="activeTab = 'memo'"
+      >
+        <Icon name="pencil" :size="12" />
+        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabMemo") }}</span>
       </button>
     </nav>
 

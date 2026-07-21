@@ -322,6 +322,46 @@ mod tests {
         assert!(list.iter().any(|m| m.text == "大事な追記"));
     }
 
+    /// 【spec 20-E】メモ権限 (MemoPolicy) の三値。既定は prune (削除のみ) —
+    /// 加算 (追加・編集) だけを封じ、「GM の誤記憶を消す」中核動機は残す非対称。
+    /// locked はプレイヤーから完全に隠す (タブごと非表示・📝 行も出さない)。
+    /// **GM の書き込みは policy に関係なく常時有効** (起きたことの記録は authored intent を壊さない)。
+    #[test]
+    fn memo_policy_is_prune_by_default_and_gates_user_writes_only() {
+        use gm_core::MemoPolicy;
+        // 既定 = prune: 削除だけ許す (配布済み TRPG 盤面が安全側で守られる)。
+        assert_eq!(MemoPolicy::default(), MemoPolicy::Prune);
+        assert!(!MemoPolicy::Prune.allows_write(), "追加・編集は封じる (虚構の注入を防ぐ)");
+        assert!(MemoPolicy::Prune.allows_delete(), "削除は許す (減算は捏造できない)");
+        assert!(MemoPolicy::Prune.is_visible());
+        // open = キャラ RP 向け。全部できる。
+        assert!(MemoPolicy::Open.allows_write() && MemoPolicy::Open.allows_delete());
+        assert!(MemoPolicy::Open.is_visible());
+        // locked = GM 専用の内部記憶。プレイヤーには見せない。
+        assert!(!MemoPolicy::Locked.allows_write() && !MemoPolicy::Locked.allows_delete());
+        assert!(!MemoPolicy::Locked.is_visible(), "タブごと非表示");
+
+        // scenario 既定は prune、package.yaml の宣言が全モジュールを支配する。
+        let sc = gm_core::Scenario::from_yaml(concat!(
+            "title: t\nstart: r\n",
+            "locations:\n  r: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        assert_eq!(sc.memo_policy, MemoPolicy::Prune, "宣言なしは prune");
+
+        let mut sc2 = sc.clone();
+        let manifest: crate::PackageManifest =
+            serde_yaml::from_str("entry: x.yaml\nmemo_policy: open\n").unwrap();
+        crate::inject_package(&mut sc2, &manifest);
+        assert_eq!(sc2.memo_policy, MemoPolicy::Open, "package 宣言が注入される");
+
+        // GM の書き込みは policy と無関係 (locked 盤面でも GM は書ける)。
+        let mut list = Vec::new();
+        let d = gm(&mut list, &["GM は locked でも書ける"]);
+        assert_eq!(d.accepted.len(), 1);
+    }
+
     /// 【spec 20-B ⑥】memo_note: 従属規律 (抑止+保護の対) + スコア降順、空なら節なし。
     #[test]
     fn memo_note_grounds_subordination_and_sorts_by_score() {

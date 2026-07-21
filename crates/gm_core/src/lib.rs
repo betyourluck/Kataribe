@@ -27,8 +27,8 @@ pub use lint::unknown_key_lints;
 pub use expr::{parse_expr, Expr};
 pub use spine::{
     ChallengeDef, CharacterDef, CheckStyle, ContestDef, Exit, Gate, GoalDef, ImageMode, Location,
-    LocationItem, Natural, Protagonist, Resolution, RoleAssignment, RollRef, RollSpec, Scenario,
-    ScenarioError, StatDecl, StatInit, TakeMode, TierDef, Trigger,
+    LocationItem, MemoPolicy, Natural, Protagonist, Resolution, RoleAssignment, RollRef, RollSpec,
+    Scenario, ScenarioError, StatDecl, StatInit, TakeMode, TierDef, Trigger,
 };
 pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,

@@ -222,6 +222,8 @@ export interface GameView {
   contest: ContestView | null;
   /** 共有メモ全量 (spec 20)。新規開始は空、再開はセーブから復元。 */
   memo: MemoView[];
+  /** メモのユーザー権限 (spec 20 Phase E): "open" | "prune" | "locked"。 */
+  memo_policy: string;
 }
 
 /** 共有メモの 1 行 (spec 20)。並びは backend がスコア降順で返す (LLM 注入と同じ見え方)。 */
@@ -381,6 +383,8 @@ export interface TurnView {
   new_memos: string[];
   /** dedup 強化された既存行のテキスト (📝⁺ 表示)。 */
   reinforced_memos: string[];
+  /** メモのユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。 */
+  memo_policy: string;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

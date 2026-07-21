@@ -702,6 +702,44 @@ pub enum CheckStyle {
     Percentile,
 }
 
+/// 共有メモ (spec 20) に対する**ユーザーの書き込み権限**を盤面が縛る宣言 (spec 20 Phase E)。
+///
+/// メモは検証されないテキストが毎ターン注入され、しかも注入ヘッダが GM に「呼称・約束・意図の
+/// 一貫性には従え」と指示する = **ユーザーのメモは GM への指示**。TRPG 盤面では作者が設計した
+/// 発見の順序を迂回できてしまう (engine は無傷でも語りが誘導される) ので、**誰が虚構を所有するか**
+/// を盤面ごとに宣言する (三権分立の「シナリオが縛る」脚)。
+///
+/// **GM 自身の書き込みは policy に関係なく常時有効** — 起きたことの記録は authored intent を
+/// 壊さない。縛るのはユーザー側の操作だけ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoPolicy {
+    /// **既定**。ユーザーは**削除だけ**できる。削除は減算なので虚構を捏造できず、
+    /// 「GM の誤記憶を消す」= spec 20 の中核動機は生き残る (加算だけを封じる非対称)。
+    #[default]
+    Prune,
+    /// ユーザーも自由に追加・編集・削除できる (キャラクター RP 向け — 虚構をプレイヤーと共同所有する盤面)。
+    Open,
+    /// ユーザーは一切触れない。**メモタブごと非表示**にし、会話ログの 📝 行も出さない
+    /// = GM 専用の内部記憶になる (`internal_flags` と同じ「見せない」思想)。
+    Locked,
+}
+
+impl MemoPolicy {
+    /// ユーザーが追加・編集できるか (`open` のみ)。
+    pub fn allows_write(self) -> bool {
+        matches!(self, MemoPolicy::Open)
+    }
+    /// ユーザーが削除できるか (`open` / `prune`)。
+    pub fn allows_delete(self) -> bool {
+        matches!(self, MemoPolicy::Open | MemoPolicy::Prune)
+    }
+    /// メモをプレイヤーに見せるか (`locked` は隠す)。
+    pub fn is_visible(self) -> bool {
+        !matches!(self, MemoPolicy::Locked)
+    }
+}
+
 /// シナリオの**静的整合性**の破れ。`scenarios/*.yaml` を load した直後に検査する
 /// (apply 中の panic でなく load 時の構造化エラーで弾く=幻参照を実行経路に乗せない)。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -953,6 +991,10 @@ pub struct Scenario {
     /// check → check_under に入れ替え、「## 判定様式」を接地する。詳細は [`CheckStyle`]。
     #[serde(default)]
     pub check_style: CheckStyle,
+    /// 共有メモ (spec 20) のユーザー書き込み権限 (既定 `prune` = 削除のみ)。
+    /// package.yaml の `memo_policy` から注入もできる。詳細は [`MemoPolicy`]。
+    #[serde(default)]
+    pub memo_policy: MemoPolicy,
     /// 役職のランダム割り当て (spec 06 Phase A)。宣言があれば [`Self::initial_state`] が
     /// 専用ストリームで shuffle して配る。詳細は [`RoleAssignment`]。
     #[serde(default)]

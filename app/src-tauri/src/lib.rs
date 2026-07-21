@@ -317,6 +317,19 @@ struct GameView {
     contest: Option<ContestView>,
     /// 共有メモ全量 (spec 20)。新規開始は空、再開はセーブから復元。
     memo: Vec<MemoView>,
+    /// メモのユーザー権限 (spec 20 Phase E): "open" | "prune" | "locked"。
+    /// frontend は locked でタブごと隠し、prune で追加/編集 UI を出さない。
+    memo_policy: String,
+}
+
+/// [`gm_core::MemoPolicy`] を frontend 向けの文字列へ。
+fn memo_policy_str(p: gm_core::MemoPolicy) -> String {
+    match p {
+        gm_core::MemoPolicy::Open => "open",
+        gm_core::MemoPolicy::Prune => "prune",
+        gm_core::MemoPolicy::Locked => "locked",
+    }
+    .to_string()
 }
 
 /// 共有メモの 1 行 (spec 20)。frontend のメモタブと 📝 ログ行の素材。
@@ -427,6 +440,8 @@ struct TurnView {
     new_memos: Vec<String>,
     /// dedup 強化された既存行のテキスト (📝⁺ 表示 — silent なスコア変化を作らない)。
     reinforced_memos: Vec<String>,
+    /// メモのユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。
+    memo_policy: String,
     /// マップ (spec 15) — 訪問済み+1歩先の有向グラフ。移動/遷移で変わるので毎ターン返す
     /// (却下ターンは state 不変ゆえ現状スナップショット)。
     map: MapView,
@@ -2046,6 +2061,7 @@ async fn new_game(
         decision: None, // 新規開始に決断の持ち越しは無い
         contest: None,
         memo: Vec::new(), // 新規開始に共有メモは無い (spec 20)
+        memo_policy: memo_policy_str(scenario.memo_policy),
     };
 
     let save_path = autosave_path(&app, &pkg_dir);
@@ -2171,6 +2187,7 @@ async fn restore_session(
         contest: contest_view(&state, &scenario),
         // 共有メモ (spec 20) — セーブから復元してタブを埋める。
         memo: memo_views(&save.memo),
+        memo_policy: memo_policy_str(scenario.memo_policy),
     };
 
     // オートセーブの書き先 (ロード元がスロットでも常に autosave パス = スロットは凍結点のまま)。
@@ -2250,6 +2267,10 @@ async fn memo_add(
 ) -> Result<MemoOpView, String> {
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+    // 権限は UI で隠すだけでなくここでも通さない (二層防衛 — #50 の教訓)。
+    if !sess.scenario.memo_policy.allows_write() {
+        return Err("このシナリオではメモの追記は作者が制限しています".into());
+    }
     let (added, evicted) = harness::apply_user_add(&mut sess.memo, &text, sess.state.turn);
     if added.is_none() {
         return Err("メモが空です".into());
@@ -2266,6 +2287,9 @@ async fn memo_edit(
 ) -> Result<MemoOpView, String> {
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+    if !sess.scenario.memo_policy.allows_write() {
+        return Err("このシナリオではメモの編集は作者が制限しています".into());
+    }
     if harness::apply_user_edit(&mut sess.memo, id, &text).is_none() {
         return Err("メモを編集できません (空または対象が見つからない)".into());
     }
@@ -2280,6 +2304,9 @@ async fn memo_delete(
 ) -> Result<MemoOpView, String> {
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+    if !sess.scenario.memo_policy.allows_delete() {
+        return Err("このシナリオではメモの削除は作者が制限しています".into());
+    }
     if !harness::apply_user_delete(&mut sess.memo, id) {
         return Err("対象のメモが見つかりません".into());
     }
@@ -2447,13 +2474,22 @@ async fn play_turn(
             // 共有メモ (spec 20): GM 提案の採否を決める。採用 📝 / 強化 📝⁺ だけを表示し
             // (捨てられた行は見せない)、変化があればスナップショット全量を届ける。
             let memo_digest = harness::apply_gm_memos(&mut sess.memo, &memo, sess.state.turn);
-            let reinforced_texts: Vec<String> = memo_digest
-                .reinforced
-                .iter()
-                .filter_map(|id| sess.memo.iter().find(|m| m.id == *id).map(|m| m.text.clone()))
-                .collect();
-            let memo_changed =
-                !memo_digest.accepted.is_empty() || !memo_digest.reinforced.is_empty();
+            // locked 盤面ではメモは GM 専用の内部記憶 — 全量も 📝/📝⁺ 行もプレイヤーへ出さない
+            // (タブごと隠すのと同じ思想。engine 側の記録は続く)。
+            let memo_visible = sess.scenario.memo_policy.is_visible();
+            let reinforced_texts: Vec<String> = if memo_visible {
+                memo_digest
+                    .reinforced
+                    .iter()
+                    .filter_map(|id| sess.memo.iter().find(|m| m.id == *id).map(|m| m.text.clone()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let memo_changed = memo_visible
+                && (!memo_digest.accepted.is_empty() || !memo_digest.reinforced.is_empty());
+            let accepted_texts =
+                if memo_visible { memo_digest.accepted.clone() } else { Vec::new() };
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
             // ビートは GM が見ていない筋書きの出来事 — 継続文脈と経緯ログの両方へ併記する。
@@ -2572,8 +2608,9 @@ async fn play_turn(
                 new_log: Vec::new(),
                 epilogue: None, // 終端判定の後に埋める (spec 11)
                 memo: memo_changed.then(|| memo_views(&sess.memo)),
-                new_memos: memo_digest.accepted,
+                new_memos: accepted_texts,
                 reinforced_memos: reinforced_texts,
+                memo_policy: memo_policy_str(sess.scenario.memo_policy),
                 map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
                 // spec 18 Phase B: 決断つき判定が凍結されたらパネル素材を載せる。
                 decision: decision_view(&sess.state, &sess.scenario),
@@ -2610,6 +2647,7 @@ async fn play_turn(
             memo: None,
             new_memos: Vec::new(),
             reinforced_memos: Vec::new(),
+            memo_policy: memo_policy_str(sess.scenario.memo_policy),
             map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
             // 却下 = state 無傷 (決断があったならそのまま残っているはずだが、そもそも決断中は
             // play_turn 自体をガードで弾く)。

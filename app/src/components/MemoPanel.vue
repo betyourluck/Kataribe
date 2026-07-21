@@ -2,7 +2,7 @@
 // 共有メモ (spec 20): GM が書き溜め、ユーザーも追加・編集・削除できる覚え書きリスト。
 // 並びは backend がスコア降順で返す (LLM 注入と同じ見え方 = 消えかけのメモが下に集まる
 // 退場予告)。編集/追加はユーザー専権の操作で、スコアが上がり押し出されにくくなる。
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
 import Icon from "./Icon.vue";
@@ -11,6 +11,11 @@ const game = useGameStore();
 const newText = ref("");
 const editingId = ref<number | null>(null);
 const editText = ref("");
+
+// メモ権限 (spec 20 Phase E)。open=追加・編集・削除 / prune=削除のみ (既定) /
+// locked=タブごと非表示 (ここには来ない)。UI で隠し、backend でも拒否する二層。
+const canWrite = computed(() => game.memoPolicy === "open");
+const canDelete = computed(() => game.memoPolicy !== "locked");
 
 async function add() {
   const text = newText.value.trim();
@@ -81,15 +86,24 @@ async function saveEdit() {
               {{ m.score }}
             </span>
           </div>
-          <div class="mt-0.5 flex gap-2 justify-end opacity-0 group-hover:opacity-70 transition-opacity">
+          <div
+            v-if="canWrite || canDelete"
+            class="mt-0.5 flex gap-2 justify-end opacity-0 group-hover:opacity-70 transition-opacity"
+          >
             <button
+              v-if="canWrite"
               class="hover:text-glow"
               :title="t('state.memoEditTitle')"
               @click="startEdit(m.id, m.text)"
             >
               <Icon name="pencil" :size="11" />
             </button>
-            <button class="hover:text-glow" :title="t('state.memoDeleteTitle')" @click="game.memoDelete(m.id)">
+            <button
+              v-if="canDelete"
+              class="hover:text-glow"
+              :title="t('state.memoDeleteTitle')"
+              @click="game.memoDelete(m.id)"
+            >
               <Icon name="trash" :size="11" />
             </button>
           </div>
@@ -97,7 +111,8 @@ async function saveEdit() {
       </li>
     </ul>
 
-    <div class="mt-2 pt-2 border-t border-ash/60 flex gap-1.5">
+    <!-- 追記は open 盤面だけ。制限中は「壊れている」に見えないよう理由を一行出す。 -->
+    <div v-if="canWrite" class="mt-2 pt-2 border-t border-ash/60 flex gap-1.5">
       <input
         v-model="newText"
         maxlength="60"
@@ -113,5 +128,8 @@ async function saveEdit() {
         {{ t("state.memoAdd") }}
       </button>
     </div>
+    <p v-else class="mt-2 pt-2 border-t border-ash/60 text-[11px] leading-snug text-parchment/40">
+      {{ t("state.memoRestricted") }}
+    </p>
   </div>
 </template>

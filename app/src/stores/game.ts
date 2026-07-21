@@ -373,6 +373,8 @@ interface GameState {
   recentLog: LogLineView[];
   // 共有メモ (spec 20)。backend がスコア降順で返す全量スナップショット (メモタブに表示)。
   memo: MemoView[];
+  // メモのユーザー権限 (spec 20 Phase E): open=自由 / prune=削除のみ (既定) / locked=非表示。
+  memoPolicy: string;
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;
   // backend がエピローグ生成中 (epilogue-writing イベント、spec 11)。同じくローディング文言用。
@@ -438,6 +440,7 @@ export const useGameStore = defineStore("game", {
       synopsis: [],
       recentLog: [],
       memo: [],
+      memoPolicy: "prune",
       compacting: false,
       writingEpilogue: false,
       map: { nodes: [], edges: [] },
@@ -1043,8 +1046,9 @@ export const useGameStore = defineStore("game", {
       // あらすじ (spec 10): 新規開始は空、再開はセーブから全量復元。
       this.synopsis = view.synopsis ?? [];
       this.recentLog = view.recent_log ?? [];
-      // 共有メモ (spec 20): 新規開始は空、再開はセーブから復元。
+      // 共有メモ (spec 20): 新規開始は空、再開はセーブから復元。権限は盤面の宣言に従う。
       this.memo = view.memo ?? [];
+      this.memoPolicy = view.memo_policy ?? "prune";
       this.compacting = false;
       // scenario の lint (作者向け・非 fatal)。死んだ flag_hint 等を開幕で報せる。
       for (const w of view.warnings ?? []) {
@@ -1415,6 +1419,7 @@ export const useGameStore = defineStore("game", {
         // 強化 📝⁺ を会話ログに出す (silent なスコア変化を作らない)。メモは判定の帰結を
         // 含みうるので、開帳中はダイスより後ろに保留する (pushLog = 漏洩防止の共通機構)。
         if (turn.memo) this.memo = turn.memo;
+        if (turn.memo_policy) this.memoPolicy = turn.memo_policy; // campaign 遷移で追従
         for (const m of turn.new_memos ?? []) {
           pushLog({ kind: "system", text: t("state.memoNewLine", { text: m }) });
         }
