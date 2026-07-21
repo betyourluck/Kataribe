@@ -1159,9 +1159,13 @@ mod tests {
         assert!(g.contains("医大"), "具体例で書き方を示す");
         // ④ 締めの列挙に facts が入っている — 「何を出力するか」で最も効く位置が
         // 「narration と ops」だけを名指ししていると、直前の要求と矛盾する (2026-07-21 発見)。
-        let tail = g.rsplit('\n').next().unwrap_or("");
-        assert!(tail.contains("facts"), "出力フィールドの列挙に facts が入る: {tail}");
-        assert!(tail.contains("summary"), "同じく summary も: {tail}");
+        assert!(g.contains("narration / summary / ops / facts"), "出力フィールドを列挙する: {g}");
+        // ⑤ **提出直前の手続き**として置く (2026-07-21 実測: 基準は正しく認識されているのに
+        // 7 ターン連続で発火しなかった。GM 自身の分析「条件付き・自己申告型の作業は語りの生成に
+        // 注意を奪われると最初に脱落する」)。常時の心得ではなく emit 直前の Yes/No 判定にする。
+        assert!(g.contains("提出の直前"), "確認を提出直前の手続きとして置く: {g}");
+        assert!(g.contains("新しい固有名"), "具体的なトリガー (a): {g}");
+        assert!(g.contains("新しい数値の取り決め"), "具体的なトリガー (b): {g}");
     }
 
     /// 直前の語りが無い (初回ターン等) なら継続ブロックを注入しない。
