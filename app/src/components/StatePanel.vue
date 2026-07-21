@@ -9,10 +9,10 @@ import MemoPanel from "./MemoPanel.vue";
 const game = useGameStore();
 
 // 右ペインは縦タブ 5 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
-// ・ map=マップ: 訪問済み+1歩先の有向グラフ、spec 15 ・ synopsis=あらすじ: 圧縮済み章 +
-// 最近の出来事、spec 10 ・ memo=共有メモ: GM とユーザーの覚え書き、spec 20)。
-// 1 枚に全部積むと全体スクロールになるのでタブで切り替える。
-const TABS = ["progress", "world", "map", "synopsis", "memo"] as const;
+// ・ memo=共有メモ: GM とユーザーの覚え書き、spec 20 ・ map=マップ: 訪問済み+1歩先の
+// 有向グラフ、spec 15 ・ synopsis=あらすじ: 圧縮済み章 + 最近の出来事、spec 10)。
+// メモは編集で触る頻度が高いので 3 番目、あらすじは参照頻度が最も低いので末尾 (ユーザーFB)。
+const TABS = ["progress", "world", "memo", "map", "synopsis"] as const;
 type Tab = (typeof TABS)[number];
 const activeTab = ref<Tab>("progress");
 
@@ -105,6 +105,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       <button
         class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
         :class="
+          activeTab === 'memo'
+            ? 'border-ember text-glow'
+            : 'border-transparent text-parchment opacity-40 hover:opacity-90'
+        "
+        :title="t('state.tabMemoTitle')"
+        @click="activeTab = 'memo'"
+      >
+        <Icon name="pencil" :size="12" />
+        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabMemo") }}</span>
+      </button>
+      <button
+        class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
+        :class="
           activeTab === 'map'
             ? 'border-ember text-glow'
             : 'border-transparent text-parchment opacity-40 hover:opacity-90'
@@ -127,19 +140,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       >
         <Icon name="book" :size="12" />
         <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabSynopsis") }}</span>
-      </button>
-      <button
-        class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
-        :class="
-          activeTab === 'memo'
-            ? 'border-ember text-glow'
-            : 'border-transparent text-parchment opacity-40 hover:opacity-90'
-        "
-        :title="t('state.tabMemoTitle')"
-        @click="activeTab = 'memo'"
-      >
-        <Icon name="pencil" :size="12" />
-        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabMemo") }}</span>
       </button>
     </nav>
 
