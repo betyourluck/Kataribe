@@ -440,7 +440,8 @@ export const useGameStore = defineStore("game", {
       synopsis: [],
       recentLog: [],
       facts: [],
-      factsPolicy: "prune",
+      // 既定は locked = 宣言のない盤面では約束事タブを出さない (GM 専用の内部記憶)。
+      factsPolicy: "locked",
       compacting: false,
       writingEpilogue: false,
       map: { nodes: [], edges: [] },
@@ -1048,7 +1049,7 @@ export const useGameStore = defineStore("game", {
       this.recentLog = view.recent_log ?? [];
       // 約束事 (spec 20): 新規開始は空、再開はセーブから復元。権限は盤面の宣言に従う。
       this.facts = view.facts ?? [];
-      this.factsPolicy = view.facts_policy ?? "prune";
+      this.factsPolicy = view.facts_policy ?? "locked";
       this.compacting = false;
       // scenario の lint (作者向け・非 fatal)。死んだ flag_hint 等を開幕で報せる。
       for (const w of view.warnings ?? []) {

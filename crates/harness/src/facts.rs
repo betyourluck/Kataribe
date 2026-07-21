@@ -326,33 +326,34 @@ mod tests {
         assert!(list.iter().any(|m| m.text == "大事な追記"));
     }
 
-    /// 【spec 20-E】約束事権限 (FactsPolicy) の三値。既定は prune (削除のみ) —
-    /// 加算 (追加・編集) だけを封じ、「GM の誤記憶を消す」中核動機は残す非対称。
-    /// locked はプレイヤーから完全に隠す (タブごと非表示・📝 行も出さない)。
-    /// **GM の書き込みは policy に関係なく常時有効** (起きたことの記録は authored intent を壊さない)。
+    /// 【spec 20-E】約束事権限 (FactsPolicy) の三値。**既定は locked** — 宣言のない配布物では
+    /// 約束事は GM 専用の内部記憶になる (タブごと非表示・📝 行も出さない)。安全側である理由は
+    /// 二つ: ①ユーザーの書き込みは GM への指示になり強すぎる ②**読めること自体が漏れる**
+    /// (GM は scenario_brief 越しに仕掛けを知っているので、プレイヤー未到達の前提を書きうる)。
+    /// **GM の書き込みと prompt 注入は policy 不問で常時有効** = 一貫性の利得はそのまま・露出だけゼロ。
     #[test]
-    fn facts_policy_is_prune_by_default_and_gates_user_writes_only() {
+    fn facts_policy_is_locked_by_default_and_gates_user_writes_only() {
         use gm_core::FactsPolicy;
-        // 既定 = prune: 削除だけ許す (配布済み TRPG 盤面が安全側で守られる)。
-        assert_eq!(FactsPolicy::default(), FactsPolicy::Prune);
+        // 既定 = locked: 見せない・触らせない (宣言のない配布物を安全側に置く)。
+        assert_eq!(FactsPolicy::default(), FactsPolicy::Locked);
+        assert!(!FactsPolicy::Locked.allows_write() && !FactsPolicy::Locked.allows_delete());
+        assert!(!FactsPolicy::Locked.is_visible(), "タブごと非表示");
+        // prune = 見せるが削除だけ (加算を封じる非対称。誤記憶は消せる)。
         assert!(!FactsPolicy::Prune.allows_write(), "追加・編集は封じる (虚構の注入を防ぐ)");
         assert!(FactsPolicy::Prune.allows_delete(), "削除は許す (減算は捏造できない)");
         assert!(FactsPolicy::Prune.is_visible());
         // open = キャラ RP 向け。全部できる。
         assert!(FactsPolicy::Open.allows_write() && FactsPolicy::Open.allows_delete());
         assert!(FactsPolicy::Open.is_visible());
-        // locked = GM 専用の内部記憶。プレイヤーには見せない。
-        assert!(!FactsPolicy::Locked.allows_write() && !FactsPolicy::Locked.allows_delete());
-        assert!(!FactsPolicy::Locked.is_visible(), "タブごと非表示");
 
-        // scenario 既定は prune、package.yaml の宣言が全モジュールを支配する。
+        // scenario 既定は locked、package.yaml の宣言が全モジュールを支配する。
         let sc = gm_core::Scenario::from_yaml(concat!(
             "title: t\nstart: r\n",
             "locations:\n  r: { description: d, items: {}, exits: [] }\n",
             "goal: { kind: always }\n"
         ))
         .unwrap();
-        assert_eq!(sc.facts_policy, FactsPolicy::Prune, "宣言なしは prune");
+        assert_eq!(sc.facts_policy, FactsPolicy::Locked, "宣言なしは locked");
 
         let mut sc2 = sc.clone();
         let manifest: crate::PackageManifest =
