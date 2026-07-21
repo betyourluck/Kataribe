@@ -310,17 +310,19 @@ pub struct StateDelta {
     /// このターンの経緯 1 行 (誰が何をして何が起きたか、確定した事実だけ)。narration と同じ
     /// **非検証の語り素材** — engine は解釈しない。harness が経緯ログとして蓄積し、以後の
     /// ターンの prompt に「これまでの経緯」として還流する (GM の中期記憶。後のターンの
-    /// 自分自身への引き継ぎメモ)。
+    /// 自分自身への引き継ぎ約束事)。
     #[serde(default)]
     pub summary: String,
     #[serde(default)]
     pub ops: Vec<StateOp>,
-    // spec 20 共有メモ: narration/summary と同じ非検証の語り素材 — engine は解釈しない。
-    // 採否 (60 字カット / dedup 強化 / スコア入場判定) は harness::memo が決める。
+    // spec 20 約束事 (facts): narration/summary と同じ非検証の語り素材 — engine は解釈しない。
+    // 採否 (60 字カット / dedup 強化 / スコア入場判定) は harness::facts が決める。
+    // **フィールド名は LLM への合図**: `facts` (走り書き) でなく `facts` = 以後の語りが従う
+    // 確定事項、という姿勢を名前で接地する (暫定的な仮説を書かせない)。
     // doc comment は schemars で LLM に見える description になるため、規律 (60 字) だけを短く書く。
-    /// 覚えておきたい事実を 60 字以内の 1 行で (通常は空)
+    /// 以後の語りで守るべき確定事項を 60 字以内の 1 行で (通常は空)
     #[serde(default)]
-    pub memo: Vec<String>,
+    pub facts: Vec<String>,
 }
 
 impl StateDelta {
@@ -328,7 +330,7 @@ impl StateDelta {
         Self {
             narration: narration.into(),
             summary: String::new(),
-            memo: Vec::new(),
+            facts: Vec::new(),
             ops,
         }
     }

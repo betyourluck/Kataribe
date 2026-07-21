@@ -220,14 +220,14 @@ export interface GameView {
   decision: DecisionView | null;
   /** 進行中の対決 (spec 18 Phase C)。再開時にセーブから復元される。 */
   contest: ContestView | null;
-  /** 共有メモ全量 (spec 20)。新規開始は空、再開はセーブから復元。 */
-  memo: MemoView[];
-  /** メモのユーザー権限 (spec 20 Phase E): "open" | "prune" | "locked"。 */
-  memo_policy: string;
+  /** 約束事全量 (spec 20)。新規開始は空、再開はセーブから復元。 */
+  facts: FactView[];
+  /** 約束事のユーザー権限 (spec 20 Phase E): "open" | "prune" | "locked"。 */
+  facts_policy: string;
 }
 
-/** 共有メモの 1 行 (spec 20)。並びは backend がスコア降順で返す (LLM 注入と同じ見え方)。 */
-export interface MemoView {
+/** 約束事の 1 行 (spec 20)。並びは backend がスコア降順で返す (LLM 注入と同じ見え方)。 */
+export interface FactView {
   id: number;
   /** "gm" | "user" (バッジ)。 */
   origin: string;
@@ -236,9 +236,9 @@ export interface MemoView {
   score: number;
 }
 
-/** メモ編集コマンド (memo_add/edit/delete) の戻り。 */
-export interface MemoOpView {
-  memo: MemoView[];
+/** 約束事編集コマンド (facts_add/edit/delete) の戻り。 */
+export interface FactsOpView {
+  facts: FactView[];
   /** 満杯 add で押し出された行 (トースト用)。無ければ null。 */
   evicted: string | null;
 }
@@ -377,14 +377,14 @@ export interface TurnView {
   decision: DecisionView | null;
   /** 進行中の対決 (spec 18 Phase C)。非 null の間 ⚔ パネルを出し入力を締める。 */
   contest: ContestView | null;
-  /** 共有メモ (spec 20): 変化があったターンだけ全量スナップショット。無変化なら null。 */
-  memo: MemoView[] | null;
-  /** このターンで採用された GM メモ行 (📝 表示)。 */
-  new_memos: string[];
+  /** 約束事 (spec 20): 変化があったターンだけ全量スナップショット。無変化なら null。 */
+  facts: FactView[] | null;
+  /** このターンで採用された GM 約束事行 (📝 表示)。 */
+  new_facts: string[];
   /** dedup 強化された既存行のテキスト (📝⁺ 表示)。 */
-  reinforced_memos: string[];
-  /** メモのユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。 */
-  memo_policy: string;
+  reinforced_facts: string[];
+  /** 約束事のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。 */
+  facts_policy: string;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

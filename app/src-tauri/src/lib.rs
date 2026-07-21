@@ -315,26 +315,26 @@ struct GameView {
     decision: Option<DecisionView>,
     /// 進行中の対決 (spec 18 Phase C)。再開時にセーブから復元される。
     contest: Option<ContestView>,
-    /// 共有メモ全量 (spec 20)。新規開始は空、再開はセーブから復元。
-    memo: Vec<MemoView>,
-    /// メモのユーザー権限 (spec 20 Phase E): "open" | "prune" | "locked"。
+    /// 約束事全量 (spec 20)。新規開始は空、再開はセーブから復元。
+    facts: Vec<FactView>,
+    /// 約束事のユーザー権限 (spec 20 Phase E): "open" | "prune" | "locked"。
     /// frontend は locked でタブごと隠し、prune で追加/編集 UI を出さない。
-    memo_policy: String,
+    facts_policy: String,
 }
 
-/// [`gm_core::MemoPolicy`] を frontend 向けの文字列へ。
-fn memo_policy_str(p: gm_core::MemoPolicy) -> String {
+/// [`gm_core::FactsPolicy`] を frontend 向けの文字列へ。
+fn facts_policy_str(p: gm_core::FactsPolicy) -> String {
     match p {
-        gm_core::MemoPolicy::Open => "open",
-        gm_core::MemoPolicy::Prune => "prune",
-        gm_core::MemoPolicy::Locked => "locked",
+        gm_core::FactsPolicy::Open => "open",
+        gm_core::FactsPolicy::Prune => "prune",
+        gm_core::FactsPolicy::Locked => "locked",
     }
     .to_string()
 }
 
-/// 共有メモの 1 行 (spec 20)。frontend のメモタブと 📝 ログ行の素材。
+/// 約束事の 1 行 (spec 20)。frontend の約束事タブと 📝 ログ行の素材。
 #[derive(Serialize, Clone)]
-struct MemoView {
+struct FactView {
     id: u64,
     /// "gm" | "user" (UI バッジ)。
     origin: String,
@@ -343,15 +343,15 @@ struct MemoView {
     score: u32,
 }
 
-fn memo_views(list: &[harness::MemoEntry]) -> Vec<MemoView> {
+fn fact_views(list: &[harness::FactEntry]) -> Vec<FactView> {
     // 並びはスコア降順 (同点 id 昇順) = LLM 注入と同じ (見え方を一致させる)。
     harness::sorted_for_display(list)
         .into_iter()
-        .map(|m| MemoView {
+        .map(|m| FactView {
             id: m.id,
             origin: match m.origin {
-                harness::MemoOrigin::Gm => "gm".into(),
-                harness::MemoOrigin::User => "user".into(),
+                harness::FactOrigin::Gm => "gm".into(),
+                harness::FactOrigin::User => "user".into(),
             },
             text: m.text.clone(),
             turn: m.turn,
@@ -433,15 +433,15 @@ struct TurnView {
     /// エピローグ本文 (spec 11)。到達 goal に epilogue_prompt があり終端 (遷移しない) の
     /// 受理ターンだけ Some。生成失敗時は None (結末文 + バナーの従来表示 = フォールバック)。
     epilogue: Option<String>,
-    /// 共有メモ (spec 20): 変化があったターンだけ全量スナップショット (≤20 件で軽量。
+    /// 約束事 (spec 20): 変化があったターンだけ全量スナップショット (≤20 件で軽量。
     /// 強化のスコア変動も並び替えごと届く = frontend は差し替えるだけ)。無変化なら None。
-    memo: Option<Vec<MemoView>>,
-    /// このターンで採用された GM メモ行 (📝 表示。捨てられた行は載らない)。
-    new_memos: Vec<String>,
+    facts: Option<Vec<FactView>>,
+    /// このターンで採用された GM 約束事行 (📝 表示。捨てられた行は載らない)。
+    new_facts: Vec<String>,
     /// dedup 強化された既存行のテキスト (📝⁺ 表示 — silent なスコア変化を作らない)。
-    reinforced_memos: Vec<String>,
-    /// メモのユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。
-    memo_policy: String,
+    reinforced_facts: Vec<String>,
+    /// 約束事のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。
+    facts_policy: String,
     /// マップ (spec 15) — 訪問済み+1歩先の有向グラフ。移動/遷移で変わるので毎ターン返す
     /// (却下ターンは state 不変ゆえ現状スナップショット)。
     map: MapView,
@@ -689,8 +689,8 @@ struct GameSession {
     synopsis: Synopsis,
     /// あらすじ要約用の専用 client (SUMMARY_LLM_*)。None なら GM の client を共用。
     summarizer: Option<LlmClient>,
-    /// 共有メモ (spec 20)。正本の外の覚え書き。セーブ対象、campaign 遷移でも持ち越す。
-    memo: Vec<harness::MemoEntry>,
+    /// 約束事 (spec 20)。正本の外の覚え書き。セーブ対象、campaign 遷移でも持ち越す。
+    facts: Vec<harness::FactEntry>,
 }
 
 /// new_game 前は None。
@@ -2060,8 +2060,8 @@ async fn new_game(
         map: map_view(&scenario, &state, &[], &pkg_dir),
         decision: None, // 新規開始に決断の持ち越しは無い
         contest: None,
-        memo: Vec::new(), // 新規開始に共有メモは無い (spec 20)
-        memo_policy: memo_policy_str(scenario.memo_policy),
+        facts: Vec::new(), // 新規開始に約束事は無い (spec 20)
+        facts_policy: facts_policy_str(scenario.facts_policy),
     };
 
     let save_path = autosave_path(&app, &pkg_dir);
@@ -2083,7 +2083,7 @@ async fn new_game(
         package_path: rel,
         synopsis: Synopsis::default(),
         summarizer,
-        memo: Vec::new(),
+        facts: Vec::new(),
         // 言語設定タブ由来の lang を優先、無ければ env 既定。
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
@@ -2185,9 +2185,9 @@ async fn restore_session(
         // 決断待ち・対決はセーブを跨いで生きる (spec 18) — 再開直後にパネルを復元する。
         decision: decision_view(&state, &scenario),
         contest: contest_view(&state, &scenario),
-        // 共有メモ (spec 20) — セーブから復元してタブを埋める。
-        memo: memo_views(&save.memo),
-        memo_policy: memo_policy_str(scenario.memo_policy),
+        // 約束事 (spec 20) — セーブから復元してタブを埋める。
+        facts: fact_views(&save.facts),
+        facts_policy: facts_policy_str(scenario.facts_policy),
     };
 
     // オートセーブの書き先 (ロード元がスロットでも常に autosave パス = スロットは凍結点のまま)。
@@ -2210,7 +2210,7 @@ async fn restore_session(
         package_path,
         synopsis: save.synopsis,
         summarizer,
-        memo: save.memo,
+        facts: save.facts,
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
             Some("ja") | Some("Ja") | Some("JA") => Lang::Ja,
@@ -2234,84 +2234,84 @@ fn session_save_of(sess: &GameSession) -> SessionSave {
         last_narration: sess.last_narration.clone(),
         pending_checks: sess.pending_checks.clone(),
         pending_lore: sess.pending_lore.clone(),
-        memo: sess.memo.clone(),
+        facts: sess.facts.clone(),
         synopsis: sess.synopsis.clone(),
     }
 }
 
 // =============================================================================
-// 共有メモ (spec 20) — ユーザー専権の編集 (追加・編集・削除)。成功後は即時 autosave
-// (眺めるだけで消える事故を防ぐ)。GM 提案の採否は play_turn 側 (apply_gm_memos)。
+// 約束事 (spec 20) — ユーザー専権の編集 (追加・編集・削除)。成功後は即時 autosave
+// (眺めるだけで消える事故を防ぐ)。GM 提案の採否は play_turn 側 (apply_gm_facts)。
 // =============================================================================
 
-/// メモ編集コマンドの戻り: 更新後の全量 (スコア降順) + 満杯 add で押し出された行 (トースト用)。
+/// 約束事編集コマンドの戻り: 更新後の全量 (スコア降順) + 満杯 add で押し出された行 (トースト用)。
 #[derive(Serialize)]
-struct MemoOpView {
-    memo: Vec<MemoView>,
+struct FactsOpView {
+    facts: Vec<FactView>,
     evicted: Option<String>,
 }
 
-/// メモ編集後の即時 autosave。失敗は警告のみ (編集自体は成立させる — play_turn の流儀)。
-fn memo_autosave(sess: &GameSession) {
+/// 約束事編集後の即時 autosave。失敗は警告のみ (編集自体は成立させる — play_turn の流儀)。
+fn facts_autosave(sess: &GameSession) {
     if let Some(path) = &sess.save_path {
         if let Err(e) = save_session(path, &session_save_of(sess)) {
-            eprintln!("[警告] メモ編集のオートセーブ失敗: {e}");
+            eprintln!("[警告] 約束事編集のオートセーブ失敗: {e}");
         }
     }
 }
 
 #[tauri::command]
-async fn memo_add(
+async fn facts_add(
     text: String,
     session: tauri::State<'_, SharedSession>,
-) -> Result<MemoOpView, String> {
+) -> Result<FactsOpView, String> {
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
     // 権限は UI で隠すだけでなくここでも通さない (二層防衛 — #50 の教訓)。
-    if !sess.scenario.memo_policy.allows_write() {
-        return Err("このシナリオではメモの追記は作者が制限しています".into());
+    if !sess.scenario.facts_policy.allows_write() {
+        return Err("このシナリオでは約束事の追記は作者が制限しています".into());
     }
-    let (added, evicted) = harness::apply_user_add(&mut sess.memo, &text, sess.state.turn);
+    let (added, evicted) = harness::apply_user_add(&mut sess.facts, &text, sess.state.turn);
     if added.is_none() {
-        return Err("メモが空です".into());
+        return Err("約束事が空です".into());
     }
-    memo_autosave(sess);
-    Ok(MemoOpView { memo: memo_views(&sess.memo), evicted: evicted.map(|m| m.text) })
+    facts_autosave(sess);
+    Ok(FactsOpView { facts: fact_views(&sess.facts), evicted: evicted.map(|m| m.text) })
 }
 
 #[tauri::command]
-async fn memo_edit(
+async fn facts_edit(
     id: u64,
     text: String,
     session: tauri::State<'_, SharedSession>,
-) -> Result<MemoOpView, String> {
+) -> Result<FactsOpView, String> {
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
-    if !sess.scenario.memo_policy.allows_write() {
-        return Err("このシナリオではメモの編集は作者が制限しています".into());
+    if !sess.scenario.facts_policy.allows_write() {
+        return Err("このシナリオでは約束事の編集は作者が制限しています".into());
     }
-    if harness::apply_user_edit(&mut sess.memo, id, &text).is_none() {
-        return Err("メモを編集できません (空または対象が見つからない)".into());
+    if harness::apply_user_edit(&mut sess.facts, id, &text).is_none() {
+        return Err("約束事を編集できません (空または対象が見つからない)".into());
     }
-    memo_autosave(sess);
-    Ok(MemoOpView { memo: memo_views(&sess.memo), evicted: None })
+    facts_autosave(sess);
+    Ok(FactsOpView { facts: fact_views(&sess.facts), evicted: None })
 }
 
 #[tauri::command]
-async fn memo_delete(
+async fn facts_delete(
     id: u64,
     session: tauri::State<'_, SharedSession>,
-) -> Result<MemoOpView, String> {
+) -> Result<FactsOpView, String> {
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
-    if !sess.scenario.memo_policy.allows_delete() {
-        return Err("このシナリオではメモの削除は作者が制限しています".into());
+    if !sess.scenario.facts_policy.allows_delete() {
+        return Err("このシナリオでは約束事の削除は作者が制限しています".into());
     }
-    if !harness::apply_user_delete(&mut sess.memo, id) {
-        return Err("対象のメモが見つかりません".into());
+    if !harness::apply_user_delete(&mut sess.facts, id) {
+        return Err("対象の約束事が見つかりません".into());
     }
-    memo_autosave(sess);
-    Ok(MemoOpView { memo: memo_views(&sess.memo), evicted: None })
+    facts_autosave(sess);
+    Ok(FactsOpView { facts: fact_views(&sess.facts), evicted: None })
 }
 
 // =============================================================================
@@ -2453,7 +2453,7 @@ async fn play_turn(
         &prev_narration,
         &sess.history,
         &sess.synopsis.entries,
-        &sess.memo,
+        &sess.facts,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -2462,7 +2462,7 @@ async fn play_turn(
         TurnOutcome::Accepted {
             narration,
             summary,
-            memo,
+            facts,
             rolls,
             checks,
             stat_rolls,
@@ -2471,25 +2471,25 @@ async fn play_turn(
             rejected,
             tags,
         } => {
-            // 共有メモ (spec 20): GM 提案の採否を決める。採用 📝 / 強化 📝⁺ だけを表示し
+            // 約束事 (spec 20): GM 提案の採否を決める。採用 📝 / 強化 📝⁺ だけを表示し
             // (捨てられた行は見せない)、変化があればスナップショット全量を届ける。
-            let memo_digest = harness::apply_gm_memos(&mut sess.memo, &memo, sess.state.turn);
-            // locked 盤面ではメモは GM 専用の内部記憶 — 全量も 📝/📝⁺ 行もプレイヤーへ出さない
+            let facts_digest = harness::apply_gm_facts(&mut sess.facts, &facts, sess.state.turn);
+            // locked 盤面では約束事は GM 専用の内部記憶 — 全量も 📝/📝⁺ 行もプレイヤーへ出さない
             // (タブごと隠すのと同じ思想。engine 側の記録は続く)。
-            let memo_visible = sess.scenario.memo_policy.is_visible();
-            let reinforced_texts: Vec<String> = if memo_visible {
-                memo_digest
+            let facts_visible = sess.scenario.facts_policy.is_visible();
+            let reinforced_texts: Vec<String> = if facts_visible {
+                facts_digest
                     .reinforced
                     .iter()
-                    .filter_map(|id| sess.memo.iter().find(|m| m.id == *id).map(|m| m.text.clone()))
+                    .filter_map(|id| sess.facts.iter().find(|m| m.id == *id).map(|m| m.text.clone()))
                     .collect()
             } else {
                 Vec::new()
             };
-            let memo_changed = memo_visible
-                && (!memo_digest.accepted.is_empty() || !memo_digest.reinforced.is_empty());
+            let facts_changed = facts_visible
+                && (!facts_digest.accepted.is_empty() || !facts_digest.reinforced.is_empty());
             let accepted_texts =
-                if memo_visible { memo_digest.accepted.clone() } else { Vec::new() };
+                if facts_visible { facts_digest.accepted.clone() } else { Vec::new() };
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
             // ビートは GM が見ていない筋書きの出来事 — 継続文脈と経緯ログの両方へ併記する。
@@ -2607,10 +2607,10 @@ async fn play_turn(
                 new_synopsis: Vec::new(), // 圧縮ジョブの後に差分で埋める
                 new_log: Vec::new(),
                 epilogue: None, // 終端判定の後に埋める (spec 11)
-                memo: memo_changed.then(|| memo_views(&sess.memo)),
-                new_memos: accepted_texts,
-                reinforced_memos: reinforced_texts,
-                memo_policy: memo_policy_str(sess.scenario.memo_policy),
+                facts: facts_changed.then(|| fact_views(&sess.facts)),
+                new_facts: accepted_texts,
+                reinforced_facts: reinforced_texts,
+                facts_policy: facts_policy_str(sess.scenario.facts_policy),
                 map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
                 // spec 18 Phase B: 決断つき判定が凍結されたらパネル素材を載せる。
                 decision: decision_view(&sess.state, &sess.scenario),
@@ -2643,11 +2643,11 @@ async fn play_turn(
             new_synopsis: Vec::new(),
             new_log: Vec::new(),
             epilogue: None,
-            // 却下では GM 提案は捨てられる (state 無傷と同じ扱い = メモも無変化)。
-            memo: None,
-            new_memos: Vec::new(),
-            reinforced_memos: Vec::new(),
-            memo_policy: memo_policy_str(sess.scenario.memo_policy),
+            // 却下では GM 提案は捨てられる (state 無傷と同じ扱い = 約束事も無変化)。
+            facts: None,
+            new_facts: Vec::new(),
+            reinforced_facts: Vec::new(),
+            facts_policy: facts_policy_str(sess.scenario.facts_policy),
             map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
             // 却下 = state 無傷 (決断があったならそのまま残っているはずだが、そもそも決断中は
             // play_turn 自体をガードで弾く)。
@@ -3145,9 +3145,9 @@ pub fn run() {
             open_log_folder,
             pick_package_folder,
             delete_autosave,
-            memo_add,
-            memo_edit,
-            memo_delete
+            facts_add,
+            facts_edit,
+            facts_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

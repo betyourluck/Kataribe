@@ -20,8 +20,8 @@ import type {
   LogLineView,
   SlotView,
   MapView,
-  MemoView,
-  MemoOpView,
+  FactView,
+  FactsOpView,
 } from "../types/api";
 
 // d100 ロールアンダーの成功度 (spec 16) の表示ラベル。内部 id は英語 (ログ検索・セーブ安定)、
@@ -371,10 +371,10 @@ interface GameState {
   synopsis: SynopsisView[];
   // 「最近の出来事」= 未圧縮 chronicle の 1 行要約列 (あらすじタブの下段)。
   recentLog: LogLineView[];
-  // 共有メモ (spec 20)。backend がスコア降順で返す全量スナップショット (メモタブに表示)。
-  memo: MemoView[];
-  // メモのユーザー権限 (spec 20 Phase E): open=自由 / prune=削除のみ (既定) / locked=非表示。
-  memoPolicy: string;
+  // 約束事 (spec 20)。backend がスコア降順で返す全量スナップショット (約束事タブに表示)。
+  facts: FactView[];
+  // 約束事のユーザー権限 (spec 20 Phase E): open=自由 / prune=削除のみ (既定) / locked=非表示。
+  factsPolicy: string;
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;
   // backend がエピローグ生成中 (epilogue-writing イベント、spec 11)。同じくローディング文言用。
@@ -439,8 +439,8 @@ export const useGameStore = defineStore("game", {
       cacheWarned: false,
       synopsis: [],
       recentLog: [],
-      memo: [],
-      memoPolicy: "prune",
+      facts: [],
+      factsPolicy: "prune",
       compacting: false,
       writingEpilogue: false,
       map: { nodes: [], edges: [] },
@@ -986,31 +986,31 @@ export const useGameStore = defineStore("game", {
       this.refreshPackages();
     },
 
-    // --- 共有メモ (spec 20) のユーザー専権編集。成功後は backend が即時 autosave 済み ---
-    async memoAdd(text: string) {
+    // --- 約束事 (spec 20) のユーザー専権編集。成功後は backend が即時 autosave 済み ---
+    async factsAdd(text: string) {
       if (!text.trim()) return;
       try {
-        const res = await invoke<MemoOpView>("memo_add", { text });
-        this.memo = res.memo;
+        const res = await invoke<FactsOpView>("facts_add", { text });
+        this.facts = res.facts;
         // 満杯で押し出された行はトーストで可視化する (silent な退場を作らない)。
-        if (res.evicted) this.logToast = t("state.memoEvicted", { text: res.evicted });
+        if (res.evicted) this.logToast = t("state.factsEvicted", { text: res.evicted });
       } catch (e) {
         this.logToast = String(e);
       }
     },
-    async memoEdit(id: number, text: string) {
+    async factsEdit(id: number, text: string) {
       if (!text.trim()) return;
       try {
-        const res = await invoke<MemoOpView>("memo_edit", { id, text });
-        this.memo = res.memo;
+        const res = await invoke<FactsOpView>("facts_edit", { id, text });
+        this.facts = res.facts;
       } catch (e) {
         this.logToast = String(e);
       }
     },
-    async memoDelete(id: number) {
+    async factsDelete(id: number) {
       try {
-        const res = await invoke<MemoOpView>("memo_delete", { id });
-        this.memo = res.memo;
+        const res = await invoke<FactsOpView>("facts_delete", { id });
+        this.facts = res.facts;
       } catch (e) {
         this.logToast = String(e);
       }
@@ -1046,9 +1046,9 @@ export const useGameStore = defineStore("game", {
       // あらすじ (spec 10): 新規開始は空、再開はセーブから全量復元。
       this.synopsis = view.synopsis ?? [];
       this.recentLog = view.recent_log ?? [];
-      // 共有メモ (spec 20): 新規開始は空、再開はセーブから復元。権限は盤面の宣言に従う。
-      this.memo = view.memo ?? [];
-      this.memoPolicy = view.memo_policy ?? "prune";
+      // 約束事 (spec 20): 新規開始は空、再開はセーブから復元。権限は盤面の宣言に従う。
+      this.facts = view.facts ?? [];
+      this.factsPolicy = view.facts_policy ?? "prune";
       this.compacting = false;
       // scenario の lint (作者向け・非 fatal)。死んだ flag_hint 等を開幕で報せる。
       for (const w of view.warnings ?? []) {
@@ -1415,16 +1415,16 @@ export const useGameStore = defineStore("game", {
             text: t("store.cacheWarning", { misses: cs.consecutive_misses }),
           });
         }
-        // 共有メモ (spec 20): 変化があったターンは全量スナップショットで差し替え、採用 📝 /
-        // 強化 📝⁺ を会話ログに出す (silent なスコア変化を作らない)。メモは判定の帰結を
+        // 約束事 (spec 20): 変化があったターンは全量スナップショットで差し替え、採用 📝 /
+        // 強化 📝⁺ を会話ログに出す (silent なスコア変化を作らない)。約束事は判定の帰結を
         // 含みうるので、開帳中はダイスより後ろに保留する (pushLog = 漏洩防止の共通機構)。
-        if (turn.memo) this.memo = turn.memo;
-        if (turn.memo_policy) this.memoPolicy = turn.memo_policy; // campaign 遷移で追従
-        for (const m of turn.new_memos ?? []) {
-          pushLog({ kind: "system", text: t("state.memoNewLine", { text: m }) });
+        if (turn.facts) this.facts = turn.facts;
+        if (turn.facts_policy) this.factsPolicy = turn.facts_policy; // campaign 遷移で追従
+        for (const m of turn.new_facts ?? []) {
+          pushLog({ kind: "system", text: t("state.factsNewLine", { text: m }) });
         }
-        for (const m of turn.reinforced_memos ?? []) {
-          pushLog({ kind: "system", text: t("state.memoReinforcedLine", { text: m }) });
+        for (const m of turn.reinforced_facts ?? []) {
+          pushLog({ kind: "system", text: t("state.factsReinforcedLine", { text: m }) });
         }
         // あらすじ (spec 10): 追記差分を push (append-only)。章が確定したら「最近の出来事」から
         // その章に呑まれた行 (turn <= upto_turn) を取り除く。会話ログには出さない

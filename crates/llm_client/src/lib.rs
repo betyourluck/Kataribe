@@ -271,23 +271,25 @@ mod tests {
         assert!(dump.contains("add_item") && dump.contains("set_flag"), "op 実体が ops.items 内に inline");
     }
 
-    /// 【authored 専権 op の除外】LLM 向け schema は set_presence/grant_skill 等を **提案肢に出さない**
-    /// 【spec 20 Phase A】共有メモの追記チャネル `StateDelta.memo` が schema に露出し、
+    /// 【spec 20 Phase A】約束事の追記チャネル `StateDelta.facts` が schema に露出し、
     /// description が 60 字制限を LLM に事前に伝える (harness の機械カットで意味が欠落する
-    /// 前に、書く側を縛る)。旧デルタ (memo 無し JSON) は serde default で互換。
+    /// 前に、書く側を縛る)。**フィールド名 `facts` 自体が合図** — `memo` (走り書き) では
+    /// 暫定的な仮説を書かせてしまう (Phase E の改名理由)。旧デルタは serde default で互換。
     #[test]
-    fn schema_exposes_memo_channel_with_limit_and_old_deltas_parse() {
+    fn schema_exposes_facts_channel_with_limit_and_old_deltas_parse() {
         let schema = state_delta_schema();
-        let memo = &schema["properties"]["memo"];
-        assert!(!memo.is_null(), "memo フィールドが schema に露出する");
-        let desc = memo["description"].as_str().unwrap_or("");
+        let facts = &schema["properties"]["facts"];
+        assert!(!facts.is_null(), "facts フィールドが schema に露出する");
+        let desc = facts["description"].as_str().unwrap_or("");
         assert!(desc.contains("60"), "60 字制限を LLM に伝える: {desc}");
+        assert!(desc.contains("確定事項"), "暫定メモでなく確定事項だと伝える: {desc}");
 
         let old: gm_core::StateDelta =
             serde_json::from_str(r#"{"narration":"x","ops":[]}"#).expect("旧デルタは parse 可能");
-        assert!(old.memo.is_empty(), "memo 無しは空 (serde default)");
+        assert!(old.facts.is_empty(), "facts 無しは空 (serde default)");
     }
 
+    /// 【authored 専権 op の除外】LLM 向け schema は set_presence/grant_skill 等を **提案肢に出さない**
     /// (露出すると LLM が使い続けて却下→再生成ループで詰まる。Grok の constrained decoding 対策の核心)。
     /// LLM が使える op (add_item 等) は残る。
     #[test]

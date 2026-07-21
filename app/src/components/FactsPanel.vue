@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 共有メモ (spec 20): GM が書き溜め、ユーザーも追加・編集・削除できる覚え書きリスト。
-// 並びは backend がスコア降順で返す (LLM 注入と同じ見え方 = 消えかけのメモが下に集まる
+// 約束事 (spec 20): GM が書き溜め、ユーザーも追加・編集・削除できる覚え書きリスト。
+// 並びは backend がスコア降順で返す (LLM 注入と同じ見え方 = 消えかけの約束事が下に集まる
 // 退場予告)。編集/追加はユーザー専権の操作で、スコアが上がり押し出されにくくなる。
 import { ref, computed } from "vue";
 import { useGameStore } from "../stores/game";
@@ -12,15 +12,15 @@ const newText = ref("");
 const editingId = ref<number | null>(null);
 const editText = ref("");
 
-// メモ権限 (spec 20 Phase E)。open=追加・編集・削除 / prune=削除のみ (既定) /
+// 約束事権限 (spec 20 Phase E)。open=追加・編集・削除 / prune=削除のみ (既定) /
 // locked=タブごと非表示 (ここには来ない)。UI で隠し、backend でも拒否する二層。
-const canWrite = computed(() => game.memoPolicy === "open");
-const canDelete = computed(() => game.memoPolicy !== "locked");
+const canWrite = computed(() => game.factsPolicy === "open");
+const canDelete = computed(() => game.factsPolicy !== "locked");
 
 async function add() {
   const text = newText.value.trim();
   if (!text) return;
-  await game.memoAdd(text);
+  await game.factsAdd(text);
   newText.value = "";
 }
 
@@ -31,7 +31,7 @@ function startEdit(id: number, text: string) {
 
 async function saveEdit() {
   if (editingId.value != null && editText.value.trim()) {
-    await game.memoEdit(editingId.value, editText.value);
+    await game.factsEdit(editingId.value, editText.value);
   }
   editingId.value = null;
 }
@@ -40,17 +40,17 @@ async function saveEdit() {
 <template>
   <div class="flex flex-col h-full min-h-0">
     <div class="text-parchment/40 mb-2 flex items-center gap-1.5">
-      <Icon name="pencil" />{{ t("state.tabMemo") }}
-      <span class="ml-auto text-[10px] text-parchment/35">{{ game.memo.length }}/20</span>
+      <Icon name="pencil" />{{ t("state.tabFacts") }}
+      <span class="ml-auto text-[10px] text-parchment/35">{{ game.facts.length }}/20</span>
     </div>
 
-    <p v-if="!game.memo.length" class="text-xs text-parchment/40 leading-relaxed">
-      {{ t("state.memoEmpty") }}
+    <p v-if="!game.facts.length" class="text-xs text-parchment/40 leading-relaxed">
+      {{ t("state.factsEmpty") }}
     </p>
 
     <ul class="space-y-1.5 flex-1 min-h-0 overflow-y-auto pr-1">
       <li
-        v-for="m in game.memo"
+        v-for="m in game.facts"
         :key="m.id"
         class="group rounded border border-ash/60 bg-ash/20 px-2 py-1 text-xs"
       >
@@ -64,10 +64,10 @@ async function saveEdit() {
           />
           <div class="mt-1 flex gap-2 justify-end">
             <button class="text-parchment/50 hover:text-parchment" @click="editingId = null">
-              {{ t("state.memoCancel") }}
+              {{ t("state.factsCancel") }}
             </button>
             <button class="text-ember hover:text-glow" @click="saveEdit">
-              {{ t("state.memoSave") }}
+              {{ t("state.factsSave") }}
             </button>
           </div>
         </template>
@@ -78,7 +78,7 @@ async function saveEdit() {
               class="shrink-0 rounded px-1 text-[10px] leading-4"
               :class="m.origin === 'user' ? 'bg-ember/30 text-glow' : 'bg-ash/60 text-parchment/60'"
             >
-              {{ m.origin === "user" ? t("state.memoUser") : t("state.memoGm") }}
+              {{ m.origin === "user" ? t("state.factsUser") : t("state.factsGm") }}
             </span>
             <span class="flex-1 text-parchment/85 leading-snug break-words min-w-0">{{ m.text }}</span>
             <!-- 参照スコア (小さく)。低い行から退場していく。 -->
@@ -93,7 +93,7 @@ async function saveEdit() {
             <button
               v-if="canWrite"
               class="hover:text-glow"
-              :title="t('state.memoEditTitle')"
+              :title="t('state.factsEditTitle')"
               @click="startEdit(m.id, m.text)"
             >
               <Icon name="pencil" :size="11" />
@@ -101,8 +101,8 @@ async function saveEdit() {
             <button
               v-if="canDelete"
               class="hover:text-glow"
-              :title="t('state.memoDeleteTitle')"
-              @click="game.memoDelete(m.id)"
+              :title="t('state.factsDeleteTitle')"
+              @click="game.factsDelete(m.id)"
             >
               <Icon name="trash" :size="11" />
             </button>
@@ -116,7 +116,7 @@ async function saveEdit() {
       <input
         v-model="newText"
         maxlength="60"
-        :placeholder="t('state.memoPlaceholder')"
+        :placeholder="t('state.factsPlaceholder')"
         class="flex-1 min-w-0 rounded bg-ash/40 px-2 py-1 text-xs text-parchment focus:outline-none"
         @keyup.enter="add"
       />
@@ -125,11 +125,11 @@ async function saveEdit() {
         :disabled="!newText.trim() || !game.started"
         @click="add"
       >
-        {{ t("state.memoAdd") }}
+        {{ t("state.factsAdd") }}
       </button>
     </div>
     <p v-else class="mt-2 pt-2 border-t border-ash/60 text-[11px] leading-snug text-parchment/40">
-      {{ t("state.memoRestricted") }}
+      {{ t("state.factsRestricted") }}
     </p>
   </div>
 </template>
