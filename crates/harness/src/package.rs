@@ -45,7 +45,7 @@ pub struct PackageManifest {
     pub globals: Option<Globals>,
     /// 約束事 (spec 20) のユーザー書き込み権限。**セッション単位の性質**なので
     /// (約束事は campaign 遷移でも持ち越す) モジュールごとでなくパッケージが所有する。
-    /// 宣言があれば全モジュールへ注入。省略時は各 scenario の宣言 (既定 `prune`)。
+    /// 宣言があれば全モジュールへ注入。省略時は各 scenario の宣言 (既定 `locked`)。
     #[serde(default)]
     pub facts_policy: Option<gm_core::FactsPolicy>,
 }

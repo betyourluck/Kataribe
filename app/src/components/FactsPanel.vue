@@ -12,10 +12,9 @@ const newText = ref("");
 const editingId = ref<number | null>(null);
 const editText = ref("");
 
-// 約束事権限 (spec 20 Phase E)。open=追加・編集・削除 / prune=削除のみ (既定) /
-// locked=タブごと非表示 (ここには来ない)。UI で隠し、backend でも拒否する二層。
+// 約束事権限 (spec 20) は二値 — open=ユーザーが宣言できる / locked=タブごと非表示
+// (このパネルには来ない)。UI で隠し、backend でも拒否する二層。
 const canWrite = computed(() => game.factsPolicy === "open");
-const canDelete = computed(() => game.factsPolicy !== "locked");
 
 async function add() {
   const text = newText.value.trim();
@@ -87,7 +86,7 @@ async function saveEdit() {
             </span>
           </div>
           <div
-            v-if="canWrite || canDelete"
+            v-if="canWrite"
             class="mt-0.5 flex gap-2 justify-end opacity-0 group-hover:opacity-70 transition-opacity"
           >
             <button
@@ -99,7 +98,7 @@ async function saveEdit() {
               <Icon name="pencil" :size="11" />
             </button>
             <button
-              v-if="canDelete"
+              v-if="canWrite"
               class="hover:text-glow"
               :title="t('state.factsDeleteTitle')"
               @click="game.factsDelete(m.id)"
@@ -128,8 +127,5 @@ async function saveEdit() {
         {{ t("state.factsAdd") }}
       </button>
     </div>
-    <p v-else class="mt-2 pt-2 border-t border-ash/60 text-[11px] leading-snug text-parchment/40">
-      {{ t("state.factsRestricted") }}
-    </p>
   </div>
 </template>

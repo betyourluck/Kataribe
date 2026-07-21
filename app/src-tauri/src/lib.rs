@@ -317,8 +317,7 @@ struct GameView {
     contest: Option<ContestView>,
     /// 約束事全量 (spec 20)。新規開始は空、再開はセーブから復元。
     facts: Vec<FactView>,
-    /// 約束事のユーザー権限 (spec 20 Phase E): "open" | "prune" | "locked"。
-    /// frontend は locked でタブごと隠し、prune で追加/編集 UI を出さない。
+    /// 約束事のユーザー権限 (spec 20): "open" | "locked"。frontend は locked でタブごと隠す。
     facts_policy: String,
 }
 
@@ -326,7 +325,6 @@ struct GameView {
 fn facts_policy_str(p: gm_core::FactsPolicy) -> String {
     match p {
         gm_core::FactsPolicy::Open => "open",
-        gm_core::FactsPolicy::Prune => "prune",
         gm_core::FactsPolicy::Locked => "locked",
     }
     .to_string()

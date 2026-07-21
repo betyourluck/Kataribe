@@ -373,7 +373,7 @@ interface GameState {
   recentLog: LogLineView[];
   // 約束事 (spec 20)。backend がスコア降順で返す全量スナップショット (約束事タブに表示)。
   facts: FactView[];
-  // 約束事のユーザー権限 (spec 20 Phase E): open=自由 / prune=削除のみ (既定) / locked=非表示。
+  // 約束事のユーザー権限 (spec 20): open=ユーザーが宣言できる / locked=非表示 (既定)。
   factsPolicy: string;
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;

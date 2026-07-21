@@ -722,33 +722,31 @@ pub enum CheckStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FactsPolicy {
-    /// **既定**。ユーザーは一切触れず、**約束事タブごと非表示**・会話ログの 📝 行も出さない
-    /// = GM 専用の内部記憶 (`internal_flags` と同じ「見せない」思想)。
+    /// **既定**。約束事の欄を出さない (タブごと非表示)。
     ///
-    /// 既定である理由は二つ。①**書き込みが強すぎる** (ユーザーの行は GM への指示になる)。
-    /// ②**読めること自体が漏れる** — GM は scenario_brief 越しに challenge の前提や
-    /// フラグの意味を知っているので、プレイヤーがまだ辿り着いていない仕掛けを約束事に
-    /// 書くことがある。パネルはそれをそのまま晒す。宣言のない配布物 (=大半) を安全側に置く。
-    ///
-    /// GM の書き込みと prompt 注入は locked でも働く — **一貫性の利得はそのままで、露出だけがゼロ**。
+    /// ユーザーの宣言は**GM への指示**として毎ターン注入されるので、作者が設計した発見の
+    /// 順序 (謎・段階開示) を語りで迂回できてしまう。宣言を持たない配布物 (= 書庫の既刊
+    /// すべて) を安全側に置く (spec 18 の `pushable: false` 既定と同じ判断)。
     #[default]
     Locked,
-    /// ユーザーは**削除だけ**できる (パネルは見える)。削除は減算なので虚構を捏造できず、
-    /// 「GM の誤記憶を消す」= spec 20 の中核動機は生きる (加算だけを封じる非対称)。
-    /// 共有された事実をプレイヤーに見せたい TRPG 盤面向け。
-    Prune,
-    /// ユーザーも自由に追加・編集・削除できる (キャラクター RP 向け — 虚構をプレイヤーと共同所有する盤面)。
+    /// ユーザーが設定を宣言できる (追加・編集・削除)。キャラクター RP のように、
+    /// 呼称・関係・約束をプレイヤーが決めてよい盤面向け。
     Open,
 }
 
 impl FactsPolicy {
-    /// ユーザーが追加・編集できるか (`open` のみ)。
+    /// ユーザーが編集できるか。
+    ///
+    /// **二値で足りる** (2026-07-21): 当初は「削除のみ (prune)」を中間値に置いたが、あれは
+    /// **GM も書く**前提の設計だった (GM の誤記憶を消す = 加算を封じて減算だけ許す非対称)。
+    /// GM の書き込み経路を撤去した今、書き手はユーザーだけ — 足せないものは消せないので
+    /// prune は空虚な状態になり撤去した (failures.md #66)。
     pub fn allows_write(self) -> bool {
         matches!(self, FactsPolicy::Open)
     }
-    /// ユーザーが削除できるか (`open` / `prune`)。
+    /// ユーザーが削除できるか (書けるなら消せる)。
     pub fn allows_delete(self) -> bool {
-        matches!(self, FactsPolicy::Open | FactsPolicy::Prune)
+        self.allows_write()
     }
     /// 約束事をプレイヤーに見せるか (`locked` は隠す)。
     pub fn is_visible(self) -> bool {
@@ -1017,7 +1015,7 @@ pub struct Scenario {
     /// check → check_under に入れ替え、「## 判定様式」を接地する。詳細は [`CheckStyle`]。
     #[serde(default)]
     pub check_style: CheckStyle,
-    /// 約束事 (spec 20) のユーザー書き込み権限 (既定 `prune` = 削除のみ)。
+    /// 約束事 (spec 20) のユーザー書き込み権限 (既定 `locked` = 非表示)。
     /// package.yaml の `facts_policy` から注入もできる。詳細は [`FactsPolicy`]。
     #[serde(default)]
     pub facts_policy: FactsPolicy,

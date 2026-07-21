@@ -213,6 +213,36 @@ mod tests {
         assert_eq!(list.len(), FACTS_MAX);
     }
 
+    /// 【権限は二値】`locked` (既定・非表示) と `open` (ユーザーが宣言する) だけ。
+    ///
+    /// 当初あった「削除のみ (prune)」は **GM も書く**前提の中間値だった (誤記憶を消せるよう
+    /// 加算を封じて減算だけ許す非対称)。GM の書き込み経路を撤去した今、書き手はユーザー
+    /// だけなので**足せないものは消せない** = 空虚な状態になり撤去した (failures.md #66)。
+    #[test]
+    fn facts_policy_is_binary_locked_or_open() {
+        use gm_core::FactsPolicy;
+        assert_eq!(FactsPolicy::default(), FactsPolicy::Locked, "宣言なしは非表示");
+        assert!(!FactsPolicy::Locked.allows_write() && !FactsPolicy::Locked.is_visible());
+        assert!(FactsPolicy::Open.allows_write() && FactsPolicy::Open.is_visible());
+        // 書けるなら消せる (中間値は無い)。
+        assert_eq!(FactsPolicy::Open.allows_delete(), FactsPolicy::Open.allows_write());
+        assert_eq!(FactsPolicy::Locked.allows_delete(), FactsPolicy::Locked.allows_write());
+
+        // package.yaml の宣言が全モジュールへ注入される。
+        let sc = gm_core::Scenario::from_yaml(concat!(
+            "title: t\nstart: r\n",
+            "locations:\n  r: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        assert_eq!(sc.facts_policy, FactsPolicy::Locked);
+        let mut sc2 = sc.clone();
+        let manifest: crate::PackageManifest =
+            serde_yaml::from_str("entry: x.yaml\nfacts_policy: open\n").unwrap();
+        crate::inject_package(&mut sc2, &manifest);
+        assert_eq!(sc2.facts_policy, FactsPolicy::Open);
+    }
+
     /// 【注入】従属規律 (抑止+保護の対) + スコア降順。**空なら節を出さない**
     /// (GM は書けないので、空の節に意味がない = 書き込み経路の撤去に伴う収縮)。
     #[test]

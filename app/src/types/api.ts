@@ -222,7 +222,7 @@ export interface GameView {
   contest: ContestView | null;
   /** 約束事全量 (spec 20)。新規開始は空、再開はセーブから復元。 */
   facts: FactView[];
-  /** 約束事のユーザー権限 (spec 20 Phase E): "open" | "prune" | "locked"。 */
+  /** 約束事のユーザー権限 (spec 20): "open" | "locked" (既定)。 */
   facts_policy: string;
 }
 
