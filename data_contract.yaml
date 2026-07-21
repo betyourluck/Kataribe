@@ -53,20 +53,20 @@ adjudication:
   sequencing: "**逐次射影裁定 (spec 09, 2026-07-09)**: op は書かれた順に検証され、受理できた**決定論 op** (add/remove/give/set_flag/move/adjust/scale/cast_vote) の効果を射影クローンに仮適用してから次の op を検証する = 裁定は apply のドライラン (受理された delta は必ずそのまま実行可能)。「拾ってから使う」を 1 delta に束ねられる (トークン経済: 1 ターン = フルプロンプト 1 往復)。**ダイス op (roll/check/attempt) は検証のみで帰結を射影しない** (出目は apply 時確定・純粋な裁定は RNG を消費できない) → 判定結果に依存する後続手は次ターン。**例外 (2026-07-12)**: attempt_challenge の効果のうち **on_success/on_failure の両方に共通するもの** (=どの出目でも必ず起きる。多重集合の厳密交差 + 両帰結が同じフラグを立てる場合の set_flag。guaranteed_challenge_effects) は射影する — 全帰結共通なら裁定時に確定扱いしてもドライランの健全性を破らない。順序は提案者の責任 ([組む, 拾う] の順は却下)。適用ロジックは apply_deterministic_op を実 apply と共有 (射影と実適用の乖離を構造的に防ぐ)"
   pacing:     "**authoring 指針**: 逐次射影により、各手が順に合法なら複数ステップが 1 ターンで進む。駆け抜けてほしくない箇所には challenge (ダイス) を置く — **帰結依存の効果 (片側だけ/tier) は射影されない**ので連鎖をターンで割れる。ただし**全帰結に共通する効果は射影される** (日次フラグを全帰結に書けば [挑戦, 帰宅 move] が 1 ターンで畳める / 割りたければ帰結を成功・失敗で変える)。他に turns_since / トリガーの段組みも有効。ペーシングは engine の摩擦でなく authored 設計と prompt 層 (山場規律) の責務"
   add_item:   "現在地 items に無い / 取得gate未達 → Reject (拾得は player のみ)。**既所持は却下でなく受理して no-op** (spec 09-B: 念のための再拾得で delta 全体が落ちる摩擦を除去。ItemAlreadyHeld は撤去。複製穴の守りは taken_items = take:once の再取得却下で不変)"
-  remove_item:"player が未所持の物は手放せない → Reject"
+  remove_item: "player が未所持の物は手放せない → Reject"
   give_item:  "from が item を所持していない → Reject (ItemNotHeld)。to が未知 entity → Reject (UnknownEntity)。= 持っていない物は渡せない (#23 の engine 側バックストップ)"
   set_flag:   "未許可キー / flag_rules の gate 未達 (value=true時) → Reject"
   move:       "現在地から to への exit が無い / exit.gate 未達 → Reject"
-  request_roll:"LLMは結果を主張できない (op構造上不可能)。面数<1 → Reject"
+  request_roll: "LLMは結果を主張できない (op構造上不可能)。面数<1 → Reject"
   check:      "技能判定。stat 未宣言→Reject(UnknownStat) / 面数<1→Reject。engine が 1d{sides}+stat修正 を振り total>=dc で成否判定。LLMは出目も合計も詐称できない (CheckOutcome を返す)"
   check_under: "d100 ロールアンダー即興判定 (spec 16)。stat 未宣言→Reject(UnknownStat)。engine が 1d100 と degree を決定論計算 (LLM は出目も成功度も持てない)。帰結なし=成否 surface のみ。CheckOutcome{sides:100, roll, total:roll, dc:目標値, degree:Some}"
   roll_stat:  "可変量ダイス (spec 16)。validate_ops は常に Reject(StatRollNotAllowed=ダメージ量の捏造遮断)。apply_ops(trigger/challenge effects) のみ実行 = AUTHORED_ONLY_OPS 第6例。goal 判定は apply 完了後の呼び出し側評価なので「1d6 減少→SAN<=0→発狂 goal」は同一ターンに damage→goal の順で成立"
   attempt_challenge: "未宣言 challenge→Reject(UnknownChallenge=幻チャレンジ遮断) / challenge.stat を挑戦 entity が未宣言→Reject(UnknownStat)。apply 時に engine が authored 定義から 1d{sides}+stat を振り、natural が tier(min/max)該当なら帰結 flag を**直書き**(flag_rules gate 迂回=authored 効果, trigger effects と同型)。tier も flag も LLM 経路に無い=帰結を LLM が持てない (#23/#24 の双対)"
-  adjust_stat:"entity が未宣言の stat を持つ → Reject (未宣言の stat は作れない)"
+  adjust_stat: "entity が未宣言の stat を持つ → Reject (未宣言の stat は作れない)"
   scale_stat: "未宣言キー → Reject / den=0 (ゼロ除算) → Reject。LLMは /0 でエンジンを壊せない"
   set_attribute: "LLM 提案の set_attribute は**常に却下** (AttributeSetNotAllowed=クラス/種族の捏造遮断、grant_skill と同型)。trigger effects は apply_ops 直行なので書き換え可。属性の閉世界キーは player=initial_attributes / NPC=CharacterDef.attributes で宣言、未宣言キーへの trigger set_attribute は validate で AttributeKeyUndeclared"
   stat_clamp: "clamp は CharacterDef.stats の StatDecl(min 既定 0 / max 既定なし)。entity ごと・stat ごと"
-  grant_skill:"LLM 提案の grant_skill は**常に却下** (能力は authored トリガーでのみ開花)。trigger effects は apply_ops 直行なので grant 可。= メアリー・スー(その場で能力開花)の構造遮断"
+  grant_skill: "LLM 提案の grant_skill は**常に却下** (能力は authored トリガーでのみ開花)。trigger effects は apply_ops 直行なので grant 可。= メアリー・スー(その場で能力開花)の構造遮断"
   reasons:    "Verdict::Reject は構造化 RejectReason 列 (文字列でなくデータ)。ルールはエンジン不変、文面は提示層"
   taboo:      "✅Phase B: CharacterDef.taboos(Gate) が delta 射影後に false→true 真化するなら却下 (check_taboos)。純粋: state の clone に apply_ops 射影して評価。柔らかい性向は profile(語り)"
 
@@ -75,7 +75,7 @@ adjudication:
 # 検証ルール (所持/移動/gate の力学) はエンジンの普遍法則として残し、文字列だけ分離。
 RejectReason:                     # 内部タグ "code" 付き列挙 (item_not_here / divide_by_zero 等 12 種)
   localize: "localize(lang) -> String。Lang=Ja|En。新言語は ja()/en() と同型の一手で追加"
-  rationale:"テスト頑健化 (文字列一致→variant 一致) + i18n + 将来のトーン差し替えの土台"
+  rationale: "テスト頑健化 (文字列一致→variant 一致) + i18n + 将来のトーン差し替えの土台"
 
 # --- シナリオ脊椎 (拘束。scenarios/*.yaml が Scenario として読まれる) --------
 Scenario:
@@ -357,7 +357,7 @@ Trigger:                          # ✅Phase C (Scenario.triggers): エンジン
 Memoria:                          # ✅memoria_bridge (実装済): recall の抽象 (DeltaProposer と同型の依存性逆転)
   trait:    "recall(cue:&str)->Vec<MemoryFragment>。&self=世界状態を変えない型レベル保証"
   impl:     "✅LoreStore: 文字 bigram TF-IDF の cosine semantic recall。**exact wins (2026-07-09)**: cue が id/tag と完全一致 (score 1.0) したらその完全一致だけを返す (作者の狙いの断言=語彙の似た別フラグメントを 0.08 の cosine ノイズで巻き込まない)。exact が一つも無いときだけ fuzzy (cosine≥閾値) にフォールバックし曖昧 cue でも近い伏線を引く。score 降順・同点 id 昇順で決定論。依存ゼロ・テスト可能。日本語は単語境界が無いので文字 n-gram。神経 embedding 版は同 trait 裏で差し替え可。注: chronicle retrieval (spec 08) が使う scores() は exact-wins でなく生スコア列を返す (二層注入は閾値+タグ増幅で別制御)"
-  null_impl:"() は常に空 (recall を使わない経路で &() を渡す)"
+  null_impl: "() は常に空 (recall を使わない経路で &() を渡す)"
   resolve:  "resolve_recall(memoria, &[FiredTrigger])->Vec<FiredBeat>。発火列の cue を解決 (純粋 retrieval)"
   load:     "load_lore(dir): memoria/*.yaml を MemoryFragment 化 (ファイル名=id、load_characters と同型)"
   boundary: "engine は Memoria 非依存・決定論のまま。gm_core は cue を不透明 String として運ぶだけ"
