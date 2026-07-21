@@ -269,7 +269,8 @@ export const messages = {
       selfrepairBody: "GM は {attempts} 回目の提案で筋を通した。却下された試行:",
       selfrepairAttempt: "{n} 回目: {reasons}",
       selfrepairDone: "GM は {attempts} 回目の提案で筋を通した",
-      rejectedAttempts: "却下された試行:",
+      // やり直しの原因は「却下」だけではない (出力が壊れて読めなかった場合もある) ので中立語。
+      rejectedAttempts: "やり直した理由:",
       thinking: "GM が思案している……",
       compacting: "あらすじをまとめています……",
       writingEpilogue: "エピローグを紡いでいます……",
@@ -680,7 +681,7 @@ export const messages = {
       selfrepairBody: "The GM found a coherent move on attempt {attempts}. Rejected attempts:",
       selfrepairAttempt: "Attempt {n}: {reasons}",
       selfrepairDone: "The GM found a coherent move on attempt {attempts}",
-      rejectedAttempts: "Rejected attempts:",
+      rejectedAttempts: "Why it retried:",
       thinking: "The GM is thinking…",
       compacting: "Summarizing the synopsis…",
       writingEpilogue: "Writing the epilogue…",

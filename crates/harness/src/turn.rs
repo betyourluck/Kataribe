@@ -257,9 +257,13 @@ pub enum TurnOutcome {
         fired: Vec<FiredTrigger>,
         /// 受理までに要した試行回数 (1 = 一発合格)。
         attempts: u32,
-        /// 受理前に却下された各試行の理由 (試行順)。空なら一発合格。提示層が「なぜ筋を通すのに
+        /// 受理前にやり直した各試行の**原因** (試行順)。空なら一発合格。提示層が「なぜ筋を通すのに
         /// N 回かかったか」を author に見せる素 (Grok 等で却下が多い時の診断)。
-        rejected: Vec<Vec<RejectReason>>,
+        ///
+        /// **却下 (裁定) と パース失敗 (壊れた出力) の二種がある** — 当初は前者だけを積んでおり、
+        /// 後者は `continue` するだけで理由が捨てられていた (attempts だけ増えて提示層に
+        /// 「却下された試行:」の空欄が出る、2026-07-21 実プレイ発見)。原因の型で区別する。
+        retries: Vec<RetryCause>,
         /// engine 事実の機械タグ (spec 08-B)。呼び出し側が [`chronicle_entry`] へ渡す。
         tags: ChronicleTags,
         /// GM の約束事提案 (`StateDelta.facts`、spec 20)。**まだ採否は決まっていない** —
@@ -277,6 +281,18 @@ impl TurnOutcome {
     pub fn is_accepted(&self) -> bool {
         matches!(self, TurnOutcome::Accepted { .. })
     }
+}
+
+/// 受理までに**やり直した原因** (spec: 自己修復の診断)。「なぜ N 回かかったか」は二種あり、
+/// どちらも author の診断材料になる。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetryCause {
+    /// 裁定で却下された。理由は構造化 (`RejectReason`) — 文面は提示層が `localize` する。
+    Rejected(Vec<RejectReason>),
+    /// **構造化出力が壊れて読めなかった** (`LlmError::Parse`)。裁定にすら到達していない。
+    /// 典型: モデルが散文で断った / CoT 混入 (#30) / max_tokens 切断 / ops の型崩れ (#52)。
+    /// `detail` はパーサの説明 (構造化理由が存在しないので文字列で運ぶ)。
+    Malformed { detail: String },
 }
 
 /// 1 ターンを回す。
@@ -356,8 +372,9 @@ pub async fn run_turn<P: DeltaProposer>(
     )));
 
     let mut last_reasons = Vec::new();
-    // 受理前に却下された各試行の理由 (試行順)。受理時に提示層へ渡し「なぜ N 回かかったか」を見せる。
-    let mut rejected: Vec<Vec<RejectReason>> = Vec::new();
+    // 受理前にやり直した原因 (試行順)。受理時に提示層へ渡し「なぜ N 回かかったか」を見せる。
+    // 却下 (裁定) と パース失敗 (壊れた出力) の両方を積む — 後者を捨てると空欄が出る。
+    let mut retries: Vec<RetryCause> = Vec::new();
 
     for attempt in 1..=max_attempts.max(1) {
         // 壊れた構造化出力 (JSON パース失敗) は却下と同じく「raw を戻して再提出」させる —
@@ -368,6 +385,8 @@ pub async fn run_turn<P: DeltaProposer>(
             Err(HarnessError::Proposer(llm_client::LlmError::Parse { raw, source }))
                 if attempt < max_attempts.max(1) =>
             {
+                // 原因を提示層へ運ぶ (捨てると「却下された試行:」の空欄になる)。
+                retries.push(RetryCause::Malformed { detail: source.to_string() });
                 messages.push(ChatMessage::assistant(raw));
                 messages.push(ChatMessage::user(format!(
                     "あなたの前回の出力は JSON として壊れていて読めなかった ({source})。\
@@ -397,14 +416,14 @@ pub async fn run_turn<P: DeltaProposer>(
                     stat_rolls: out.stat_rolls,
                     fired: out.fired,
                     attempts: attempt,
-                    rejected,
+                    retries,
                     tags,
                 });
             }
             Verdict::Reject { reasons } => {
                 // 履歴の一貫性のため、LLM が出した提案 (の痕跡) と却下理由を会話に積む。
                 push_rejection(&mut messages, &delta, &reasons, lang);
-                rejected.push(reasons.clone());
+                retries.push(RetryCause::Rejected(reasons.clone()));
                 last_reasons = reasons;
             }
         }

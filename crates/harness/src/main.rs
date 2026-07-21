@@ -432,7 +432,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 stat_rolls,
                 fired,
                 attempts,
-                rejected,
+                retries,
                 tags,
             }) => {
                 // literal `\n` を実改行へ (#16 の CLI 版。正本は触らない提示層の掃除)。
@@ -591,9 +591,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // 核心的未知の計測: 何回の再生成で合法な ops に収束したか + なぜ却下されたか。
                 if attempts > 1 {
                     println!("  [GM は {attempts} 回目の提案で筋を通した]");
-                    for (i, reasons) in rejected.iter().enumerate() {
-                        let why: Vec<String> = reasons.iter().map(|r| r.localize(lang)).collect();
-                        println!("    ✗ {} 回目却下: {}", i + 1, why.join(" / "));
+                    // やり直しの原因は二種 (却下 / 出力が壊れて読めなかった)。区別して出す。
+                    for (i, cause) in retries.iter().enumerate() {
+                        match cause {
+                            harness::RetryCause::Rejected(reasons) => {
+                                let why: Vec<String> =
+                                    reasons.iter().map(|r| r.localize(lang)).collect();
+                                println!("    ✗ {} 回目却下: {}", i + 1, why.join(" / "));
+                            }
+                            harness::RetryCause::Malformed { detail } => {
+                                println!("    ✗ {} 回目は出力が壊れて読めなかった: {detail}", i + 1);
+                            }
+                        }
                     }
                 }
                 println!(

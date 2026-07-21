@@ -50,7 +50,7 @@ pub use synopsis::{
 };
 pub use turn::{
     carryover_narration, chronicle_entry, contest_digest, excluded_check_ops, run_turn,
-    ChronicleTags, TurnLog,
+    ChronicleTags, RetryCause, TurnLog,
     TurnOutcome,
 };
 
@@ -115,6 +115,53 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .ok_or_else(|| HarnessError::NoProposal("台本が尽きた".into()))
+        }
+    }
+
+    /// 【やり直しの原因は二種】受理までのやり直しには**却下 (裁定)** と
+    /// **パース失敗 (壊れた出力で裁定に到達せず)** があり、後者の理由も提示層へ運ぶ。
+    ///
+    /// 実プレイ発見 (2026-07-21): パース失敗は `continue` するだけで理由を捨てていたため、
+    /// `attempts` だけ増えて GUI に「却下された試行:」の**空欄**が出た (モデルが散文で断った
+    /// 等の典型ケースが、author からは原因不明の空行に見える)。
+    #[tokio::test]
+    async fn malformed_output_is_carried_as_a_retry_cause_not_dropped() {
+        /// 1 回目はパース失敗、2 回目は合法デルタを返す proposer。
+        struct FlakyProposer {
+            calls: Mutex<u32>,
+        }
+        impl DeltaProposer for FlakyProposer {
+            async fn propose(&self, _m: &[ChatMessage]) -> Result<StateDelta, HarnessError> {
+                let mut n = self.calls.lock().unwrap();
+                *n += 1;
+                if *n == 1 {
+                    return Err(HarnessError::Proposer(llm_client::LlmError::Parse {
+                        raw: "申し訳ありませんが、その内容にはお応えできません".into(),
+                        source: serde_json::from_str::<StateDelta>("not json").unwrap_err(),
+                    }));
+                }
+                Ok(delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]))
+            }
+        }
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = FlakyProposer { calls: Mutex::new(0) };
+
+        let outcome = run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
+            .await
+            .unwrap();
+        match outcome {
+            TurnOutcome::Accepted { attempts, retries, .. } => {
+                assert_eq!(attempts, 2, "2 回目で受理");
+                assert_eq!(retries.len(), 1, "やり直しの原因が 1 件運ばれる (捨てられない)");
+                match &retries[0] {
+                    RetryCause::Malformed { detail } => {
+                        assert!(!detail.is_empty(), "パーサの説明が入る");
+                    }
+                    other => panic!("パース失敗として運ばれるべき: {other:?}"),
+                }
+            }
+            other => panic!("受理されるべき: {other:?}"),
         }
     }
 

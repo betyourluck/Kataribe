@@ -2474,7 +2474,7 @@ async fn play_turn(
             stat_rolls,
             fired,
             attempts,
-            rejected,
+            retries,
             tags,
         } => {
             // 約束事 (spec 20): GM 提案の採否を決める。採用 📝 / 強化 📝⁺ だけを表示し
@@ -2595,10 +2595,19 @@ async fn play_turn(
                 beats,
                 attempts,
                 reasons: Vec::new(),
-                // 受理前に却下された各試行の理由を localize して author に見せる。
-                retries: rejected
+                // 受理前にやり直した各試行の原因を author に見せる。**二種ある** —
+                // 却下 (構造化理由を localize) と、出力が壊れて読めなかった場合
+                // (裁定に到達していないので構造化理由が無い。捨てると空欄が出る)。
+                retries: retries
                     .iter()
-                    .map(|rs| rs.iter().map(|r| r.localize(sess.lang)).collect())
+                    .map(|c| match c {
+                        harness::RetryCause::Rejected(rs) => {
+                            rs.iter().map(|r| r.localize(sess.lang)).collect()
+                        }
+                        harness::RetryCause::Malformed { detail } => {
+                            vec![format!("出力が壊れて読めなかった (再提出させた): {detail}")]
+                        }
+                    })
                     .collect(),
                 state: state_view(&sess.state, &sess.scenario, &sess.history),
                 goal_reached: is_goal(&sess.state, &sess.scenario),
