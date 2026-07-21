@@ -272,6 +272,19 @@ fn guaranteed_challenge_effects(scenario: &Scenario, def: &crate::spine::Challen
         }
         out
     }
+    // spec 21 確定行動: 判定が無い = どの経路でも on_success しか起きない → **全部が確定効果**。
+    // これで「装備する + 移動する」のような束ねが 1 ターンで通る (ダイス challenge は帰結が
+    // apply 時確定ゆえ必ずターンを割る、との対比)。
+    if def.resolution == crate::spine::Resolution::None {
+        let mut out = Vec::new();
+        if let Some(o) = &def.on_success {
+            if let Some(flag) = &o.flag {
+                out.push(StateOp::SetFlag { key: flag.clone(), value: true });
+            }
+            out.extend(o.effects.iter().cloned());
+        }
+        return out;
+    }
     if def.resolution == crate::spine::Resolution::Percentile {
         // percentile: 6 degree すべての解決先スロットで交差する (どの出目でも必ず起きるもの
         // だけが確定扱いできる)。どれか 1 つでもスロット無し (=その degree は効果ゼロ) なら空。
@@ -493,7 +506,8 @@ fn validate_op(
                             }
                         }
                         // 面数は additive のみの概念 (percentile は d100 固定・sides=0 が正、
-                        // 形の整合は load 時 validate が保証済み — spec 16)。
+                        // 確定行動 (spec 21) はそもそも振らない。形の整合は load 時 validate が
+                        // 保証済み — spec 16/21)。
                         if def.resolution == crate::spine::Resolution::Additive && def.sides < 1 {
                             reasons.push(RejectReason::DiceSidesInvalid);
                         }
@@ -637,7 +651,7 @@ fn check_taboos(
     }
     let mut projected = state.clone();
     // clone への射影 (dice/jud定 は捨て、taboo 評価のためだけに state を進める)。
-    apply_ops(&mut projected, scenario, delta, &mut Vec::new(), &mut Vec::new(), &mut Vec::new());
+    apply_ops(&mut projected, scenario, delta, &mut Vec::new(), &mut Vec::new(), &mut Vec::new(), &mut Vec::new());
     for (eid, def) in &scenario.characters {
         for taboo in &def.taboos {
             if !taboo.eval(state) && taboo.eval(&projected) {
@@ -670,10 +684,17 @@ pub fn apply(
     let mut rolls = Vec::new();
     let mut checks = Vec::new();
     let mut stat_rolls = Vec::new();
-    apply_ops(state, scenario, delta, &mut rolls, &mut checks, &mut stat_rolls);
+    // spec 21: 確定行動 (resolution: none) の結末文。トリガー発火より**前**に起きた出来事なので
+    // fired の先頭に置く (提示・還流とも既存のビート経路に相乗りする)。
+    let mut certain_beats = Vec::new();
+    apply_ops(state, scenario, delta, &mut rolls, &mut checks, &mut stat_rolls, &mut certain_beats);
     state.turn += 1;
     // 反応ビート (禁忌の双対)。受理・適用済みの実 state に対して発火判定する。
-    let fired = fire_triggers(state, scenario, &mut rolls, &mut checks, &mut stat_rolls);
+    let mut fired = fire_triggers(state, scenario, &mut rolls, &mut checks, &mut stat_rolls);
+    if !certain_beats.is_empty() {
+        certain_beats.append(&mut fired);
+        fired = certain_beats;
+    }
 
     // このターンに true へ真化したフラグへ「立ったターン」を刻む。差分方式なので
     // op / トリガー効果 / challenge 帰結のどの経路で立っても漏れなく捕捉される。
@@ -876,6 +897,8 @@ pub fn contest_round(
     let mut rolls = Vec::new();
     let mut scratch_checks = Vec::new();
     let mut stat_rolls = Vec::new();
+    // spec 21: 帰結 effects の中に確定行動があればその結末文もビートへ (apply と同型)。
+    let mut certain_beats = Vec::new();
     let (mut narration, mut sound) = (String::new(), String::new());
     if let Some(o) = slot {
         if let Some(flag) = &o.flag {
@@ -883,12 +906,16 @@ pub fn contest_round(
         }
         if !o.effects.is_empty() {
             let effect_delta = StateDelta::new(String::new(), o.effects.clone());
-            apply_ops(state, scenario, &effect_delta, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+            apply_ops(state, scenario, &effect_delta, &mut rolls, &mut scratch_checks, &mut stat_rolls, &mut certain_beats);
         }
         narration = o.narration.clone();
         sound = o.sound.clone();
     }
-    let fired = fire_triggers(state, scenario, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+    let mut fired = fire_triggers(state, scenario, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+    if !certain_beats.is_empty() {
+        certain_beats.append(&mut fired);
+        fired = certain_beats;
+    }
     let newly_true: Vec<String> = state
         .flags
         .iter()
@@ -1234,13 +1261,15 @@ pub fn resolve_decision(
     state.pending_decisions.remove(0);
 
     let mut check = check;
+    // spec 21: 帰結 effects の中に確定行動があればその結末文もビートへ (apply と同型)。
+    let mut certain_beats = Vec::new();
     if let Some(o) = slot {
         if let Some(flag) = &o.flag {
             state.flags.insert(flag.clone(), true);
         }
         if !o.effects.is_empty() {
             let effect_delta = StateDelta::new(String::new(), o.effects.clone());
-            apply_ops(state, scenario, &effect_delta, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+            apply_ops(state, scenario, &effect_delta, &mut rolls, &mut scratch_checks, &mut stat_rolls, &mut certain_beats);
         }
         check.narration = o.narration.clone();
         check.sound = o.sound.clone();
@@ -1248,7 +1277,11 @@ pub fn resolve_decision(
     check.pending = false;
 
     // 帰結からの発火 (apply と同じ settle) と、真化フラグのターン刻印。
-    let fired = fire_triggers(state, scenario, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+    let mut fired = fire_triggers(state, scenario, &mut rolls, &mut scratch_checks, &mut stat_rolls);
+    if !certain_beats.is_empty() {
+        certain_beats.append(&mut fired);
+        fired = certain_beats;
+    }
     let newly_true: Vec<String> = state
         .flags
         .iter()
@@ -1291,8 +1324,11 @@ fn fire_triggers(
         let Some(t) = next else { break };
 
         // 効果は authored・信頼済なので validate せず原子適用する。
+        // spec 21: 効果の中に確定行動があれば、その結末文もこの settle のビート列へ合流する。
         let effect_delta = StateDelta::new(String::new(), t.effects.clone());
-        apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls);
+        let mut certain_beats = Vec::new();
+        apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls, &mut certain_beats);
+        fired.append(&mut certain_beats);
 
         fired_this_settle.insert(t.id.clone());
         if !t.repeatable {
@@ -1388,6 +1424,8 @@ fn apply_ops(
     rolls: &mut Vec<RollOutcome>,
     checks: &mut Vec<CheckOutcome>,
     stat_rolls: &mut Vec<StatRollOutcome>,
+    // spec 21: 確定行動 (resolution: none) の結末文を発火ビートとして載せる出口。
+    beats: &mut Vec<FiredTrigger>,
 ) {
     for op in &delta.ops {
         if apply_deterministic_op(state, scenario, op) {
@@ -1478,6 +1516,34 @@ fn apply_ops(
                 // adjudicate が challenge 既知・stat 宣言済を保証済。authored 定義から判定を組む。
                 // ここに到達する challenge は必ず存在する (adjudicate 通過後)。
                 if let Some(def) = scenario.challenge(challenge) {
+                    // spec 21 確定行動: 振らずに on_success を適用する。**RNG を消費しない**
+                    // (確定行動の有無でダイス列が変わらない = 決定論)。CheckOutcome も積まない
+                    // — 判定していないものを判定に見せない (🎯 行・伏せカードを出さない)。
+                    // 結末文は発火ビート経路で提示する (authored narration を捨てない)。
+                    if def.resolution == crate::spine::Resolution::None {
+                        if let Some(outcome) = &def.on_success {
+                            if let Some(flag) = &outcome.flag {
+                                state.flags.insert(flag.clone(), true);
+                            }
+                            if !outcome.effects.is_empty() {
+                                let effect_delta =
+                                    StateDelta::new(String::new(), outcome.effects.clone());
+                                apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls, beats);
+                            }
+                            if !outcome.narration.trim().is_empty() {
+                                beats.push(FiredTrigger {
+                                    id: challenge.clone(),
+                                    narration: outcome.narration.clone(),
+                                    recall: None,
+                                    image: None,
+                                    image_mode: None,
+                                    sound: (!outcome.sound.is_empty())
+                                        .then(|| outcome.sound.clone()),
+                                });
+                            }
+                        }
+                        continue;
+                    }
                     if def.resolution == crate::spine::Resolution::Percentile {
                         // d100 ロールアンダー (spec 16)。目標値 = 判定主体の stat + modifiers
                         // (percentile では bonus を目標値に加算 = 「技能値 +10 相当」)。
@@ -1523,7 +1589,7 @@ fn apply_ops(
                             outcome.map(|o| o.effects.clone()).unwrap_or_default();
                         if !effects.is_empty() {
                             let effect_delta = StateDelta::new(String::new(), effects);
-                            apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls);
+                            apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls, beats);
                         }
                         checks.push(CheckOutcome {
                             entity: subject.clone(),
@@ -1618,7 +1684,7 @@ fn apply_ops(
                     }
                     if !effects.is_empty() {
                         let effect_delta = StateDelta::new(String::new(), effects);
-                        apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls);
+                        apply_ops(state, scenario, &effect_delta, rolls, checks, stat_rolls, beats);
                     }
                     // 結末ナレーション: 極(tier)に narration があれば優先 (より具体的・劇的)、
                     // 無ければ通常成否の narration。毎回・同ターンに提示層が出す (非 latch)。
@@ -2685,6 +2751,236 @@ goal: { kind: always }
         .unwrap();
         assert!(s.flag("押し開けた"));
         assert_eq!(s.stat_of(PLAYER, "str"), 6, "on_success.effects も効く");
+    }
+
+    /// 【spec 21: 確定行動 `resolution: none`】ダイスを振らない challenge。
+    ///
+    /// **動機は機構の穴**: LLM が authored 効果を起動する経路は `attempt_challenge` しかない。
+    /// 「set_flag → トリガーが効果を出して**書き戻す**」定石は、書き戻し (`set_flag`) のせいで
+    /// そのフラグが `authored_only_flags` に落ち、#50 バックストップが真偽どちらも却下する
+    /// → LLM は二度と起動できない (起点が LLM の時だけリセットが起点の権利を食い潰す)。
+    /// 確定行動はその穴を塞ぐ = **LLM が起動できる authored 効果の束**。
+    ///
+    /// 検証: ①判定せず on_success を適用 ②`CheckOutcome` を積まない (🎯 も伏せカードも出ない)
+    /// ③**RNG を消費しない** (確定行動の有無でダイス列が変わらない = 決定論)
+    /// ④narration は発火ビート経路で提示される。
+    #[test]
+    fn certain_action_applies_outcome_without_rolling() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { 魅力: 5 }
+allowed_flags: [装備中]
+challenges:
+  equip:
+    resolution: none
+    description: 【装備する】花冠
+    on_success:
+      flag: 装備中
+      narration: コンの頭に花冠を乗せた。
+      effects:
+        - { op: adjust_stat, key: 魅力, delta: 3 }
+  luck:
+    sides: 20
+    dc: 10
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+
+        let mut s = sc.initial_state(7);
+        let out = apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(),
+            challenge: "equip".into(),
+        }]))
+        .unwrap();
+        assert!(s.flag("装備中"), "on_success.flag が立つ (専権フラグを engine が書く)");
+        assert_eq!(s.stat_of(PLAYER, "魅力"), 8, "on_success.effects が同一 apply で効く");
+        assert!(out.checks.is_empty(), "判定していないので CheckOutcome を積まない");
+        assert!(
+            out.fired.iter().any(|f| f.narration.contains("花冠を乗せた")),
+            "結末文は発火ビート経路で提示される: {:?}",
+            out.fired
+        );
+
+        // RNG 非消費: 確定行動を挟んでも、後続のダイスは挟まなかった場合と同じ出目になる。
+        let mut with = sc.initial_state(7);
+        apply(&mut with, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(),
+            challenge: "equip".into(),
+        }]))
+        .unwrap();
+        let a = apply(&mut with, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(),
+            challenge: "luck".into(),
+        }]))
+        .unwrap();
+        let mut without = sc.initial_state(7);
+        let b = apply(&mut without, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(),
+            challenge: "luck".into(),
+        }]))
+        .unwrap();
+        assert_eq!(a.checks[0].roll, b.checks[0].roll, "確定行動は RNG を消費しない");
+    }
+
+    /// 【spec 21: 動機そのもの】トリガーが書き戻す**専権フラグ**を、LLM が確定行動経由で
+    /// 立てられる。直接の `set_flag` は #50 バックストップが却下したままで、閉世界は不変
+    /// (LLM は challenge を「選ぶ」だけで帰結は authored 側にある)。
+    #[test]
+    fn certain_action_can_set_authored_only_flags_from_llm() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { 魅力: 5 }
+allowed_flags: [装備中, 効果適用済]
+challenges:
+  equip:
+    resolution: none
+    description: 【装備する】花冠
+    requires: { kind: flag_is, key: 装備中, value: false }
+    on_success:
+      flag: 装備中
+      narration: 花冠を乗せた。
+triggers:
+  - id: wear
+    when: { kind: flag_is, key: 装備中, value: true }
+    effects:
+      - { op: adjust_stat, key: 魅力, delta: 3 }
+      - { op: set_flag, key: 効果適用済, value: true }
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        // 「効果適用済」はトリガーが書く = 専権。LLM の直接 set_flag は却下される。
+        assert!(sc.authored_only_flags().contains("効果適用済"));
+        let mut s = sc.initial_state(1);
+        assert!(
+            matches!(
+                adjudicate(&s, &sc, &d(vec![StateOp::SetFlag {
+                    key: "効果適用済".into(),
+                    value: true
+                }])),
+                Verdict::Reject { .. }
+            ),
+            "専権フラグへの直接 set_flag は却下のまま (閉世界は不変)"
+        );
+        // 確定行動なら起動できる → トリガーが連鎖して専権フラグと効果が入る。
+        apply(&mut s, &sc, &d(vec![StateOp::AttemptChallenge {
+            entity: PLAYER.into(),
+            challenge: "equip".into(),
+        }]))
+        .unwrap();
+        assert!(s.flag("装備中") && s.flag("効果適用済"), "確定行動 → トリガー連鎖");
+        assert_eq!(s.stat_of(PLAYER, "魅力"), 8);
+    }
+
+    /// 【spec 21: 形の検査】確定行動に判定用フィールドを書いたら load 時に弾く
+    /// (判定が無い以上どれも無意味 — 壊れた宣言を実行経路に乗せない)。
+    #[test]
+    fn validate_rejects_dice_fields_on_certain_action() {
+        let yaml = r#"
+title: t
+start: room
+initial_stats: { str: 5 }
+allowed_flags: [a, b]
+challenges:
+  bad:
+    resolution: none
+    sides: 20
+    dc: 10
+    stat: str
+    on_success: { flag: a }
+    on_failure: { flag: b }
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let errs = sc.validate();
+        assert!(
+            errs.iter().any(|e| matches!(e, crate::ScenarioError::CertainActionShape { .. })),
+            "sides/dc/stat/on_failure を名指しで弾く: {errs:?}"
+        );
+    }
+
+    /// 【spec 21 × spec 09】確定行動は完全に決定論なので**逐次射影に乗る** —
+    /// 「装備する + 移動する」を 1 ターンに束ねられる (ダイス challenge は帰結が apply 時
+    /// 確定ゆえ必ずターンを割る、との対比)。
+    #[test]
+    fn certain_action_effects_are_projected_in_adjudication() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [装備中]
+challenges:
+  equip:
+    resolution: none
+    on_success: { flag: 装備中 }
+locations:
+  room:
+    description: d
+    items: {}
+    exits:
+      - to: hall
+        gate: { kind: flag_is, key: 装備中, value: true }
+  hall: { description: h, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let s = sc.initial_state(1);
+        // 装備 → その帰結フラグが開ける出口へ移動、を同一ターンで束ねられる。
+        let bundled = d(vec![
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "equip".into() },
+            StateOp::Move { to: "hall".into() },
+        ]);
+        assert!(
+            matches!(adjudicate(&s, &sc, &bundled), Verdict::Accept),
+            "確定行動の帰結は射影されるので束ねが通る"
+        );
+    }
+
+    /// 【spec 21 同梱 lint: 幻の場所を指す location_is】`at` が宣言されていない場所だと
+    /// その Gate は永久に false — challenge の requires なら一度も選べず、出口なら通れない。
+    /// エラーも警告も出ないので作者は気づけなかった (実例: LLM 生成の `at: inventory`)。
+    /// 入れ子 (all/any) の葉まで舐め、宣言済みの場所には出ない (偽陽性なし)。
+    #[test]
+    fn lints_location_is_pointing_at_unknown_location() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [a]
+challenges:
+  equip:
+    resolution: none
+    requires:
+      kind: all
+      of:
+        - { kind: location_is, at: inventory }
+        - { kind: location_is, at: room }
+    on_success: { flag: a }
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "lint は load を拒否しない: {:?}", sc.validate());
+        let lints = sc.lints();
+        let hits: Vec<_> = lints
+            .iter()
+            .filter_map(|l| match l {
+                crate::ScenarioError::UnknownLocationInGate { origin, at } => Some((origin, at)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hits.len(), 1, "幻の場所だけを名指しする (room は出ない): {lints:?}");
+        assert_eq!(hits[0].1, "inventory");
+        assert!(hits[0].0.contains("equip"), "どこの Gate かを名指しする: {:?}", hits[0].0);
     }
 
     /// 【challenge effects の再帰禁止】effects に attempt_challenge を書くと A→A の無限再帰が

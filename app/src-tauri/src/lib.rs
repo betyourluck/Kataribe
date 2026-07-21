@@ -371,6 +371,12 @@ fn scenario_warnings(scenario: &Scenario) -> Vec<String> {
                 "フラグ「{flag}」の flag_hint は GM に届きません（トリガー/challenge が立てる専権フラグのため）。\
                  GM に立てさせるならトリガー/challenge 側の set_flag を外し、筋書きで立てるならヒントを外してください"
             ),
+            // spec 21 同梱: 幻の場所を指す location_is は永久に false = その Gate は死んでいる。
+            ScenarioError::UnknownLocationInGate { origin, at } => format!(
+                "{origin} の location_is が、宣言されていない場所「{at}」を指しています。\
+                 この条件は永久に成立しません（挑戦なら一度も選べず、出口なら通れません）。\
+                 locations に無い名前です — 所持品を対象にするなら has_item を使ってください"
+            ),
             other => format!("{other:?}"),
         })
         .collect()

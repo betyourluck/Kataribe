@@ -274,10 +274,14 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
             };
             // percentile challenge はロールアンダーである旨を明示 (spec 16 — 「低いほど良い」を
             // 加算式の癖で読み違えさせない)。
-            let basis = if c.resolution == gm_core::Resolution::Percentile {
-                format!("{basis} — d100 ロールアンダー (技能値以下で成功)")
-            } else {
-                basis
+            let basis = match c.resolution {
+                // percentile challenge はロールアンダーである旨を明示 (spec 16)。
+                gm_core::Resolution::Percentile => {
+                    format!("{basis} — d100 ロールアンダー (技能値以下で成功)")
+                }
+                // 確定行動 (spec 21): 振らずに必ず起きる。前提さえ満たせば選べる手だと伝える。
+                gm_core::Resolution::None => "判定なし・確定 (前提を満たせば必ず成功する)".to_string(),
+                gm_core::Resolution::Additive => basis,
             };
             // 前提条件 (requires) があれば明示 — 満たすまでこの挑戦は選べない。
             let req = match &c.requires {

@@ -563,6 +563,12 @@ package_updates:
   duplicate_install: "2026-07-19 ユーザー決定 (spec 05 の名残の解消): サイトタブの取得は `unique_dir` で毎回 `_2` の別フォルダに増えていた → `list_packages` が `PackageEntry.source_site`/`source_id` (出所メタの写し) を返し、**現在の siteUrl かつ同じ書庫 id が既に手元に在るならボタンを「取得済み」で disable** する。更新はローカルタブの「更新」の役割 (同じフォルダへ据え替え) = 二重取得と更新の役割分担を UI で確定させる。判定は提示層のみ (frontend は登録パス一覧を持つが backend は持たない)、手動配置 (メタ無し)・別サイト由来は対象外で従来どおり取得できる"
   server: "outcast Spec 23 追補: PackageSummary に sha256: String を追加 (一覧+詳細の両方・決定3=DB 保存済み値の SELECT 追加のみ)。Kataribe 側 RemotePackage.sha256 は Option (None 耐性=未対応書庫で更新検知が静かに無効)"
 
+# --- 確定行動 (spec 21。ダイスを振らない challenge) ------------------------------
+certain_actions:
+  resolution_none: "ChallengeDef.resolution: none (spec 21)。ダイスを振らず on_success を必ず適用する確定行動。**RNG を消費しない** (確定行動の有無でダイス列が変わらない=決定論)。CheckOutcome を積まない (🎯 行も spec 18 の伏せカードも出ない=判定していないものを判定に見せない)。結末文は発火ビート経路 (ApplyOutcome.fired) で提示・還流する。禁止フィールドは sides/dc/count/times/stat/expr/modifiers/tiers/degree スロット/on_failure/pushable/on_push_failure — 判定が無い以上どれも無意味ゆえ load 時に CertainActionShape で名指し。requires は使える (むしろ本命=「条件を満たすと選べるようになる行動」を宣言でき scenario_brief に【前提】が出る)。scenario_brief は「判定なし・確定 (前提を満たせば必ず成功する)」と表示"
+  motivation: "**機構の穴を塞ぐ**: LLM が authored 効果を起動する経路は attempt_challenge しかない (トリガーは engine が発火させるもので LLM から触れない)。『set_flag → トリガーが効果を出して**書き戻す**』定石は、その書き戻し (set_flag) のせいで起点フラグが authored_only_flags に落ち、#50 バックストップが真偽どちらの向きも却下する → **LLM は二度と起動できない** (しかも語彙提示からも消えるので静かに死ぬ)。『セットして戻す』は engine 駆動ループ (カウンタ→効果→リセット) 用の定石で、**起点が LLM の時だけリセットが起点の権利を食い潰す**。装備・使用・切替のような繰り返せる確定行動はこれで書く。従来の回避策 sides:1/dc:1 は偽のダイス (🎯 行・伏せカードの誤発火) かつ percentile 盤面では validate 拒否ゆえ様式依存で壊れていた"
+  projection: "spec 09 逐次射影に**完全に乗る** (判定が無い=どの経路でも on_success しか起きない)。『装備する + 移動する』を 1 ターンに束ねられる — ダイス challenge は帰結が apply 時確定ゆえ必ずターンを割る、との対比"
+  lint_unknown_location: "同梱 lint: Gate の location_is が**宣言されていない場所**を指していたら UnknownLocationInGate で警告 (非 fatal)。state.location と一致しようがない=永久に false → challenge の requires なら一度も選べず、出口 gate なら通れないのに、従来はエラーも警告も出なかった。実例=LLM 生成 content の { location_is, at: inventory } (所持品を場所と誤認)。走査対象は challenge の requires/modifiers・trigger の when・flag_rules・出口 gate、入れ子 (all/any) の葉まで再帰。origin が場所を名指しする"
 # --- 約束事 (spec 20。プレイヤーと GM の覚え書きリスト = MemoriaAeterna の最小プロトタイプ) ---
 shared_facts:
   memo_entry: "FactEntry{id: u64(採番=現存 max+1・セッション内一意・不変), origin: gm|user, text: String, turn: u32, score: u32}。**正本 (GameState) の外** — 語り素材であって可変世界状態ではない (chronicle/Memoria と同じ境界)。置き場 = harness/app 層 + SessionSave.facts (serde default=旧セーブ互換)。campaign 遷移で持ち越し (章を跨いで覚える)"

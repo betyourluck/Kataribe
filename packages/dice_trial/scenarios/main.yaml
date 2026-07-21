@@ -45,12 +45,15 @@ characters:
     stats:
       HP: { initial: 12, min: 0 }
 
-allowed_flags: [rock_moved, sigil_read, rock_slip, battle_started]
+allowed_flags: [rock_moved, sigil_read, rock_slip, battle_started, torch_held, torch_bonus]
 flag_titles:
   rock_moved: 封印岩の移動
   sigil_read: 碑文の解読
   rock_slip: 岩のしくじり
   battle_started: 番人戦の開幕
+  torch_held: 松明を掲げている
+
+initial_inventory: [壁の松明]
 
 locations:
   trial_hall:
@@ -64,6 +67,23 @@ locations:
     exits: []
 
 challenges:
+  # ⓪ 確定行動 (spec 21): ダイスを振らない「装備する」。resolution: none。
+  #    ここが要点 — トリガー wear_torch が torch_bonus を書き戻すので torch_bonus は
+  #    専権フラグになる。従来なら「set_flag → トリガー」定石で torch_held も書き戻す形になり、
+  #    LLM が起動できなくなっていた (#50 バックストップ)。確定行動なら LLM が「選ぶ」だけで
+  #    authored 効果を起こせる。判定していないので 🎯 行も伏せカードも出ない。
+  hold_torch:
+    resolution: none
+    description: 【掲げる】壁の松明を手に取り、碑文を照らす
+    requires:
+      kind: all
+      of:
+        - { kind: has_item, item: 壁の松明 }
+        - { kind: flag_is, key: torch_held, value: false }
+    on_success:
+      flag: torch_held
+      narration: 壁の松明を引き抜くと、揺れる炎が碑文の溝を斜めから照らし出した。文字の陰影がくっきりと浮かぶ。
+
   # ① 加算式: 伏せカード → 開帳 → 結末文+SE 同期のテスト。
   boulder:
     description: 封印岩を持ち上げて動かす (STR 1d20 vs DC18)
@@ -123,6 +143,10 @@ challenges:
     resolution: percentile
     description: 壁の碑文を読み解く知識ロール (d100 ≤ 知識)
     stat: 知識
+    modifiers:
+      # 確定行動 (hold_torch) の帰結が判定を有利にする — 「準備が勝率を変える」の実演。
+      - when: { kind: flag_is, key: torch_bonus, value: true }
+        bonus: 15
     on_success:
       flag: sigil_read
       narration: 螺旋の文字列が意味を結ぶ。これは封印の手順書だ——読める、読めるぞ。
@@ -168,6 +192,15 @@ contests:
     max_rounds: 20
 
 triggers:
+  # spec 21 の動機そのもの: このトリガーが torch_bonus を**書き戻す**ので torch_bonus は
+  # 専権フラグになる。起点 (torch_held) を LLM の set_flag にしていたら、同じ理由で起点も
+  # 専権に落ちて LLM が二度と起動できなかった — 確定行動が起点を担うことで成立している。
+  - id: wear_torch
+    when: { kind: flag_is, key: torch_held, value: true }
+    effects:
+      - { op: set_flag, key: torch_bonus, value: true }
+    narration: 炎に照らされた碑文は、さっきより遥かに読み取りやすい。
+
   # しくじりの帰結: ビート+SE+可変量ダイス。開帳前に鳴ったら/見えたら漏洩 = テストの本丸。
   - id: rockfall
     when: { kind: flag_is, key: rock_slip, value: true }

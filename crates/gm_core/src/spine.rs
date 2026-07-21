@@ -686,6 +686,14 @@ pub enum Resolution {
     /// d100 ロールアンダー: `1d100 <= 目標値 (stat + modifiers)` で成功 (低いほど良い)。
     /// 成功度 (degree) をエンジンが計算する。
     Percentile,
+    /// **確定行動** (spec 21): ダイスを振らず `on_success` を必ず適用する。RNG も消費しない。
+    ///
+    /// 位置づけは「**LLM が起動できる authored 効果の束**」。LLM が authored 効果を起こす経路は
+    /// `attempt_challenge` しかなく、`set_flag` → トリガー → **書き戻し**の定石は、その書き戻しで
+    /// フラグが [`Scenario::authored_only_flags`] に落ちて LLM が起動できなくなる (起点が LLM の
+    /// 時だけリセットが起点の権利を食い潰す)。装備・使用・切替のような**繰り返せる確定行動**は
+    /// これで書く。閉世界は不変 — LLM は選ぶだけで、帰結は authored 側にある。
+    None,
 }
 
 /// 盤面の判定様式スイッチ (spec 16)。engine の意味論には触れない**提示/語彙スイッチ** —
@@ -776,6 +784,13 @@ pub enum ScenarioError {
     /// 「封印か討伐か死か」という結末の意味を生成に伝える接地素材 — 無いと生成失敗時に
     /// バナーだけの幕になる。**lint** (プレイは壊れない = load 拒否しない。spec 11)。
     EpilogueWithoutNarration { goal: GoalId },
+    /// Gate の `location_is` が**宣言されていない場所**を指している (spec 21 同梱)。
+    /// `state.location` と一致しようがないので、その Gate は**永久に false** — challenge の
+    /// `requires` に書けば一度も選べず、出口 gate に書けば通れない。しかもエラーも警告も
+    /// 出ないので作者は気づけない。実例: LLM 生成 content の `{ location_is, at: inventory }`
+    /// (所持品を場所と誤認)。**lint** — 壊れた盤面でもプレイは続くので load は拒否しない。
+    /// `origin` は `challenge:{id}` / `trigger:{id}` / `exit:{from}->{to}` 等の場所名。
+    UnknownLocationInGate { origin: String, at: LocationId },
     /// `flag_titles` のキーが `allowed_flags` に宣言されていない (幻フラグへの表示名)。
     FlagTitleUndeclared { flag: FlagKey },
     /// `hidden_flags` のキーが `allowed_flags` に宣言されていない (幻フラグの秘匿)。
@@ -835,6 +850,9 @@ pub enum ScenarioError {
     /// percentile challenge の形が不正 (spec 16): `stat` 欠落 / `sides`・`dc` の指定
     /// (加算式との混同)。`detail` が何が悪いかを名指しする。
     PercentileChallengeShape { challenge: ChallengeId, detail: String },
+    /// 確定行動 (`resolution: none`、spec 21) に判定用フィールドが書かれている。
+    /// 判定が無い以上どれも無意味なので load 時に弾く (壊れた宣言を実行経路に乗せない)。
+    CertainActionShape { challenge: ChallengeId, detail: String },
     /// challenge の式修正 (spec 19) が不正: パース不能 / `stat` と併記 / 参照 stat 未宣言 /
     /// リテラルのゼロ除算。`detail` が何が悪いかを名指しする。
     ChallengeExprInvalid { challenge: ChallengeId, detail: String },
@@ -1264,6 +1282,44 @@ impl Scenario {
                 warns.push(ScenarioError::EpilogueWithoutNarration { goal: g.id.clone() });
             }
         }
+        // spec 21 同梱: 幻の場所を指す location_is (永久に false = 死んだ Gate)。
+        // Gate は入れ子 (all/any/not) を取るので再帰で葉まで舐める。
+        fn scan_gate(g: &Gate, origin: &str, known: &BTreeSet<LocationId>, out: &mut Vec<ScenarioError>) {
+            match g {
+                Gate::LocationIs { at } if !known.contains(at) => {
+                    out.push(ScenarioError::UnknownLocationInGate {
+                        origin: origin.to_string(),
+                        at: at.clone(),
+                    });
+                }
+                Gate::All { of } | Gate::Any { of } => {
+                    for sub in of {
+                        scan_gate(sub, origin, known, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let known: BTreeSet<LocationId> = self.locations.keys().cloned().collect();
+        for (cid, def) in &self.challenges {
+            if let Some(req) = &def.requires {
+                scan_gate(req, &format!("challenge:{cid}"), &known, &mut warns);
+            }
+            for m in &def.modifiers {
+                scan_gate(&m.when, &format!("challenge:{cid}"), &known, &mut warns);
+            }
+        }
+        for t in &self.triggers {
+            scan_gate(&t.when, &format!("trigger:{}", t.id), &known, &mut warns);
+        }
+        for (key, gate) in &self.flag_rules {
+            scan_gate(gate, &format!("flag_rules:{key}"), &known, &mut warns);
+        }
+        for (from, loc) in &self.locations {
+            for ex in &loc.exits {
+                scan_gate(&ex.gate, &format!("exit:{from}->{}", ex.to), &known, &mut warns);
+            }
+        }
         warns
     }
 
@@ -1305,6 +1361,50 @@ impl Scenario {
                     }
                     if !def.tiers.is_empty() {
                         errs.push(ScenarioError::TierWithPercentile { challenge: cid.clone() });
+                    }
+                }
+                // 確定行動 (spec 21): 判定が無い以上、判定用フィールドはすべて無意味。
+                // 書かれていたら「振るつもりで書いたのに振られない」ので load 時に名指しする。
+                Resolution::None => {
+                    let mut bad = Vec::new();
+                    if def.sides != 0 || def.dc != 0 {
+                        bad.push("sides/dc");
+                    }
+                    if def.count != 1 || def.times != 1 {
+                        bad.push("count/times");
+                    }
+                    if def.stat.is_some() || def.expr.is_some() {
+                        bad.push("stat/expr");
+                    }
+                    if !def.modifiers.is_empty() {
+                        bad.push("modifiers");
+                    }
+                    if !def.tiers.is_empty() {
+                        bad.push("tiers");
+                    }
+                    if def.on_failure.is_some() {
+                        bad.push("on_failure");
+                    }
+                    // degree 別スロット (percentile 用) も判定の産物なので無意味。
+                    if def.on_critical.is_some()
+                        || def.on_extreme.is_some()
+                        || def.on_hard.is_some()
+                        || def.on_fumble.is_some()
+                    {
+                        bad.push("degree スロット (on_critical/on_extreme/on_hard/on_fumble)");
+                    }
+                    // 決断 (spec 18) は「失敗の後にもう一度」の機構 — 失敗が無いので無意味。
+                    if def.pushable.is_some() || def.on_push_failure.is_some() {
+                        bad.push("pushable/on_push_failure");
+                    }
+                    if !bad.is_empty() {
+                        errs.push(ScenarioError::CertainActionShape {
+                            challenge: cid.clone(),
+                            detail: format!(
+                                "確定行動 (resolution: none) は判定しないので {} は書かない",
+                                bad.join(" / ")
+                            ),
+                        });
                     }
                 }
             }
