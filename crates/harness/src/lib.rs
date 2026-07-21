@@ -347,13 +347,15 @@ mod tests {
             other => panic!("受理されるはず: {other:?}"),
         }
 
-        // 空約束事なら節を出さない (トークンを使わない)。
+        // 空でも節は出す (コールドスタート対策 — 一件も無い時こそ促しが要る。実測 FB)。
         let p2 = ScriptedProposer::new(vec![delta(vec![])]);
         let mut s2 = fresh(&sc);
         run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
             .await
             .unwrap();
-        assert!(!p2.seen_text(1).contains("# 約束事"));
+        let empty_note = p2.seen_text(1);
+        assert!(empty_note.contains("# 約束事"), "空でもチャネルを見せる");
+        assert!(empty_note.contains("まだ何もない"), "空の合図つきで促す");
     }
 
     /// 【経緯ログ / chronicle】過去ターンの要約列が「これまでの経緯」として prompt に載り、
@@ -1083,6 +1085,26 @@ mod tests {
         let g = prompt::GM_SYSTEM;
         assert!(g.contains("summary"), "summary の記述義務が刷り込まれる");
         assert!(g.contains("経緯") || g.contains("要約"), "経緯の 1 行要約であることを説明する");
+    }
+
+    /// 【spec 20 実測 FB】約束事の記述義務は **summary と同じ型** で書く —
+    /// ①条件は**観測可能な出来事** (「新しく判明・確定したとき」)。
+    /// 旧文の「**忘れそうなら**」は LLM に判定不能だった (ステートレスな LLM に忘却の体験は
+    /// 無く、文脈にある情報は常に「知っている」— 忘却は次ターンの再構築で外部で起きる)。
+    /// ②**帰結の明示** (「書かなければ失われる」= summary の効いている形)。
+    /// ③**分類と例** (最重要の「目標・志望」が旧文の分類から漏れていた)。
+    /// #32「権利≠義務」の再演を prompt 層で塞ぐ。
+    #[test]
+    fn gm_system_demands_facts_on_observable_trigger_not_self_prediction() {
+        let g = prompt::GM_SYSTEM;
+        // ① 観測可能な契機 — 自分の忘却を予測させる条件は使わない。
+        assert!(g.contains("新しく判明"), "契機は「新しく判明・確定したとき」: {g}");
+        assert!(!g.contains("忘れそうなら"), "実行不可能な条件 (忘却の自己予測) を課さない");
+        // ② 帰結の明示 (summary と同型)。
+        assert!(g.contains("次のターンには失われる"), "書かない帰結を明示する");
+        // ③ 分類に「目標・志望」を含み、具体例を示す。
+        assert!(g.contains("目標や志望"), "最重要の分類が漏れていた: {g}");
+        assert!(g.contains("医大"), "具体例で書き方を示す");
     }
 
     /// 直前の語りが無い (初回ターン等) なら継続ブロックを注入しない。

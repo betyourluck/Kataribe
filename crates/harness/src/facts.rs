@@ -189,7 +189,14 @@ pub fn sorted_for_display(list: &[FactEntry]) -> Vec<&FactEntry> {
 /// 空リストなら None (節を出さない)。
 pub fn facts_note(list: &[FactEntry]) -> Option<String> {
     if list.is_empty() {
-        return None;
+        // **コールドスタート対策**: 一件も無い状態 = 最も書き始めてほしい瞬間なのに、
+        // 節ごと省くと可変側からチャネルが消える (静的 system の一行しか手がかりが無くなる)。
+        // 実測で「GM がほとんど書かない」が出た原因の一つ — 40 字程度の投資で促しを可視化する。
+        return Some(
+            "\n\n# 約束事 (プレイヤーと GM が共有している取り決め)\n\
+             まだ何もない。人物や世界について新しく判明した設定があれば facts に 1 行書くこと。\n"
+                .to_string(),
+        );
     }
     let mut s = String::from(
         "\n\n# 約束事 (プレイヤーと GM が共有している取り決め)\n\
@@ -370,7 +377,12 @@ mod tests {
     /// 【spec 20-B ⑥】facts_note: 従属規律 (抑止+保護の対) + スコア降順、空なら節なし。
     #[test]
     fn facts_note_grounds_subordination_and_sorts_by_score() {
-        assert!(facts_note(&[]).is_none(), "空リストは節を出さない");
+        // 空でも節は出す (コールドスタート対策 — 一件も無い時こそ促しが要る。
+        // 実測で「GM がほとんど書かない」が出た原因の一つ)。
+        let empty = facts_note(&[]).expect("空でも促しを出す");
+        assert!(empty.contains("まだ何もない"), "空の合図: {empty}");
+        assert!(empty.contains("1 行書く"), "書けと促す: {empty}");
+
         let mut list = Vec::new();
         gm(&mut list, &["低スコアの事実"]);
         let (hi, _) = apply_user_add(&mut list, "高スコアの事実", 1);
