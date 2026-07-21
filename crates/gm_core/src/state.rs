@@ -313,16 +313,44 @@ pub struct StateDelta {
     /// 自分自身への引き継ぎ約束事)。
     #[serde(default)]
     pub summary: String,
-    #[serde(default)]
+    // **単要素をスカラーで書く LLM を救済する** (#64): `"ops": {…}` のように配列を省く出力が
+    // 実在し、従来は delta 全体がパース失敗 → 再送 → 内容が失われていた。schema は配列のまま
+    // (指示は正しく出す) で、受け側だけ寛容にする (#40/#52 と同族の「壊れた構造化出力の救済」)。
+    #[serde(default, deserialize_with = "one_or_many")]
     pub ops: Vec<StateOp>,
     // spec 20 約束事 (facts): narration/summary と同じ非検証の語り素材 — engine は解釈しない。
     // 採否 (60 字カット / dedup 強化 / スコア入場判定) は harness::facts が決める。
-    // **フィールド名は LLM への合図**: `facts` (走り書き) でなく `facts` = 以後の語りが従う
+    // **フィールド名は LLM への合図**: `memo` (走り書き) でなく `facts` = 以後の語りが従う
     // 確定事項、という姿勢を名前で接地する (暫定的な仮説を書かせない)。
     // doc comment は schemars で LLM に見える description になるため、規律 (60 字) だけを短く書く。
     /// 以後の語りで守るべき確定事項を 60 字以内の 1 行で (通常は空)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "one_or_many")]
     pub facts: Vec<String>,
+}
+
+/// 配列フィールドを**単要素スカラーでも受ける** (#64)。
+///
+/// LLM は要素が 1 つのとき配列を省いて書くことが実在する
+/// (`"facts": "…"` / `"ops": {…}`)。従来は serde が `invalid type: string, expected a sequence`
+/// で落ち、**delta 全体が失われて再送**になっていた (再送時は当該フィールドごと落とすので、
+/// 書かれた内容は永久に失われる = 外からは「GM が書かない」に見える)。
+/// schema 側は配列のまま (指示は正しく出す)、**受け側だけを寛容にする**
+/// — 「パース失敗は raw を保持し再生成の燃料にする」(#40) の一歩手前で救う。
+fn one_or_many<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany<T> {
+        Many(Vec<T>),
+        One(T),
+    }
+    Ok(match OneOrMany::<T>::deserialize(d)? {
+        OneOrMany::Many(v) => v,
+        OneOrMany::One(x) => vec![x],
+    })
 }
 
 impl StateDelta {

@@ -391,7 +391,8 @@ pub async fn run_turn<P: DeltaProposer>(
                 messages.push(ChatMessage::user(format!(
                     "あなたの前回の出力は JSON として壊れていて読めなかった ({source})。\
                      同じ内容を、スキーマに従う**正しい JSON だけ**で再提出せよ \
-                     (narration / ops / summary。ops は必ず配列。前置き・注釈・フェンスは不要)。"
+                     (narration / summary / ops / facts。**ops と facts は要素が 1 つでも必ず配列**。\
+                     前置き・注釈・フェンスは不要)。"
                 )));
                 continue;
             }

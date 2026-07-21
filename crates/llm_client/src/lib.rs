@@ -289,6 +289,33 @@ mod tests {
         assert!(old.facts.is_empty(), "facts 無しは空 (serde default)");
     }
 
+    /// 【#64 単要素スカラーの救済】LLM は要素が 1 つのとき配列を省いて書くことが実在する
+    /// (実測: `"facts": "蓮は…覚悟を決めた"`)。従来は `invalid type: string, expected a sequence`
+    /// で **delta 全体がパース失敗 → 再送 → 内容ごと失われる** (外からは「GM が書かない」に見えた)。
+    /// schema は配列のまま (指示は正しく出す)、受け側だけ寛容にする。
+    #[test]
+    fn scalar_written_where_an_array_was_expected_is_rescued() {
+        // facts をスカラーで書いた実測パターン。
+        let d: gm_core::StateDelta = serde_json::from_str(
+            r#"{"narration":"n","facts":"蓮は結果がどうあれ莉亜をひとりにしない覚悟を決めた"}"#,
+        )
+        .expect("スカラーの facts を救済して parse できる");
+        assert_eq!(d.facts.len(), 1, "単要素配列に正規化される");
+        assert!(d.facts[0].contains("覚悟を決めた"));
+
+        // ops も同型 (単一 op をオブジェクトで書く出力を救済)。
+        let d: gm_core::StateDelta = serde_json::from_str(
+            r#"{"narration":"n","ops":{"op":"set_flag","key":"a","value":true}}"#,
+        )
+        .expect("スカラー (単一オブジェクト) の ops を救済して parse できる");
+        assert_eq!(d.ops.len(), 1);
+
+        // 正しい配列形は当然そのまま通る (救済で壊さない)。
+        let d: gm_core::StateDelta =
+            serde_json::from_str(r#"{"narration":"n","facts":["a","b"],"ops":[]}"#).unwrap();
+        assert_eq!(d.facts, vec!["a".to_string(), "b".to_string()]);
+    }
+
     /// 【authored 専権 op の除外】LLM 向け schema は set_presence/grant_skill 等を **提案肢に出さない**
     /// (露出すると LLM が使い続けて却下→再生成ループで詰まる。Grok の constrained decoding 対策の核心)。
     /// LLM が使える op (add_item 等) は残る。
