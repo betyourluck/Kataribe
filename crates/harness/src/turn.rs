@@ -266,9 +266,8 @@ pub enum TurnOutcome {
         retries: Vec<RetryCause>,
         /// engine 事実の機械タグ (spec 08-B)。呼び出し側が [`chronicle_entry`] へ渡す。
         tags: ChronicleTags,
-        /// GM の約束事提案 (`StateDelta.facts`、spec 20)。**まだ採否は決まっていない** —
-        /// 呼び出し側が [`crate::apply_gm_facts`] に通し、採用 📝 / 強化 📝⁺ を表示する。
-        facts: Vec<String>,
+        // spec 20: GM の約束事提案フィールドは撤去した (実測 0/45・0/20 の絶対ゼロ —
+        // 語り手に記録係を兼ねさせるのが構造的に無理。failures.md #65)。ターンからは何も返らない。
     },
     /// 最大試行回数まで却下され続けた。**state は無傷**。理由は構造化 (表示は localize)。
     Rejected {
@@ -391,7 +390,7 @@ pub async fn run_turn<P: DeltaProposer>(
                 messages.push(ChatMessage::user(format!(
                     "あなたの前回の出力は JSON として壊れていて読めなかった ({source})。\
                      同じ内容を、スキーマに従う**正しい JSON だけ**で再提出せよ \
-                     (narration / summary / ops / facts。**ops と facts は要素が 1 つでも必ず配列**。\
+                     (narration / summary / ops。**ops は要素が 1 つでも必ず配列**。\
                      前置き・注釈・フェンスは不要)。"
                 )));
                 continue;
@@ -411,7 +410,6 @@ pub async fn run_turn<P: DeltaProposer>(
                 return Ok(TurnOutcome::Accepted {
                     narration: delta.narration,
                     summary: delta.summary,
-                    facts: delta.facts,
                     rolls: out.rolls,
                     checks: out.checks,
                     stat_rolls: out.stat_rolls,

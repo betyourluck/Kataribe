@@ -271,39 +271,34 @@ mod tests {
         assert!(dump.contains("add_item") && dump.contains("set_flag"), "op 実体が ops.items 内に inline");
     }
 
-    /// 【spec 20 Phase A】約束事の追記チャネル `StateDelta.facts` が schema に露出し、
-    /// description が 60 字制限を LLM に事前に伝える (harness の機械カットで意味が欠落する
-    /// 前に、書く側を縛る)。**フィールド名 `facts` 自体が合図** — `memo` (走り書き) では
-    /// 暫定的な仮説を書かせてしまう (Phase E の改名理由)。旧デルタは serde default で互換。
+    /// 【spec 20 の結論】約束事の**追記チャネルは schema から撤去した** — 実測 0/45・0/20 で
+    /// GM は書かず (契機を三度書き直しても不発)、**語り手に記録係を兼ねさせるのが構造的に無理**
+    /// と結論した (failures.md #65)。露出したままだと使われないフィールドの description が
+    /// 毎リクエストのトークンを食い、たまに使われて不揃いな行が混ざる。旧デルタ互換は不変。
     #[test]
-    fn schema_exposes_facts_channel_with_limit_and_old_deltas_parse() {
+    fn schema_has_no_facts_channel() {
         let schema = state_delta_schema();
-        let facts = &schema["properties"]["facts"];
-        assert!(!facts.is_null(), "facts フィールドが schema に露出する");
-        let desc = facts["description"].as_str().unwrap_or("");
-        assert!(desc.contains("60"), "60 字制限を LLM に伝える: {desc}");
-        assert!(desc.contains("確定事項"), "暫定メモでなく確定事項だと伝える: {desc}");
-
+        assert!(
+            schema["properties"]["facts"].is_null(),
+            "GM の約束事チャネルは撤去済み (ユーザーが宣言する欄になった)"
+        );
+        // 提出フィールドは narration / summary / ops の 3 つ。
+        for keep in ["narration", "summary", "ops"] {
+            assert!(!schema["properties"][keep].is_null(), "{keep} は残る");
+        }
         let old: gm_core::StateDelta =
             serde_json::from_str(r#"{"narration":"x","ops":[]}"#).expect("旧デルタは parse 可能");
-        assert!(old.facts.is_empty(), "facts 無しは空 (serde default)");
+        assert!(old.ops.is_empty());
     }
 
     /// 【#64 単要素スカラーの救済】LLM は要素が 1 つのとき配列を省いて書くことが実在する
-    /// (実測: `"facts": "蓮は…覚悟を決めた"`)。従来は `invalid type: string, expected a sequence`
-    /// で **delta 全体がパース失敗 → 再送 → 内容ごと失われる** (外からは「GM が書かない」に見えた)。
+    /// (実測: Claude が `"facts": "…"` とスカラーで書いた)。従来は
+    /// `invalid type: string, expected a sequence` で **delta 全体がパース失敗 → 再送 →
+    /// 内容ごと失われる**。facts は撤去したが、**同じ罠は `ops` にもある**ので救済は残す。
     /// schema は配列のまま (指示は正しく出す)、受け側だけ寛容にする。
     #[test]
     fn scalar_written_where_an_array_was_expected_is_rescued() {
-        // facts をスカラーで書いた実測パターン。
-        let d: gm_core::StateDelta = serde_json::from_str(
-            r#"{"narration":"n","facts":"蓮は結果がどうあれ莉亜をひとりにしない覚悟を決めた"}"#,
-        )
-        .expect("スカラーの facts を救済して parse できる");
-        assert_eq!(d.facts.len(), 1, "単要素配列に正規化される");
-        assert!(d.facts[0].contains("覚悟を決めた"));
-
-        // ops も同型 (単一 op をオブジェクトで書く出力を救済)。
+        // 単一 op をオブジェクトで書く出力を救済する。
         let d: gm_core::StateDelta = serde_json::from_str(
             r#"{"narration":"n","ops":{"op":"set_flag","key":"a","value":true}}"#,
         )
@@ -312,8 +307,8 @@ mod tests {
 
         // 正しい配列形は当然そのまま通る (救済で壊さない)。
         let d: gm_core::StateDelta =
-            serde_json::from_str(r#"{"narration":"n","facts":["a","b"],"ops":[]}"#).unwrap();
-        assert_eq!(d.facts, vec!["a".to_string(), "b".to_string()]);
+            serde_json::from_str(r#"{"narration":"n","ops":[]}"#).unwrap();
+        assert!(d.ops.is_empty());
     }
 
     /// 【authored 専権 op の除外】LLM 向け schema は set_presence/grant_skill 等を **提案肢に出さない**

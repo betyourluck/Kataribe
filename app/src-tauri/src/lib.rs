@@ -439,13 +439,10 @@ struct TurnView {
     /// エピローグ本文 (spec 11)。到達 goal に epilogue_prompt があり終端 (遷移しない) の
     /// 受理ターンだけ Some。生成失敗時は None (結末文 + バナーの従来表示 = フォールバック)。
     epilogue: Option<String>,
-    /// 約束事 (spec 20): 変化があったターンだけ全量スナップショット (≤20 件で軽量。
-    /// 強化のスコア変動も並び替えごと届く = frontend は差し替えるだけ)。無変化なら None。
+    /// 約束事 (spec 20): 全量スナップショット。**GM は書かない**ので、ターン処理では
+    /// 常に None (変えるのはユーザー編集コマンドだけ)。将来ターン中に変わる経路が
+    /// 生えたときのために Option のまま残す。
     facts: Option<Vec<FactView>>,
-    /// このターンで採用された GM 約束事行 (📝 表示。捨てられた行は載らない)。
-    new_facts: Vec<String>,
-    /// dedup 強化された既存行のテキスト (📝⁺ 表示 — silent なスコア変化を作らない)。
-    reinforced_facts: Vec<String>,
     /// 約束事のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。
     facts_policy: String,
     /// マップ (spec 15) — 訪問済み+1歩先の有向グラフ。移動/遷移で変わるので毎ターン返す
@@ -2468,7 +2465,6 @@ async fn play_turn(
         TurnOutcome::Accepted {
             narration,
             summary,
-            facts,
             rolls,
             checks,
             stat_rolls,
@@ -2477,25 +2473,8 @@ async fn play_turn(
             retries,
             tags,
         } => {
-            // 約束事 (spec 20): GM 提案の採否を決める。採用 📝 / 強化 📝⁺ だけを表示し
-            // (捨てられた行は見せない)、変化があればスナップショット全量を届ける。
-            let facts_digest = harness::apply_gm_facts(&mut sess.facts, &facts, sess.state.turn);
-            // locked 盤面では約束事は GM 専用の内部記憶 — 全量も 📝/📝⁺ 行もプレイヤーへ出さない
-            // (タブごと隠すのと同じ思想。engine 側の記録は続く)。
-            let facts_visible = sess.scenario.facts_policy.is_visible();
-            let reinforced_texts: Vec<String> = if facts_visible {
-                facts_digest
-                    .reinforced
-                    .iter()
-                    .filter_map(|id| sess.facts.iter().find(|m| m.id == *id).map(|m| m.text.clone()))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let facts_changed = facts_visible
-                && (!facts_digest.accepted.is_empty() || !facts_digest.reinforced.is_empty());
-            let accepted_texts =
-                if facts_visible { facts_digest.accepted.clone() } else { Vec::new() };
+            // spec 20: 約束事はユーザーが宣言する欄になった (GM は読むだけ) ので、
+            // ターン処理では触らない — 変化はコマンド (facts_add/edit/delete) 側で起きる。
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
             // ビートは GM が見ていない筋書きの出来事 — 継続文脈と経緯ログの両方へ併記する。
@@ -2622,9 +2601,7 @@ async fn play_turn(
                 new_synopsis: Vec::new(), // 圧縮ジョブの後に差分で埋める
                 new_log: Vec::new(),
                 epilogue: None, // 終端判定の後に埋める (spec 11)
-                facts: facts_changed.then(|| fact_views(&sess.facts)),
-                new_facts: accepted_texts,
-                reinforced_facts: reinforced_texts,
+                facts: None, // GM は約束事を書かない (ユーザー編集のみが変える)
                 facts_policy: facts_policy_str(sess.scenario.facts_policy),
                 map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
                 // spec 18 Phase B: 決断つき判定が凍結されたらパネル素材を載せる。
@@ -2660,8 +2637,6 @@ async fn play_turn(
             epilogue: None,
             // 却下では GM 提案は捨てられる (state 無傷と同じ扱い = 約束事も無変化)。
             facts: None,
-            new_facts: Vec::new(),
-            reinforced_facts: Vec::new(),
             facts_policy: facts_policy_str(sess.scenario.facts_policy),
             map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
             // 却下 = state 無傷 (決断があったならそのまま残っているはずだが、そもそも決断中は

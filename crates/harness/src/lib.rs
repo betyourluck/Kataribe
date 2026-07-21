@@ -37,8 +37,8 @@ pub use epilogue::{
 pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};
 pub use facts::{
-    apply_gm_facts, apply_user_add, apply_user_delete, apply_user_edit, facts_note,
-    sorted_for_display, FactsDigest, FactEntry, FactOrigin, FACT_LINE_CHARS, FACTS_MAX,
+    apply_user_add, apply_user_delete, apply_user_edit, facts_note, sorted_for_display, FactEntry,
+    FactOrigin, FACT_LINE_CHARS, FACTS_MAX,
 };
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use proposer::DeltaProposer;
@@ -357,16 +357,14 @@ mod tests {
         assert!(prompt_text.contains("繰り返さない") || prompt_text.contains("再び描写しない"), "繰り返し禁止を指示する");
     }
 
-    /// 【spec 20-B ⑦ 約束事の注入】約束事が user 可変メッセージの state_brief の後に
-    /// 「# 約束事」節として載り (system 側に置くとキャッシュを壊す)、GM の提案は
-    /// TurnOutcome.facts で呼び出し側へ渡る (採否は apply_gm_facts の責務)。空なら節なし。
+    /// 【spec 20 約束事の注入】ユーザーが宣言した設定が user 可変メッセージの state_brief の
+    /// 後に「# 約束事」節として載る (system 側に置くとキャッシュを壊す)。空なら節なし
+    /// (**GM は書けないので、空の節を出す意味がない** — 書き込み経路の撤去に伴う収縮)。
     #[tokio::test]
-    async fn shared_memo_is_injected_into_user_message_and_proposals_flow_out() {
+    async fn shared_facts_are_injected_into_the_variable_user_message() {
         let sc = scenario();
         let mut s = fresh(&sc);
-        let mut d = delta(vec![]);
-        d.facts = vec!["宿屋の主人は左頬に傷".into()];
-        let p = ScriptedProposer::new(vec![d]);
+        let p = ScriptedProposer::new(vec![delta(vec![])]);
         let facts = vec![FactEntry {
             id: 1,
             origin: FactOrigin::User,
@@ -375,7 +373,7 @@ mod tests {
             score: 4,
         }];
 
-        let out = run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &facts)
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &facts)
             .await
             .unwrap();
 
@@ -386,23 +384,14 @@ mod tests {
         let state_pos = prompt_text.find("現在地").expect("state_brief がある");
         let memo_pos = prompt_text.find("# 約束事").unwrap();
         assert!(state_pos < memo_pos, "state_brief の後に注入される");
-        // GM の提案は未採否のまま運ばれる。
-        match out {
-            TurnOutcome::Accepted { facts, .. } => {
-                assert_eq!(facts, vec!["宿屋の主人は左頬に傷".to_string()]);
-            }
-            other => panic!("受理されるはず: {other:?}"),
-        }
 
-        // 空でも節は出す (コールドスタート対策 — 一件も無い時こそ促しが要る。実測 FB)。
+        // 空なら節を出さない (トークンを使わない)。
         let p2 = ScriptedProposer::new(vec![delta(vec![])]);
         let mut s2 = fresh(&sc);
         run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
             .await
             .unwrap();
-        let empty_note = p2.seen_text(1);
-        assert!(empty_note.contains("# 約束事"), "空でもチャネルを見せる");
-        assert!(empty_note.contains("拾って書く"), "空のときは遡って拾えと指示する");
+        assert!(!p2.seen_text(1).contains("# 約束事"));
     }
 
     /// 【経緯ログ / chronicle】過去ターンの要約列が「これまでの経緯」として prompt に載り、
@@ -1134,38 +1123,39 @@ mod tests {
         assert!(g.contains("経緯") || g.contains("要約"), "経緯の 1 行要約であることを説明する");
     }
 
-    /// 【spec 20 実測 FB】約束事の記述義務は **summary と同じ型** で書く —
-    /// ①条件は**観測可能な出来事**。旧文の「**忘れそうなら**」は LLM に判定不能だった
-    /// (ステートレスな LLM に忘却の体験は無く、文脈にある情報は常に「知っている」)。
-    /// さらに実測 (0/45・0/20 の絶対ゼロ) を受けて「新しく判明・確定した設定」→
-    /// **「あなたが即興で足した事柄」**へ再較正 — GM は前者を「シナリオ側が明かした情報」と
-    /// 読み、「それは flag/item で state に載るから書かない」と判断していた (メタ質問で確認)。
-    /// **自分の即興は「判明」ではなく「描写」に見える**ので契機にならなかった。
-    /// ②**帰結の明示** (「書かなければ失われる」= summary の効いている形)。
-    /// ③**分類と例** (最重要の「目標・志望」が旧文の分類から漏れていた)。
-    /// #32「権利≠義務」の再演を prompt 層で塞ぐ。
+    /// 【spec 20 実測の結論: GM の書き込み経路は撤去した】
+    ///
+    /// 契機の書き方を三度変えても **0/45・0/20 の絶対ゼロ**だった:
+    /// ①「忘れそうなら」= ステートレスな LLM に忘却の体験は無く判定不能
+    /// ②「新しく判明・確定した設定」= GM はこれを「シナリオ側が明かした情報」と読み、
+    ///   「flag/item で state に載るから対象外」と正しく推論して書かない
+    /// ③「あなたが即興で足した事柄」+ 提出直前の Yes/No 手続き = 認識は届いたが
+    ///   (問えば自分の即興を正確に列挙できる) 提出前の確認が毎ターン脱落した。
+    ///
+    /// GM 自身の分析「条件付き・自己申告型の作業は語りの生成に注意を奪われると最初に
+    /// 脱落する」が的確で、**語り手に記録係を兼ねさせるのが構造的に無理**という結論
+    /// (failures.md #65)。GM_SYSTEM から記述義務を落とし `StateDelta.facts` も撤去した。
+    /// 約束事は**ユーザーが宣言し GM が守る**欄になる。機械が書く経路が要るなら、
+    /// 語りと競合しない瞬間 (あらすじ圧縮時の抽出) に別経路で足す。
     #[test]
-    fn gm_system_demands_facts_on_observable_trigger_not_self_prediction() {
+    fn gm_system_no_longer_asks_the_narrator_to_be_an_archivist() {
         let g = prompt::GM_SYSTEM;
-        // ① 観測可能な契機 = **GM 自身の即興** (自分が足したかどうかは判定できる)。
-        assert!(g.contains("即興で足した"), "契機は GM 自身が足した事柄: {g}");
-        assert!(g.contains("新しく決めた"), "「判明」でなく「決めた」= 自分の行為: {g}");
-        assert!(!g.contains("忘れそうなら"), "実行不可能な条件 (忘却の自己予測) を課さない");
-        // ② 帰結の明示 (summary と同型) — 語りの細部は残らない → 書かねば存在しなかったことになる。
-        assert!(g.contains("次のターンには残らない"), "語りの細部が消える機構を説明する: {g}");
-        assert!(g.contains("存在しなかったことになる"), "書かない帰結を明示する: {g}");
-        // ③ 分類に「目標・志望」を含み、具体例を示す。
-        assert!(g.contains("目標や志望"), "最重要の分類が漏れていた: {g}");
-        assert!(g.contains("医大"), "具体例で書き方を示す");
-        // ④ 締めの列挙に facts が入っている — 「何を出力するか」で最も効く位置が
-        // 「narration と ops」だけを名指ししていると、直前の要求と矛盾する (2026-07-21 発見)。
-        assert!(g.contains("narration / summary / ops / facts"), "出力フィールドを列挙する: {g}");
-        // ⑤ **提出直前の手続き**として置く (2026-07-21 実測: 基準は正しく認識されているのに
-        // 7 ターン連続で発火しなかった。GM 自身の分析「条件付き・自己申告型の作業は語りの生成に
-        // 注意を奪われると最初に脱落する」)。常時の心得ではなく emit 直前の Yes/No 判定にする。
-        assert!(g.contains("提出の直前"), "確認を提出直前の手続きとして置く: {g}");
-        assert!(g.contains("新しい固有名"), "具体的なトリガー (a): {g}");
-        assert!(g.contains("新しい数値の取り決め"), "具体的なトリガー (b): {g}");
+        // 記述義務は一切残さない (守れない規律を積むと他の規律の重みも下がる)。
+        assert!(!g.contains("facts に"), "facts への記述義務を課さない");
+        assert!(!g.contains("提出の直前"), "提出直前チェックも撤去");
+        assert!(!g.contains("即興で足した"), "契機の説明も撤去");
+        // summary の義務は不変 (こちらは実測で毎ターン守られている)。
+        assert!(g.contains("summary"), "summary の記述義務は残る");
+        // 読み側の規律は facts_note (注入節) が運ぶ = 規律はデータと一緒に travel する。
+        let note = facts_note(&[FactEntry {
+            id: 1,
+            origin: FactOrigin::User,
+            text: "妹の名前はサキ".into(),
+            turn: 1,
+            score: 4,
+        }])
+        .unwrap();
+        assert!(note.contains("必ず守ること"), "守る義務は注入節にある: {note}");
     }
 
     /// 直前の語りが無い (初回ターン等) なら継続ブロックを注入しない。

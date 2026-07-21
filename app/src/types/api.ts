@@ -377,12 +377,9 @@ export interface TurnView {
   decision: DecisionView | null;
   /** 進行中の対決 (spec 18 Phase C)。非 null の間 ⚔ パネルを出し入力を締める。 */
   contest: ContestView | null;
-  /** 約束事 (spec 20): 変化があったターンだけ全量スナップショット。無変化なら null。 */
+  /** 約束事 (spec 20): 全量スナップショット。**GM は書かない**のでターン処理では常に null
+   *  (変えるのはユーザー編集コマンドだけ)。 */
   facts: FactView[] | null;
-  /** このターンで採用された GM 約束事行 (📝 表示)。 */
-  new_facts: string[];
-  /** dedup 強化された既存行のテキスト (📝⁺ 表示)。 */
-  reinforced_facts: string[];
   /** 約束事のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。 */
   facts_policy: string;
 }

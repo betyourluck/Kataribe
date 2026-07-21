@@ -1416,17 +1416,10 @@ export const useGameStore = defineStore("game", {
             text: t("store.cacheWarning", { misses: cs.consecutive_misses }),
           });
         }
-        // 約束事 (spec 20): 変化があったターンは全量スナップショットで差し替え、採用 📝 /
-        // 強化 📝⁺ を会話ログに出す (silent なスコア変化を作らない)。約束事は判定の帰結を
-        // 含みうるので、開帳中はダイスより後ろに保留する (pushLog = 漏洩防止の共通機構)。
+        // 約束事 (spec 20): GM は書かないのでターン中は変わらない (変えるのはユーザー編集)。
+        // 権限だけ campaign 遷移で追従する。
         if (turn.facts) this.facts = turn.facts;
-        if (turn.facts_policy) this.factsPolicy = turn.facts_policy; // campaign 遷移で追従
-        for (const m of turn.new_facts ?? []) {
-          pushLog({ kind: "system", text: t("state.factsNewLine", { text: m }) });
-        }
-        for (const m of turn.reinforced_facts ?? []) {
-          pushLog({ kind: "system", text: t("state.factsReinforcedLine", { text: m }) });
-        }
+        if (turn.facts_policy) this.factsPolicy = turn.facts_policy;
         // あらすじ (spec 10): 追記差分を push (append-only)。章が確定したら「最近の出来事」から
         // その章に呑まれた行 (turn <= upto_turn) を取り除く。会話ログには出さない
         // (物語の外の帳簿イベント — 更新はタブを見れば分かる、ユーザーFB 2026-07-14)。

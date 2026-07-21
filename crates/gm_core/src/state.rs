@@ -318,14 +318,12 @@ pub struct StateDelta {
     // (指示は正しく出す) で、受け側だけ寛容にする (#40/#52 と同族の「壊れた構造化出力の救済」)。
     #[serde(default, deserialize_with = "one_or_many")]
     pub ops: Vec<StateOp>,
-    // spec 20 約束事 (facts): narration/summary と同じ非検証の語り素材 — engine は解釈しない。
-    // 採否 (60 字カット / dedup 強化 / スコア入場判定) は harness::facts が決める。
-    // **フィールド名は LLM への合図**: `memo` (走り書き) でなく `facts` = 以後の語りが従う
-    // 確定事項、という姿勢を名前で接地する (暫定的な仮説を書かせない)。
-    // doc comment は schemars で LLM に見える description になるため、規律 (60 字) だけを短く書く。
-    /// 以後の語りで守るべき確定事項を 60 字以内の 1 行で (通常は空)
-    #[serde(default, deserialize_with = "one_or_many")]
-    pub facts: Vec<String>,
+    // spec 20 約束事 (facts) の **GM 書き込み経路は撤去した** (2026-07-21、実測 3 周の結論)。
+    // 契機を三度書き直しても 0/45・0/20 の絶対ゼロで、GM は尋ねれば自分の即興を正確に
+    // 列挙できるのに提出前の確認は毎ターン脱落した = **語り手に記録係を兼ねさせるのが
+    // 構造的に無理**という結論 (failures.md #65)。約束事はユーザーが設定を宣言する欄になり、
+    // GM は読むだけ。機械が書く経路が要るなら、語りと競合しない瞬間 (あらすじ圧縮時の抽出)
+    // に別経路で足す — ターン毎の delta には戻さない。
 }
 
 /// 配列フィールドを**単要素スカラーでも受ける** (#64)。
@@ -358,7 +356,6 @@ impl StateDelta {
         Self {
             narration: narration.into(),
             summary: String::new(),
-            facts: Vec::new(),
             ops,
         }
     }
