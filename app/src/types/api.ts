@@ -220,13 +220,13 @@ export interface GameView {
   decision: DecisionView | null;
   /** 進行中の対決 (spec 18 Phase C)。再開時にセーブから復元される。 */
   contest: ContestView | null;
-  /** 約束事全量 (spec 20)。新規開始は空、再開はセーブから復元。 */
+  /** 既成事実全量 (spec 20)。新規開始は空、再開はセーブから復元。 */
   facts: FactView[];
-  /** 約束事のユーザー権限 (spec 20): "open" | "locked" (既定)。 */
+  /** 既成事実のユーザー権限 (spec 20): "open" | "locked" (既定)。 */
   facts_policy: string;
 }
 
-/** 約束事の 1 行 (spec 20)。並びは backend がスコア降順で返す (LLM 注入と同じ見え方)。 */
+/** 既成事実の 1 行 (spec 20)。並びは backend がスコア降順で返す (LLM 注入と同じ見え方)。 */
 export interface FactView {
   id: number;
   /** "gm" | "user" (バッジ)。 */
@@ -236,7 +236,7 @@ export interface FactView {
   score: number;
 }
 
-/** 約束事編集コマンド (facts_add/edit/delete) の戻り。 */
+/** 既成事実編集コマンド (facts_add/edit/delete) の戻り。 */
 export interface FactsOpView {
   facts: FactView[];
   /** 満杯 add で押し出された行 (トースト用)。無ければ null。 */
@@ -377,10 +377,10 @@ export interface TurnView {
   decision: DecisionView | null;
   /** 進行中の対決 (spec 18 Phase C)。非 null の間 ⚔ パネルを出し入力を締める。 */
   contest: ContestView | null;
-  /** 約束事 (spec 20): 全量スナップショット。**GM は書かない**のでターン処理では常に null
+  /** 既成事実 (spec 20): 全量スナップショット。**GM は書かない**のでターン処理では常に null
    *  (変えるのはユーザー編集コマンドだけ)。 */
   facts: FactView[] | null;
-  /** 約束事のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。 */
+  /** 既成事実のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。 */
   facts_policy: string;
 }
 

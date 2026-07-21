@@ -23,7 +23,7 @@ pub use engine::{
     FiredTrigger, RollOutcome, StatRollOutcome, Verdict,
 };
 pub use reason::{Lang, RejectReason};
-pub use lint::unknown_key_lints;
+pub use lint::{struct_keys, unknown_key_lints, unknown_keys};
 pub use expr::{parse_expr, Expr};
 pub use spine::{
     ChallengeDef, CharacterDef, CheckStyle, ContestDef, Exit, Gate, GoalDef, ImageMode, Location,

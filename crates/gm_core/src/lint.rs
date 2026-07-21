@@ -93,9 +93,34 @@ struct Tables {
     roll_spec: BTreeSet<String>,
 }
 
+/// mapping 1 段の未知キーを警告文の列にする (近い既知キーの提案つき)。`path` は表示用の接頭辞
+/// (空なら root)。mapping でなければ空。
+///
+/// scenario 以外の YAML — `package.yaml` 等、gm_core が知らない配布レイアウト側の型 — を
+/// **その型を持つ層が自分で** lint するための部品 ([`struct_keys`] と対で使う)。
+/// 再帰はしない: 入れ子は呼び出し側が文脈を知っているので、そちらが段ごとに呼ぶ。
+pub fn unknown_keys(value: &Value, known: &BTreeSet<String>, path: &str) -> Vec<String> {
+    let Value::Mapping(m) = value else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for k in m.keys() {
+        let Some(key) = k.as_str() else { continue };
+        if known.contains(key) {
+            continue;
+        }
+        let here = if path.is_empty() { key.to_string() } else { format!("{path}.{key}") };
+        out.push(format!(
+            "{here}: 不明なフィールド「{key}」は無視されます{}",
+            suggest(key, known)
+        ));
+    }
+    out
+}
+
 /// 最小 YAML から型 `T` を作り、**シリアライズして全フィールド名**を得る
 /// (serde は全フィールドを書き出すので、最小 sample でも既知キーは完全になる)。
-fn struct_keys<T: DeserializeOwned + Serialize>(minimal_yaml: &str) -> BTreeSet<String> {
+pub fn struct_keys<T: DeserializeOwned + Serialize>(minimal_yaml: &str) -> BTreeSet<String> {
     let sample: T = serde_yaml::from_str(minimal_yaml)
         .expect("lint の最小サンプルは必ず parse できる (型のフィールド変更時はここを追従)");
     mapping_keys(&serde_yaml::to_value(&sample).expect("シリアライズは失敗しない"))

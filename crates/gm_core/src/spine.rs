@@ -710,10 +710,10 @@ pub enum CheckStyle {
     Percentile,
 }
 
-/// 約束事 (spec 20) に対する**ユーザーの書き込み権限**を盤面が縛る宣言 (spec 20 Phase E)。
+/// 既成事実 (spec 20) に対する**ユーザーの書き込み権限**を盤面が縛る宣言 (spec 20 Phase E)。
 ///
-/// 約束事は検証されないテキストが毎ターン注入され、しかも注入ヘッダが GM に「呼称・約束・意図の
-/// 一貫性には従え」と指示する = **ユーザーの約束事は GM への指示**。TRPG 盤面では作者が設計した
+/// 既成事実は検証されないテキストが毎ターン注入され、しかも注入ヘッダが GM に「呼称・約束・意図の
+/// 一貫性には従え」と指示する = **ユーザーの既成事実は GM への指示**。TRPG 盤面では作者が設計した
 /// 発見の順序を迂回できてしまう (engine は無傷でも語りが誘導される) ので、**誰が虚構を所有するか**
 /// を盤面ごとに宣言する (三権分立の「シナリオが縛る」脚)。
 ///
@@ -722,7 +722,7 @@ pub enum CheckStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FactsPolicy {
-    /// **既定**。約束事の欄を出さない (タブごと非表示)。
+    /// **既定**。既成事実の欄を出さない (タブごと非表示)。
     ///
     /// ユーザーの宣言は**GM への指示**として毎ターン注入されるので、作者が設計した発見の
     /// 順序 (謎・段階開示) を語りで迂回できてしまう。宣言を持たない配布物 (= 書庫の既刊
@@ -748,7 +748,7 @@ impl FactsPolicy {
     pub fn allows_delete(self) -> bool {
         self.allows_write()
     }
-    /// 約束事をプレイヤーに見せるか (`locked` は隠す)。
+    /// 既成事実をプレイヤーに見せるか (`locked` は隠す)。
     pub fn is_visible(self) -> bool {
         !matches!(self, FactsPolicy::Locked)
     }
@@ -1015,7 +1015,7 @@ pub struct Scenario {
     /// check → check_under に入れ替え、「## 判定様式」を接地する。詳細は [`CheckStyle`]。
     #[serde(default)]
     pub check_style: CheckStyle,
-    /// 約束事 (spec 20) のユーザー書き込み権限 (既定 `locked` = 非表示)。
+    /// 既成事実 (spec 20) のユーザー書き込み権限 (既定 `locked` = 非表示)。
     /// package.yaml の `facts_policy` から注入もできる。詳細は [`FactsPolicy`]。
     #[serde(default)]
     pub facts_policy: FactsPolicy,

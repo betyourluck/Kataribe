@@ -357,8 +357,8 @@ mod tests {
         assert!(prompt_text.contains("繰り返さない") || prompt_text.contains("再び描写しない"), "繰り返し禁止を指示する");
     }
 
-    /// 【spec 20 約束事の注入】ユーザーが宣言した設定が user 可変メッセージの state_brief の
-    /// 後に「# 約束事」節として載る (system 側に置くとキャッシュを壊す)。空なら節なし
+    /// 【spec 20 既成事実の注入】ユーザーが宣言した設定が user 可変メッセージの state_brief の
+    /// 後に「# 既成事実」節として載る (system 側に置くとキャッシュを壊す)。空なら節なし
     /// (**GM は書けないので、空の節を出す意味がない** — 書き込み経路の撤去に伴う収縮)。
     #[tokio::test]
     async fn shared_facts_are_injected_into_the_variable_user_message() {
@@ -378,12 +378,12 @@ mod tests {
             .unwrap();
 
         let prompt_text = p.seen_text(1);
-        assert!(prompt_text.contains("# 約束事"), "約束事節が prompt に載る");
-        assert!(prompt_text.contains("妹の名前はサキ"), "約束事本文が注入される");
+        assert!(prompt_text.contains("# 既成事実"), "既成事実節が prompt に載る");
+        assert!(prompt_text.contains("妹の名前はサキ"), "既成事実本文が注入される");
         // 注入位置: state の提示 (現在地) より後 = user 可変メッセージ内。
         let state_pos = prompt_text.find("現在地").expect("state_brief がある");
-        let memo_pos = prompt_text.find("# 約束事").unwrap();
-        assert!(state_pos < memo_pos, "state_brief の後に注入される");
+        let facts_pos = prompt_text.find("# 既成事実").unwrap();
+        assert!(state_pos < facts_pos, "state_brief の後に注入される");
 
         // 空なら節を出さない (トークンを使わない)。
         let p2 = ScriptedProposer::new(vec![delta(vec![])]);
@@ -391,7 +391,7 @@ mod tests {
         run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
             .await
             .unwrap();
-        assert!(!p2.seen_text(1).contains("# 約束事"));
+        assert!(!p2.seen_text(1).contains("# 既成事実"));
     }
 
     /// 【経緯ログ / chronicle】過去ターンの要約列が「これまでの経緯」として prompt に載り、
@@ -883,7 +883,7 @@ mod tests {
         let loaded: SessionSave = serde_yaml::from_value(val).expect("旧形式が読める");
         assert!(loaded.synopsis.entries.is_empty(), "あらすじは空で始まる");
         assert!(loaded.synopsis.pending_transition.is_none());
-        assert!(loaded.facts.is_empty(), "約束事は空で始まる (spec 20 旧セーブ互換)");
+        assert!(loaded.facts.is_empty(), "既成事実は空で始まる (spec 20 旧セーブ互換)");
     }
 
     /// 【経緯の予算】history_note は文字予算内で新しい方を残し、古い方から省略する
@@ -1135,7 +1135,7 @@ mod tests {
     /// GM 自身の分析「条件付き・自己申告型の作業は語りの生成に注意を奪われると最初に
     /// 脱落する」が的確で、**語り手に記録係を兼ねさせるのが構造的に無理**という結論
     /// (failures.md #65)。GM_SYSTEM から記述義務を落とし `StateDelta.facts` も撤去した。
-    /// 約束事は**ユーザーが宣言し GM が守る**欄になる。機械が書く経路が要るなら、
+    /// 既成事実は**ユーザーが宣言し GM が守る**欄になる。機械が書く経路が要るなら、
     /// 語りと競合しない瞬間 (あらすじ圧縮時の抽出) に別経路で足す。
     #[test]
     fn gm_system_no_longer_asks_the_narrator_to_be_an_archivist() {

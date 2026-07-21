@@ -72,7 +72,7 @@ pub struct SessionSave {
     /// history と同一セーブで snapshot されるので resume では常に整合する。
     #[serde(default)]
     pub synopsis: Synopsis,
-    /// 約束事 (spec 20) — プレイヤーと GM の覚え書き。campaign 遷移でも持ち越す
+    /// 既成事実 (spec 20) — プレイヤーと GM の覚え書き。campaign 遷移でも持ち越す
     /// (章を跨いで覚える = chronicle と同じ判断)。
     #[serde(default)]
     pub facts: Vec<crate::FactEntry>,

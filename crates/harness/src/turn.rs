@@ -266,7 +266,7 @@ pub enum TurnOutcome {
         retries: Vec<RetryCause>,
         /// engine 事実の機械タグ (spec 08-B)。呼び出し側が [`chronicle_entry`] へ渡す。
         tags: ChronicleTags,
-        // spec 20: GM の約束事提案フィールドは撤去した (実測 0/45・0/20 の絶対ゼロ —
+        // spec 20: GM の既成事実提案フィールドは撤去した (実測 0/45・0/20 の絶対ゼロ —
         // 語り手に記録係を兼ねさせるのが構造的に無理。failures.md #65)。ターンからは何も返らない。
     },
     /// 最大試行回数まで却下され続けた。**state は無傷**。理由は構造化 (表示は localize)。
@@ -347,7 +347,7 @@ pub async fn run_turn<P: DeltaProposer>(
     messages.push(ChatMessage::user(format!(
         "{}{}{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
         prompt::state_brief(state, scenario),
-        // spec 20 約束事: state_brief の直後・可変 user 側 (編集で変わるので system に
+        // spec 20 既成事実: state_brief の直後・可変 user 側 (編集で変わるので system に
         // 置くとキャッシュを壊す)。従属規律ヘッダ + スコア降順 (UI と同じ並び)。
         crate::facts::facts_note(facts).unwrap_or_default(),
         // #49: 直前ターンで移動していたら、置いていかれた NPC を固有名で否定接地する

@@ -324,7 +324,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut synopsis: harness::Synopsis =
         resume_save.as_ref().map(|s| s.synopsis.clone()).unwrap_or_default();
 
-    // 約束事 (spec 20)。**編集は GUI 専用** (CLI からは読むだけ) — セーブから復元して
+    // 既成事実 (spec 20)。**編集は GUI 専用** (CLI からは読むだけ) — セーブから復元して
     // prompt へ注入し、autosave にそのまま書き戻す。
     let facts_list: Vec<harness::FactEntry> =
         resume_save.as_ref().map(|s| s.facts.clone()).unwrap_or_default();
@@ -418,7 +418,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &last_narration,  // 前ターンの語りを継続文脈として注入 (繰り返し防止)
             &history,         // 経緯ログ (中期記憶)。過去ターンの要約を還流
             &synopsis.entries, // あらすじ (長期の物語記憶、spec 10)
-            &facts_list,           // 約束事 (ピン留めの覚え書き、spec 20)
+            &facts_list,           // 既成事実 (ピン留めの覚え書き、spec 20)
         )
         .await;
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。

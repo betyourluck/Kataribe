@@ -271,7 +271,7 @@ mod tests {
         assert!(dump.contains("add_item") && dump.contains("set_flag"), "op 実体が ops.items 内に inline");
     }
 
-    /// 【spec 20 の結論】約束事の**追記チャネルは schema から撤去した** — 実測 0/45・0/20 で
+    /// 【spec 20 の結論】既成事実の**追記チャネルは schema から撤去した** — 実測 0/45・0/20 で
     /// GM は書かず (契機を三度書き直しても不発)、**語り手に記録係を兼ねさせるのが構造的に無理**
     /// と結論した (failures.md #65)。露出したままだと使われないフィールドの description が
     /// 毎リクエストのトークンを食い、たまに使われて不揃いな行が混ざる。旧デルタ互換は不変。
@@ -280,7 +280,7 @@ mod tests {
         let schema = state_delta_schema();
         assert!(
             schema["properties"]["facts"].is_null(),
-            "GM の約束事チャネルは撤去済み (ユーザーが宣言する欄になった)"
+            "GM の既成事実チャネルは撤去済み (ユーザーが宣言する欄になった)"
         );
         // 提出フィールドは narration / summary / ops の 3 つ。
         for keep in ["narration", "summary", "ops"] {

@@ -315,9 +315,9 @@ struct GameView {
     decision: Option<DecisionView>,
     /// 進行中の対決 (spec 18 Phase C)。再開時にセーブから復元される。
     contest: Option<ContestView>,
-    /// 約束事全量 (spec 20)。新規開始は空、再開はセーブから復元。
+    /// 既成事実全量 (spec 20)。新規開始は空、再開はセーブから復元。
     facts: Vec<FactView>,
-    /// 約束事のユーザー権限 (spec 20): "open" | "locked"。frontend は locked でタブごと隠す。
+    /// 既成事実のユーザー権限 (spec 20): "open" | "locked"。frontend は locked でタブごと隠す。
     facts_policy: String,
 }
 
@@ -330,7 +330,7 @@ fn facts_policy_str(p: gm_core::FactsPolicy) -> String {
     .to_string()
 }
 
-/// 約束事の 1 行 (spec 20)。frontend の約束事タブと 📝 ログ行の素材。
+/// 既成事実の 1 行 (spec 20)。frontend の既成事実タブと 📝 ログ行の素材。
 #[derive(Serialize, Clone)]
 struct FactView {
     id: u64,
@@ -437,11 +437,11 @@ struct TurnView {
     /// エピローグ本文 (spec 11)。到達 goal に epilogue_prompt があり終端 (遷移しない) の
     /// 受理ターンだけ Some。生成失敗時は None (結末文 + バナーの従来表示 = フォールバック)。
     epilogue: Option<String>,
-    /// 約束事 (spec 20): 全量スナップショット。**GM は書かない**ので、ターン処理では
+    /// 既成事実 (spec 20): 全量スナップショット。**GM は書かない**ので、ターン処理では
     /// 常に None (変えるのはユーザー編集コマンドだけ)。将来ターン中に変わる経路が
     /// 生えたときのために Option のまま残す。
     facts: Option<Vec<FactView>>,
-    /// 約束事のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。
+    /// 既成事実のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。
     facts_policy: String,
     /// マップ (spec 15) — 訪問済み+1歩先の有向グラフ。移動/遷移で変わるので毎ターン返す
     /// (却下ターンは state 不変ゆえ現状スナップショット)。
@@ -690,7 +690,7 @@ struct GameSession {
     synopsis: Synopsis,
     /// あらすじ要約用の専用 client (SUMMARY_LLM_*)。None なら GM の client を共用。
     summarizer: Option<LlmClient>,
-    /// 約束事 (spec 20)。正本の外の覚え書き。セーブ対象、campaign 遷移でも持ち越す。
+    /// 既成事実 (spec 20)。正本の外の覚え書き。セーブ対象、campaign 遷移でも持ち越す。
     facts: Vec<harness::FactEntry>,
 }
 
@@ -1997,8 +1997,9 @@ fn open_package(
             load_module_injected(&loaded.campaign, &pkg_dir, &loaded.manifest, &target)
                 .map_err(|e| e.to_string())?
         };
-        // campaign モジュールの未知フィールド lint は後続 (loader が生テキストを返さない)。
-        Ok((pkg_dir, scenario, Some(loaded.campaign), target, loaded.manifest, Vec::new()))
+        // campaign モジュール (scenario) の未知フィールド lint は後続 (loader が生テキストを
+        // 返さない)。package.yaml 分は単発 entry と同じく載る。
+        Ok((pkg_dir, scenario, Some(loaded.campaign), target, loaded.manifest, loaded.warnings))
     } else {
         let loaded = load_package(&pkg_dir).map_err(|e| e.to_string())?;
         Ok((pkg_dir, loaded.scenario, None, ModuleId::new(), loaded.manifest, loaded.warnings))
@@ -2061,7 +2062,7 @@ async fn new_game(
         map: map_view(&scenario, &state, &[], &pkg_dir),
         decision: None, // 新規開始に決断の持ち越しは無い
         contest: None,
-        facts: Vec::new(), // 新規開始に約束事は無い (spec 20)
+        facts: Vec::new(), // 新規開始に既成事実は無い (spec 20)
         facts_policy: facts_policy_str(scenario.facts_policy),
     };
 
@@ -2186,7 +2187,7 @@ async fn restore_session(
         // 決断待ち・対決はセーブを跨いで生きる (spec 18) — 再開直後にパネルを復元する。
         decision: decision_view(&state, &scenario),
         contest: contest_view(&state, &scenario),
-        // 約束事 (spec 20) — セーブから復元してタブを埋める。
+        // 既成事実 (spec 20) — セーブから復元してタブを埋める。
         facts: fact_views(&save.facts),
         facts_policy: facts_policy_str(scenario.facts_policy),
     };
@@ -2241,22 +2242,22 @@ fn session_save_of(sess: &GameSession) -> SessionSave {
 }
 
 // =============================================================================
-// 約束事 (spec 20) — ユーザー専権の編集 (追加・編集・削除)。成功後は即時 autosave
+// 既成事実 (spec 20) — ユーザー専権の編集 (追加・編集・削除)。成功後は即時 autosave
 // (眺めるだけで消える事故を防ぐ)。GM 提案の採否は play_turn 側 (apply_gm_facts)。
 // =============================================================================
 
-/// 約束事編集コマンドの戻り: 更新後の全量 (スコア降順) + 満杯 add で押し出された行 (トースト用)。
+/// 既成事実編集コマンドの戻り: 更新後の全量 (スコア降順) + 満杯 add で押し出された行 (トースト用)。
 #[derive(Serialize)]
 struct FactsOpView {
     facts: Vec<FactView>,
     evicted: Option<String>,
 }
 
-/// 約束事編集後の即時 autosave。失敗は警告のみ (編集自体は成立させる — play_turn の流儀)。
+/// 既成事実編集後の即時 autosave。失敗は警告のみ (編集自体は成立させる — play_turn の流儀)。
 fn facts_autosave(sess: &GameSession) {
     if let Some(path) = &sess.save_path {
         if let Err(e) = save_session(path, &session_save_of(sess)) {
-            eprintln!("[警告] 約束事編集のオートセーブ失敗: {e}");
+            eprintln!("[警告] 既成事実編集のオートセーブ失敗: {e}");
         }
     }
 }
@@ -2270,11 +2271,11 @@ async fn facts_add(
     let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
     // 権限は UI で隠すだけでなくここでも通さない (二層防衛 — #50 の教訓)。
     if !sess.scenario.facts_policy.allows_write() {
-        return Err("このシナリオでは約束事の追記は作者が制限しています".into());
+        return Err("このシナリオでは既成事実の追記は作者が制限しています".into());
     }
     let (added, evicted) = harness::apply_user_add(&mut sess.facts, &text, sess.state.turn);
     if added.is_none() {
-        return Err("約束事が空です".into());
+        return Err("既成事実が空です".into());
     }
     facts_autosave(sess);
     Ok(FactsOpView { facts: fact_views(&sess.facts), evicted: evicted.map(|m| m.text) })
@@ -2289,10 +2290,10 @@ async fn facts_edit(
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
     if !sess.scenario.facts_policy.allows_write() {
-        return Err("このシナリオでは約束事の編集は作者が制限しています".into());
+        return Err("このシナリオでは既成事実の編集は作者が制限しています".into());
     }
     if harness::apply_user_edit(&mut sess.facts, id, &text).is_none() {
-        return Err("約束事を編集できません (空または対象が見つからない)".into());
+        return Err("既成事実を編集できません (空または対象が見つからない)".into());
     }
     facts_autosave(sess);
     Ok(FactsOpView { facts: fact_views(&sess.facts), evicted: None })
@@ -2306,10 +2307,10 @@ async fn facts_delete(
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
     if !sess.scenario.facts_policy.allows_delete() {
-        return Err("このシナリオでは約束事の削除は作者が制限しています".into());
+        return Err("このシナリオでは既成事実の削除は作者が制限しています".into());
     }
     if !harness::apply_user_delete(&mut sess.facts, id) {
-        return Err("対象の約束事が見つかりません".into());
+        return Err("対象の既成事実が見つかりません".into());
     }
     facts_autosave(sess);
     Ok(FactsOpView { facts: fact_views(&sess.facts), evicted: None })
@@ -2471,7 +2472,7 @@ async fn play_turn(
             retries,
             tags,
         } => {
-            // spec 20: 約束事はユーザーが宣言する欄になった (GM は読むだけ) ので、
+            // spec 20: 既成事実はユーザーが宣言する欄になった (GM は読むだけ) ので、
             // ターン処理では触らない — 変化はコマンド (facts_add/edit/delete) 側で起きる。
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
@@ -2599,7 +2600,7 @@ async fn play_turn(
                 new_synopsis: Vec::new(), // 圧縮ジョブの後に差分で埋める
                 new_log: Vec::new(),
                 epilogue: None, // 終端判定の後に埋める (spec 11)
-                facts: None, // GM は約束事を書かない (ユーザー編集のみが変える)
+                facts: None, // GM は既成事実を書かない (ユーザー編集のみが変える)
                 facts_policy: facts_policy_str(sess.scenario.facts_policy),
                 map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
                 // spec 18 Phase B: 決断つき判定が凍結されたらパネル素材を載せる。
@@ -2633,7 +2634,7 @@ async fn play_turn(
             new_synopsis: Vec::new(),
             new_log: Vec::new(),
             epilogue: None,
-            // 却下では GM 提案は捨てられる (state 無傷と同じ扱い = 約束事も無変化)。
+            // 却下では GM 提案は捨てられる (state 無傷と同じ扱い = 既成事実も無変化)。
             facts: None,
             facts_policy: facts_policy_str(sess.scenario.facts_policy),
             map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),

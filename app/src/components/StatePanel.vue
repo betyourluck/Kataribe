@@ -10,13 +10,13 @@ const game = useGameStore();
 
 // 右ペインは縦タブ 5 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
 // ・ map=マップ: 訪問済み+1歩先の有向グラフ、spec 15 ・ synopsis=あらすじ: 圧縮済み章 +
-// 最近の出来事、spec 10 ・ facts=約束事: GM とユーザーの覚え書き、spec 20)。
-// 約束事は末尾 (ユーザーFB 2026-07-21)。
+// 最近の出来事、spec 10 ・ facts=既成事実: GM とユーザーの覚え書き、spec 20)。
+// 既成事実は末尾 (ユーザーFB 2026-07-21)。
 const TABS = ["progress", "world", "map", "synopsis", "facts"] as const;
 type Tab = (typeof TABS)[number];
 const activeTab = ref<Tab>("progress");
 
-// facts_policy=locked の盤面では約束事は GM 専用の内部記憶 — タブごと出さない (spec 20 Phase E)。
+// facts_policy=locked の盤面では既成事実は GM 専用の内部記憶 — タブごと出さない (spec 20 Phase E)。
 // 表示中に locked へ変わる (campaign 遷移) 場合に備え、選択中なら進行タブへ逃がす。
 const factsVisible = computed(() => game.factsPolicy !== "locked");
 watch(factsVisible, (v) => {
@@ -59,7 +59,7 @@ function onKeydown(e: KeyboardEvent) {
   // IME 変換中はショートカットを発火させない (変換候補操作のキーを奪わない)。
   if (e.isComposing) return;
   if (!e.ctrlKey || e.altKey || e.metaKey) return;
-  // locked 盤面では約束事タブは存在しない扱い (巡回にも直接選択にも出さない)。
+  // locked 盤面では既成事実タブは存在しない扱い (巡回にも直接選択にも出さない)。
   const tabs = TABS.filter((x) => x !== "facts" || factsVisible.value);
   if (e.key === "Tab") {
     // Ctrl+Tab: タブ巡回 (Shift 併用で逆順)。
@@ -138,7 +138,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         <Icon name="book" :size="12" />
         <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabSynopsis") }}</span>
       </button>
-      <!-- 約束事 (spec 20)。locked 盤面では GM 専用の内部記憶 = タブごと出さない。 -->
+      <!-- 既成事実 (spec 20)。locked 盤面では GM 専用の内部記憶 = タブごと出さない。 -->
       <button
         v-if="factsVisible"
         class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
@@ -268,7 +268,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           <MapPanel />
         </template>
 
-        <!-- 5枚め「約束事」(spec 20): 約束事 (GM とユーザーの覚え書き)。 -->
+        <!-- 5枚め「既成事実」(spec 20): 既成事実 (GM とユーザーの覚え書き)。 -->
         <template v-else-if="activeTab === 'facts'">
           <FactsPanel />
         </template>

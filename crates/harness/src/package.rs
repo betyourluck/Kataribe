@@ -13,13 +13,13 @@ use std::path::Path;
 
 use gm_core::{AttrKey, FlagKey, ItemId, Scenario, SkillId, StatInit, StatKey};
 use indexmap::IndexMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::HarnessError;
 use crate::loader::inject_cast;
 
 /// `packages/<name>/package.yaml` の凍結スキーマ。このパッケージの世界をまとめる1ファイル。
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct PackageManifest {
     #[serde(default)]
     pub title: String,
@@ -43,15 +43,15 @@ pub struct PackageManifest {
     /// パッケージ横断の世界フラグ宣言。
     #[serde(default)]
     pub globals: Option<Globals>,
-    /// 約束事 (spec 20) のユーザー書き込み権限。**セッション単位の性質**なので
-    /// (約束事は campaign 遷移でも持ち越す) モジュールごとでなくパッケージが所有する。
+    /// 既成事実 (spec 20) のユーザー書き込み権限。**セッション単位の性質**なので
+    /// (既成事実は campaign 遷移でも持ち越す) モジュールごとでなくパッケージが所有する。
     /// 宣言があれば全モジュールへ注入。省略時は各 scenario の宣言 (既定 `locked`)。
     #[serde(default)]
     pub facts_policy: Option<gm_core::FactsPolicy>,
 }
 
 /// 主人公の宣言。各モジュールの `initial_stats`/`initial_skills` へ注入される。
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct PlayerDef {
     #[serde(default)]
     pub name: String,
@@ -81,12 +81,39 @@ pub struct PlayerDef {
 }
 
 /// パッケージ横断の宣言。
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct Globals {
     /// 世界フラグ宣言。load 時に各モジュールの `allowed_flags`(使える) と
     /// `global_flags`(跨いで生きる) の両方へ union される。
     #[serde(default)]
     pub flags: BTreeSet<FlagKey>,
+}
+
+/// `package.yaml` 自身の未知フィールド lint。**scenario 側 (`gm_core::unknown_key_lints`) の対**。
+///
+/// 動機は実害: キー改名 (`memo_policy` → `acts_policy` → `facts_policy`) を配布側 package.yaml が
+/// 追えていないと、serde が旧キーを黙って無視して既定 (`locked` = タブ非表示) に落ちる。
+/// **エラーなく、ただ効かない** — scenario 側で塞いだのと同じ「静かな罠」が manifest だけ開いていた。
+///
+/// 既知キー集合は手書きしない ([`gm_core::struct_keys`] で型から導出) ので、
+/// フィールド追加に自動追従する。非 fatal (前方互換を殺さない)。
+pub fn manifest_lints(src: &str) -> Vec<String> {
+    let Ok(root) = serde_yaml::from_str::<serde_yaml::Value>(src) else {
+        return Vec::new(); // parse エラーは read_manifest 側が出す (役割分離)
+    };
+    let manifest_keys = gm_core::struct_keys::<PackageManifest>("entry: x");
+    let player_keys = gm_core::struct_keys::<PlayerDef>("{}");
+    let globals_keys = gm_core::struct_keys::<Globals>("{}");
+
+    let mut out = gm_core::unknown_keys(&root, &manifest_keys, "");
+    if let serde_yaml::Value::Mapping(m) = &root {
+        for (key, table) in [("player", &player_keys), ("globals", &globals_keys)] {
+            if let Some(v) = m.get(serde_yaml::Value::from(key)) {
+                out.extend(gm_core::unknown_keys(v, table, key));
+            }
+        }
+    }
+    out
 }
 
 /// [`load_package`] の戻り。entry シナリオ (注入・検証済) + manifest (world/profile を語り素材として保持)。
@@ -112,8 +139,8 @@ pub fn inject_package(scenario: &mut Scenario, manifest: &PackageManifest) {
     if !manifest.world.trim().is_empty() {
         scenario.world = manifest.world.clone();
     }
-    // 約束事権限 (spec 20 Phase E) はセッション単位の性質 — package 宣言が全モジュールを支配する
-    // (約束事は campaign 遷移でも持ち越すので、モジュールごとに権限が変わると不整合になる)。
+    // 既成事実権限 (spec 20 Phase E) はセッション単位の性質 — package 宣言が全モジュールを支配する
+    // (既成事実は campaign 遷移でも持ち越すので、モジュールごとに権限が変わると不整合になる)。
     if let Some(policy) = manifest.facts_policy {
         scenario.facts_policy = policy;
     }
@@ -150,15 +177,30 @@ pub fn inject_package(scenario: &mut Scenario, manifest: &PackageManifest) {
 /// GUI のパッケージ一覧表示用 — title/description を出すのに entry の重いロードは要らないし、
 /// campaign-entry の未対応パッケージでも manifest は読めるべき。
 pub fn read_manifest(dir: &Path) -> Result<PackageManifest, HarnessError> {
+    read_manifest_text(dir).map(|(_, m)| m)
+}
+
+/// 生テキストごと読む内部版。lint ([`manifest_lints`]) は生 YAML が要るので、
+/// load 経路が二度読みしないためにこちらを使う。
+fn read_manifest_text(dir: &Path) -> Result<(String, PackageManifest), HarnessError> {
     let manifest_path = dir.join("package.yaml");
     let text = std::fs::read_to_string(&manifest_path).map_err(|e| HarnessError::PackageLoad {
         path: manifest_path.display().to_string(),
         detail: e.to_string(),
     })?;
-    serde_yaml::from_str(&text).map_err(|e| HarnessError::PackageLoad {
+    let manifest = serde_yaml::from_str(&text).map_err(|e| HarnessError::PackageLoad {
         path: manifest_path.display().to_string(),
         detail: e.to_string(),
-    })
+    })?;
+    Ok((text, manifest))
+}
+
+/// `package.yaml` の lint を「どのファイルの話か」が分かる形に整える。
+fn prefixed_manifest_lints(text: &str) -> Vec<String> {
+    manifest_lints(text)
+        .into_iter()
+        .map(|w| format!("package.yaml: {w}"))
+        .collect()
 }
 
 /// パッケージフォルダを読む。`dir/package.yaml` → manifest → entry を解決して scenario を組む。
@@ -166,7 +208,7 @@ pub fn read_manifest(dir: &Path) -> Result<PackageManifest, HarnessError> {
 /// 自己完結の保証: package.yaml 不在 / entry 不在 / cast の定義不在は **load 時エラー**。
 /// (campaign-entry = entry が campaign.yaml の時の複数モジュール束ねは後続。今は単一シナリオ entry。)
 pub fn load_package(dir: &Path) -> Result<LoadedPackage, HarnessError> {
-    let manifest = read_manifest(dir)?;
+    let (manifest_text, manifest) = read_manifest_text(dir)?;
 
     let entry_path = dir.join(&manifest.entry);
     let entry_text = std::fs::read_to_string(&entry_path).map_err(|e| HarnessError::PackageLoad {
@@ -191,10 +233,13 @@ pub fn load_package(dir: &Path) -> Result<LoadedPackage, HarnessError> {
         });
     }
     // 未知フィールド lint (非 fatal)。serde が黙って無視した typo/入れ子ミスを作者に報せる。
-    let warnings = gm_core::unknown_key_lints(&entry_text)
-        .into_iter()
-        .map(|w| format!("{}: {w}", manifest.entry))
-        .collect();
+    // **manifest と entry シナリオの両方**を見る — 片方だけだとキー改名が manifest 側で静かに死ぬ。
+    let mut warnings = prefixed_manifest_lints(&manifest_text);
+    warnings.extend(
+        gm_core::unknown_key_lints(&entry_text)
+            .into_iter()
+            .map(|w| format!("{}: {w}", manifest.entry)),
+    );
     Ok(LoadedPackage { manifest, scenario, warnings })
 }
 
@@ -215,6 +260,9 @@ pub struct LoadedCampaignPackage {
     pub start_module: crate::campaign::ModuleId,
     /// 開始モジュールの骨格 (`inject_cast` + `inject_package` + `validate` 済)。
     pub scenario: Scenario,
+    /// 非 fatal な作者向け警告 (`package.yaml` の未知フィールド lint)。
+    /// campaign 各モジュールの scenario lint は後続 (loader が生テキストを返さない)。
+    pub warnings: Vec<String>,
 }
 
 /// entry が `campaign.yaml` のパッケージを読む (campaign 地図 + 開始モジュール)。
@@ -223,7 +271,7 @@ pub struct LoadedCampaignPackage {
 /// フォルダ相対。開始モジュールには [`inject_package`] で player/globals/world を継承させる
 /// (単発 entry の `load_package` と同じ注入を、campaign の各モジュールにも効かせる)。
 pub fn load_campaign_package(dir: &Path) -> Result<LoadedCampaignPackage, HarnessError> {
-    let manifest = read_manifest(dir)?;
+    let (manifest_text, manifest) = read_manifest_text(dir)?;
     let entry_path = dir.join(&manifest.entry);
     let campaign = crate::campaign::load_campaign(&entry_path)?;
     let start = campaign.start.clone();
@@ -233,6 +281,7 @@ pub fn load_campaign_package(dir: &Path) -> Result<LoadedCampaignPackage, Harnes
         campaign,
         start_module: start,
         scenario,
+        warnings: prefixed_manifest_lints(&manifest_text),
     })
 }
 
@@ -388,5 +437,89 @@ mod tests {
             vec!["クラス".to_string(), "種族".to_string()],
             "主人公の attribute も宣言順"
         );
+    }
+}
+
+// =============================================================================
+// PoC: package.yaml 自身の未知フィールド lint (2026-07-21)
+// 実害の再現 — キー改名を追えていない配布 manifest は serde に黙殺され既定へ落ちる。
+// =============================================================================
+#[cfg(test)]
+mod manifest_lint_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// 【純関数】旧キー (改名前) と typo が、近い既知キーの提案つきで名指しされる。
+    /// player / globals の入れ子も 1 段潜る。正しく書かれたキーは鳴らない。
+    #[test]
+    fn manifest_lints_name_renamed_and_typo_keys() {
+        let warns = manifest_lints(concat!(
+            "title: テスト\n",
+            "entry: scenarios/a.yaml\n",
+            "acts_policy: open\n", // 改名前のキー = 黙殺されて locked に落ちる実害
+            "player:\n",
+            "  nmae: 太郎\n", // typo
+            "  stats:\n    hp: 10\n",
+            "globals:\n",
+            "  flgs: [met]\n", // typo
+        ));
+        assert!(
+            warns.iter().any(|w| w.contains("acts_policy") && w.contains("facts_policy")),
+            "改名前のキーが facts_policy の提案つきで名指しされる: {warns:?}"
+        );
+        assert!(
+            warns.iter().any(|w| w.contains("player.nmae") && w.contains("name")),
+            "player 直下の typo がパス付きで出る: {warns:?}"
+        );
+        assert!(
+            warns.iter().any(|w| w.contains("globals.flgs") && w.contains("flags")),
+            "globals 直下の typo がパス付きで出る: {warns:?}"
+        );
+        assert!(!warns.iter().any(|w| w.contains("「title」") || w.contains("「stats」")));
+    }
+
+    /// 【偽陽性ゼロ】同梱の配布パッケージ全ての manifest が無警告であること。
+    #[test]
+    fn no_false_positives_on_shipped_packages() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&root).expect("packages/ がある") {
+            let p = entry.expect("読める").path().join("package.yaml");
+            let Ok(text) = std::fs::read_to_string(&p) else { continue };
+            let warns = manifest_lints(&text);
+            assert!(warns.is_empty(), "{}: 偽陽性 {warns:?}", p.display());
+            checked += 1;
+        }
+        assert!(checked > 0, "検査対象の package.yaml が 1 つも無い");
+    }
+
+    /// 【結線】`load_package` の warnings に manifest 分も載る (従来は entry シナリオ分だけ)。
+    #[test]
+    fn load_package_surfaces_manifest_lints() {
+        let dir = std::env::temp_dir().join("kataribe_manifest_lint_poc");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("scenarios")).expect("作れる");
+        std::fs::write(
+            dir.join("package.yaml"),
+            "title: t\nentry: scenarios/a.yaml\nacts_policy: open\n",
+        )
+        .expect("書ける");
+        std::fs::write(
+            dir.join("scenarios/a.yaml"),
+            concat!(
+                "title: t\nstart: room\n",
+                "locations:\n  room:\n    description: d\n",
+                "goal:\n  kind: always\n",
+            ),
+        )
+        .expect("書ける");
+
+        let loaded = load_package(&dir).expect("ロードできる (lint は非 fatal)");
+        assert!(
+            loaded.warnings.iter().any(|w| w.contains("acts_policy")),
+            "manifest の未知キーが warnings に載る: {:?}",
+            loaded.warnings
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

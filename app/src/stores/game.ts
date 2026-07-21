@@ -371,9 +371,9 @@ interface GameState {
   synopsis: SynopsisView[];
   // 「最近の出来事」= 未圧縮 chronicle の 1 行要約列 (あらすじタブの下段)。
   recentLog: LogLineView[];
-  // 約束事 (spec 20)。backend がスコア降順で返す全量スナップショット (約束事タブに表示)。
+  // 既成事実 (spec 20)。backend がスコア降順で返す全量スナップショット (既成事実タブに表示)。
   facts: FactView[];
-  // 約束事のユーザー権限 (spec 20): open=ユーザーが宣言できる / locked=非表示 (既定)。
+  // 既成事実のユーザー権限 (spec 20): open=ユーザーが宣言できる / locked=非表示 (既定)。
   factsPolicy: string;
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;
@@ -440,7 +440,7 @@ export const useGameStore = defineStore("game", {
       synopsis: [],
       recentLog: [],
       facts: [],
-      // 既定は locked = 宣言のない盤面では約束事タブを出さない (GM 専用の内部記憶)。
+      // 既定は locked = 宣言のない盤面では既成事実タブを出さない (GM 専用の内部記憶)。
       factsPolicy: "locked",
       compacting: false,
       writingEpilogue: false,
@@ -987,7 +987,7 @@ export const useGameStore = defineStore("game", {
       this.refreshPackages();
     },
 
-    // --- 約束事 (spec 20) のユーザー専権編集。成功後は backend が即時 autosave 済み ---
+    // --- 既成事実 (spec 20) のユーザー専権編集。成功後は backend が即時 autosave 済み ---
     async factsAdd(text: string) {
       if (!text.trim()) return;
       try {
@@ -1047,7 +1047,7 @@ export const useGameStore = defineStore("game", {
       // あらすじ (spec 10): 新規開始は空、再開はセーブから全量復元。
       this.synopsis = view.synopsis ?? [];
       this.recentLog = view.recent_log ?? [];
-      // 約束事 (spec 20): 新規開始は空、再開はセーブから復元。権限は盤面の宣言に従う。
+      // 既成事実 (spec 20): 新規開始は空、再開はセーブから復元。権限は盤面の宣言に従う。
       this.facts = view.facts ?? [];
       this.factsPolicy = view.facts_policy ?? "locked";
       this.compacting = false;
@@ -1416,7 +1416,7 @@ export const useGameStore = defineStore("game", {
             text: t("store.cacheWarning", { misses: cs.consecutive_misses }),
           });
         }
-        // 約束事 (spec 20): GM は書かないのでターン中は変わらない (変えるのはユーザー編集)。
+        // 既成事実 (spec 20): GM は書かないのでターン中は変わらない (変えるのはユーザー編集)。
         // 権限だけ campaign 遷移で追従する。
         if (turn.facts) this.facts = turn.facts;
         if (turn.facts_policy) this.factsPolicy = turn.facts_policy;

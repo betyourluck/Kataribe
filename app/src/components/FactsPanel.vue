@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 約束事 (spec 20): GM が書き溜め、ユーザーも追加・編集・削除できる覚え書きリスト。
-// 並びは backend がスコア降順で返す (LLM 注入と同じ見え方 = 消えかけの約束事が下に集まる
+// 既成事実 (spec 20): ユーザーが宣言し GM が守る設定のリスト (GM の書き込み経路は撤去済み)。
+// 並びは backend がスコア降順で返す (LLM 注入と同じ見え方 = 消えかけの既成事実が下に集まる
 // 退場予告)。編集/追加はユーザー専権の操作で、スコアが上がり押し出されにくくなる。
 import { ref, computed } from "vue";
 import { useGameStore } from "../stores/game";
@@ -12,7 +12,7 @@ const newText = ref("");
 const editingId = ref<number | null>(null);
 const editText = ref("");
 
-// 約束事権限 (spec 20) は二値 — open=ユーザーが宣言できる / locked=タブごと非表示
+// 既成事実権限 (spec 20) は二値 — open=ユーザーが宣言できる / locked=タブごと非表示
 // (このパネルには来ない)。UI で隠し、backend でも拒否する二層。
 const canWrite = computed(() => game.factsPolicy === "open");
 
