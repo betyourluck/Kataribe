@@ -220,6 +220,25 @@ export interface GameView {
   decision: DecisionView | null;
   /** 進行中の対決 (spec 18 Phase C)。再開時にセーブから復元される。 */
   contest: ContestView | null;
+  /** 共有メモ全量 (spec 20)。新規開始は空、再開はセーブから復元。 */
+  memo: MemoView[];
+}
+
+/** 共有メモの 1 行 (spec 20)。並びは backend がスコア降順で返す (LLM 注入と同じ見え方)。 */
+export interface MemoView {
+  id: number;
+  /** "gm" | "user" (バッジ)。 */
+  origin: string;
+  text: string;
+  turn: number;
+  score: number;
+}
+
+/** メモ編集コマンド (memo_add/edit/delete) の戻り。 */
+export interface MemoOpView {
+  memo: MemoView[];
+  /** 満杯 add で押し出された行 (トースト用)。無ければ null。 */
+  evicted: string | null;
 }
 
 /** あらすじ 1 章 (spec 10)。一度確定したら不変 (append-only)。リスト key は upto_turn。 */
@@ -356,6 +375,12 @@ export interface TurnView {
   decision: DecisionView | null;
   /** 進行中の対決 (spec 18 Phase C)。非 null の間 ⚔ パネルを出し入力を締める。 */
   contest: ContestView | null;
+  /** 共有メモ (spec 20): 変化があったターンだけ全量スナップショット。無変化なら null。 */
+  memo: MemoView[] | null;
+  /** このターンで採用された GM メモ行 (📝 表示)。 */
+  new_memos: string[];
+  /** dedup 強化された既存行のテキスト (📝⁺ 表示)。 */
+  reinforced_memos: string[];
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。

@@ -20,6 +20,8 @@ import type {
   LogLineView,
   SlotView,
   MapView,
+  MemoView,
+  MemoOpView,
 } from "../types/api";
 
 // d100 ロールアンダーの成功度 (spec 16) の表示ラベル。内部 id は英語 (ログ検索・セーブ安定)、
@@ -51,6 +53,15 @@ function assetUrl(path: string | null): string | null {
 
 // localStorage キー: ユーザーが選べるパッケージフォルダのパス一覧 (配布物の置き場)。
 const PACKAGES_KEY = "kataribe.packagePaths";
+// 前回プレイした (new_game/resume/ロードで実際に開いた) パッケージのパス。
+// 起動時のコンボリスト初期選択に使う (ユーザーFB 2026-07-21)。
+const LAST_PLAYED_KEY = "kataribe.lastPlayedPackage";
+function loadLastPlayed(): string {
+  return localStorage.getItem(LAST_PLAYED_KEY) || "";
+}
+function saveLastPlayed(path: string) {
+  localStorage.setItem(LAST_PLAYED_KEY, path);
+}
 // 前回追加したパッケージの「親フォルダ」。参照ダイアログの初期ディレクトリに使う
 // (多くの人は同じ親フォルダの下に複数パッケージを置くので、次回そこから選べる)。
 const LAST_PKG_PARENT_KEY = "kataribe.lastPackageParent";
@@ -146,6 +157,15 @@ function loadLogDir(): string {
 // 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。escape のみ
 // (houkago は harness fixture へ移設、他サンプルは 2026-07-10 に配布から削除)。
 const BUILTIN_PACKAGES = ["packages/escape"];
+
+// 起動時のコンボリスト初期選択: 前回プレイしたパッケージ > 表示の一番上。
+// コンボリストは「新しい順」(追加順の逆) で表示するので、一番上 = packagePaths の末尾要素
+// (App.vue の packagesNewestFirst と対の知識 — 表示順を変えるならここも揃えること)。
+function initialPackagePath(paths: string[]): string {
+  const last = loadLastPlayed();
+  if (last && paths.includes(last)) return last;
+  return paths[paths.length - 1] ?? BUILTIN_PACKAGES[0];
+}
 
 // --- AI モデルプロファイル (複数の LLM 設定を登録・切替。localStorage 永続) ---
 // 動機: ヘビーユーザーは複数モデルを試す。従来は .env を手で書き換えていたのを、登録済み
@@ -351,6 +371,8 @@ interface GameState {
   synopsis: SynopsisView[];
   // 「最近の出来事」= 未圧縮 chronicle の 1 行要約列 (あらすじタブの下段)。
   recentLog: LogLineView[];
+  // 共有メモ (spec 20)。backend がスコア降順で返す全量スナップショット (メモタブに表示)。
+  memo: MemoView[];
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;
   // backend がエピローグ生成中 (epilogue-writing イベント、spec 11)。同じくローディング文言用。
@@ -394,7 +416,7 @@ export const useGameStore = defineStore("game", {
       panelWidth: loadPanelWidth(),
       audioVolume: loadAudioVolume(),
       audioMuted: loadAudioMuted(),
-      packagePath: paths[0] ?? BUILTIN_PACKAGES[0],
+      packagePath: initialPackagePath(paths),
       activePackagePath: "",
       packagePaths: paths,
       lastPackageParent: loadLastPackageParent(),
@@ -415,6 +437,7 @@ export const useGameStore = defineStore("game", {
       cacheWarned: false,
       synopsis: [],
       recentLog: [],
+      memo: [],
       compacting: false,
       writingEpilogue: false,
       map: { nodes: [], edges: [] },
@@ -648,9 +671,9 @@ export const useGameStore = defineStore("game", {
         this.packages = await invoke<PackageEntry[]>("list_packages", {
           paths: this.packagePaths,
         });
-        // 選択中パスが一覧から消えていたら先頭へ寄せる。
+        // 選択中パスが一覧から消えていたら表示の一番上 (新しい順の先頭 = 末尾要素) へ寄せる。
         if (!this.packagePaths.includes(this.packagePath) && this.packagePaths.length) {
-          this.packagePath = this.packagePaths[0];
+          this.packagePath = this.packagePaths[this.packagePaths.length - 1];
         }
       } catch (e) {
         this.error = String(e);
@@ -709,7 +732,10 @@ export const useGameStore = defineStore("game", {
       }
       this.packagePaths = this.packagePaths.filter((p) => p !== path);
       savePaths(this.packagePaths);
-      if (this.packagePath === path) this.packagePath = this.packagePaths[0] ?? "";
+      if (this.packagePath === path) {
+        // 表示の一番上 (新しい順の先頭 = 末尾要素) へ寄せる。
+        this.packagePath = this.packagePaths[this.packagePaths.length - 1] ?? "";
+      }
       this.refreshPackages();
     },
 
@@ -957,6 +983,36 @@ export const useGameStore = defineStore("game", {
       this.refreshPackages();
     },
 
+    // --- 共有メモ (spec 20) のユーザー専権編集。成功後は backend が即時 autosave 済み ---
+    async memoAdd(text: string) {
+      if (!text.trim()) return;
+      try {
+        const res = await invoke<MemoOpView>("memo_add", { text });
+        this.memo = res.memo;
+        // 満杯で押し出された行はトーストで可視化する (silent な退場を作らない)。
+        if (res.evicted) this.logToast = t("state.memoEvicted", { text: res.evicted });
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+    async memoEdit(id: number, text: string) {
+      if (!text.trim()) return;
+      try {
+        const res = await invoke<MemoOpView>("memo_edit", { id, text });
+        this.memo = res.memo;
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+    async memoDelete(id: number) {
+      try {
+        const res = await invoke<MemoOpView>("memo_delete", { id });
+        this.memo = res.memo;
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+
     // new_game / resume_game 共通の view 反映。resume なら再開マーカーと前回までの語りをログに出す。
     applyGameView(view: GameView, path: string) {
       this.started = true;
@@ -964,6 +1020,9 @@ export const useGameStore = defineStore("game", {
       // このゲームが「プレイ中の真実」。以後コンボリストを別へ切り替えても動かない
       // (セーブはこのパスに対して有効。packagePath がこれと食い違えばセーブは無効化)。
       this.activePackagePath = path;
+      // 次回起動時のコンボリスト初期選択のために「前回プレイ」を覚える
+      // (new_game / resume / スロットロードの全経路がここを通る)。
+      saveLastPlayed(path);
       this.title = view.title;
       this.state = view.state;
       this.background = assetUrl(view.background);
@@ -984,6 +1043,8 @@ export const useGameStore = defineStore("game", {
       // あらすじ (spec 10): 新規開始は空、再開はセーブから全量復元。
       this.synopsis = view.synopsis ?? [];
       this.recentLog = view.recent_log ?? [];
+      // 共有メモ (spec 20): 新規開始は空、再開はセーブから復元。
+      this.memo = view.memo ?? [];
       this.compacting = false;
       // scenario の lint (作者向け・非 fatal)。死んだ flag_hint 等を開幕で報せる。
       for (const w of view.warnings ?? []) {
@@ -1349,6 +1410,16 @@ export const useGameStore = defineStore("game", {
             kind: "system",
             text: t("store.cacheWarning", { misses: cs.consecutive_misses }),
           });
+        }
+        // 共有メモ (spec 20): 変化があったターンは全量スナップショットで差し替え、採用 📝 /
+        // 強化 📝⁺ を会話ログに出す (silent なスコア変化を作らない)。メモは判定の帰結を
+        // 含みうるので、開帳中はダイスより後ろに保留する (pushLog = 漏洩防止の共通機構)。
+        if (turn.memo) this.memo = turn.memo;
+        for (const m of turn.new_memos ?? []) {
+          pushLog({ kind: "system", text: t("state.memoNewLine", { text: m }) });
+        }
+        for (const m of turn.reinforced_memos ?? []) {
+          pushLog({ kind: "system", text: t("state.memoReinforcedLine", { text: m }) });
         }
         // あらすじ (spec 10): 追記差分を push (append-only)。章が確定したら「最近の出来事」から
         // その章に呑まれた行 (turn <= upto_turn) を取り除く。会話ログには出さない

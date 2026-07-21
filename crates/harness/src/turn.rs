@@ -262,6 +262,9 @@ pub enum TurnOutcome {
         rejected: Vec<Vec<RejectReason>>,
         /// engine 事実の機械タグ (spec 08-B)。呼び出し側が [`chronicle_entry`] へ渡す。
         tags: ChronicleTags,
+        /// GM の共有メモ提案 (`StateDelta.memo`、spec 20)。**まだ採否は決まっていない** —
+        /// 呼び出し側が [`crate::apply_gm_memos`] に通し、採用 📝 / 強化 📝⁺ を表示する。
+        memo: Vec<String>,
     },
     /// 最大試行回数まで却下され続けた。**state は無傷**。理由は構造化 (表示は localize)。
     Rejected {
@@ -307,6 +310,7 @@ pub async fn run_turn<P: DeltaProposer>(
     recent_narration: &str,
     history: &[TurnLog],
     synopsis: &[crate::SynopsisEntry],
+    memo: &[crate::MemoEntry],
 ) -> Result<TurnOutcome, HarnessError> {
     // 盤面と現在状態を毎ターン新規に提示する (state は正本の唯一の真実)。
     // history=過去ターンの経緯、recalled_lore=思い出された伏線、recent_checks=直前判定の結果、
@@ -326,8 +330,11 @@ pub async fn run_turn<P: DeltaProposer>(
         messages.push(ChatMessage::system(synopsis_block.trim_start().to_string()));
     }
     messages.push(ChatMessage::user(format!(
-        "{}{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
+        "{}{}{}{}{}{}{}\n\n# プレイヤーの行動\n{}",
         prompt::state_brief(state, scenario),
+        // spec 20 共有メモ: state_brief の直後・可変 user 側 (編集で変わるので system に
+        // 置くとキャッシュを壊す)。従属規律ヘッダ + スコア降順 (UI と同じ並び)。
+        crate::memo::memo_note(memo).unwrap_or_default(),
         // #49: 直前ターンで移動していたら、置いていかれた NPC を固有名で否定接地する
         // (GM 自身の移動語りの「同行の素振り」が recent_narration/chronicle 経由で
         // presence を汚染するのへの対抗。一般規律は具体の語りに負ける)。
@@ -384,6 +391,7 @@ pub async fn run_turn<P: DeltaProposer>(
                 return Ok(TurnOutcome::Accepted {
                     narration: delta.narration,
                     summary: delta.summary,
+                    memo: delta.memo,
                     rolls: out.rolls,
                     checks: out.checks,
                     stat_rolls: out.stat_rolls,

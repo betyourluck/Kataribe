@@ -272,6 +272,22 @@ mod tests {
     }
 
     /// 【authored 専権 op の除外】LLM 向け schema は set_presence/grant_skill 等を **提案肢に出さない**
+    /// 【spec 20 Phase A】共有メモの追記チャネル `StateDelta.memo` が schema に露出し、
+    /// description が 60 字制限を LLM に事前に伝える (harness の機械カットで意味が欠落する
+    /// 前に、書く側を縛る)。旧デルタ (memo 無し JSON) は serde default で互換。
+    #[test]
+    fn schema_exposes_memo_channel_with_limit_and_old_deltas_parse() {
+        let schema = state_delta_schema();
+        let memo = &schema["properties"]["memo"];
+        assert!(!memo.is_null(), "memo フィールドが schema に露出する");
+        let desc = memo["description"].as_str().unwrap_or("");
+        assert!(desc.contains("60"), "60 字制限を LLM に伝える: {desc}");
+
+        let old: gm_core::StateDelta =
+            serde_json::from_str(r#"{"narration":"x","ops":[]}"#).expect("旧デルタは parse 可能");
+        assert!(old.memo.is_empty(), "memo 無しは空 (serde default)");
+    }
+
     /// (露出すると LLM が使い続けて却下→再生成ループで詰まる。Grok の constrained decoding 対策の核心)。
     /// LLM が使える op (add_item 等) は残る。
     #[test]

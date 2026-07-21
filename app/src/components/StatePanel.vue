@@ -4,13 +4,15 @@ import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
 import Icon from "./Icon.vue";
 import MapPanel from "./MapPanel.vue";
+import MemoPanel from "./MemoPanel.vue";
 
 const game = useGameStore();
 
-// 右ペインは縦タブ 4 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
+// 右ペインは縦タブ 5 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
 // ・ map=マップ: 訪問済み+1歩先の有向グラフ、spec 15 ・ synopsis=あらすじ: 圧縮済み章 +
-// 最近の出来事、spec 10)。1 枚に全部積むと全体スクロールになるのでタブで切り替える。
-const TABS = ["progress", "world", "map", "synopsis"] as const;
+// 最近の出来事、spec 10 ・ memo=共有メモ: GM とユーザーの覚え書き、spec 20)。
+// 1 枚に全部積むと全体スクロールになるのでタブで切り替える。
+const TABS = ["progress", "world", "map", "synopsis", "memo"] as const;
 type Tab = (typeof TABS)[number];
 const activeTab = ref<Tab>("progress");
 
@@ -56,8 +58,8 @@ function onKeydown(e: KeyboardEvent) {
     const i = TABS.indexOf(activeTab.value);
     const step = e.shiftKey ? TABS.length - 1 : 1;
     activeTab.value = TABS[(i + step) % TABS.length];
-  } else if (["1", "2", "3", "4"].includes(e.key)) {
-    // Ctrl+1/2/3/4: 直接選択。
+  } else if (["1", "2", "3", "4", "5"].includes(e.key)) {
+    // Ctrl+1..5: 直接選択 (5 枚巡回は遠いので直接選択が主導線)。
     e.preventDefault();
     activeTab.value = TABS[Number(e.key) - 1];
   }
@@ -125,6 +127,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       >
         <Icon name="book" :size="12" />
         <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabSynopsis") }}</span>
+      </button>
+      <button
+        class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
+        :class="
+          activeTab === 'memo'
+            ? 'border-ember text-glow'
+            : 'border-transparent text-parchment opacity-40 hover:opacity-90'
+        "
+        :title="t('state.tabMemoTitle')"
+        @click="activeTab = 'memo'"
+      >
+        <Icon name="pencil" :size="12" />
+        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabMemo") }}</span>
       </button>
     </nav>
 
@@ -239,6 +254,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         <!-- 3枚め「マップ」(spec 15): 訪問済み+1歩先の有向グラフ。 -->
         <template v-else-if="activeTab === 'map'">
           <MapPanel />
+        </template>
+
+        <!-- 5枚め「メモ」(spec 20): 共有メモ (GM とユーザーの覚え書き)。 -->
+        <template v-else-if="activeTab === 'memo'">
+          <MemoPanel />
         </template>
 
         <!-- 4枚め「あらすじ」(spec 10): 圧縮済み章 (append-only) + 最近の出来事 (未圧縮 chronicle)。

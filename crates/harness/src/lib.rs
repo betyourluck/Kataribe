@@ -12,6 +12,7 @@ mod campaign;
 mod epilogue;
 mod error;
 mod loader;
+mod memo;
 mod memoria;
 mod package;
 pub mod prompt;
@@ -35,6 +36,10 @@ pub use epilogue::{
 };
 pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};
+pub use memo::{
+    apply_gm_memos, apply_user_add, apply_user_delete, apply_user_edit, memo_note,
+    sorted_for_display, MemoDigest, MemoEntry, MemoOrigin, MEMO_LINE_CHARS, MEMO_MAX,
+};
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use proposer::DeltaProposer;
 pub use save::{load_session, save_session, SavedContent, SessionSave, SAVE_VERSION};
@@ -123,7 +128,7 @@ mod tests {
             value: true,
         }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 1),
             other => panic!("受理されるべき: {other:?}"),
@@ -144,7 +149,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 2, "2回目で受理"),
             other => panic!("最終的に受理されるべき: {other:?}"),
@@ -164,7 +169,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
 
         let second = p.seen_text(2);
         assert!(second.contains("却下"), "再生成プロンプトに却下の文脈があるはず");
@@ -185,7 +190,7 @@ mod tests {
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]), // 引き出し前で却下
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Rejected { attempts, last_reasons } => {
                 assert_eq!(attempts, 3);
@@ -205,7 +210,7 @@ mod tests {
         let mut s = fresh(&sc); // seed=42, cursor=0
         let p = ScriptedProposer::new(vec![delta(vec![StateOp::RequestRoll { sides: 20, dc: 10 }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { rolls, .. } => {
                 assert_eq!(rolls.len(), 1);
@@ -277,7 +282,7 @@ mod tests {
             text: "丘の上の古い樫の木の下で、二人は小指を絡めて誓った。".into(),
         }];
 
-        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "", &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "", &[], &[], &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("思い出された記憶"), "想起の見出しが prompt に載る");
@@ -297,12 +302,58 @@ mod tests {
         }])]);
         let prev = "夕日が差し込む教室。モカが振り向いて微笑んだ。";
 
-        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev, &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev, &[], &[], &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前までの語り"), "継続の見出しが prompt に載る");
         assert!(prompt_text.contains("モカが振り向いて微笑んだ"), "直前の語り本文が注入される");
         assert!(prompt_text.contains("繰り返さない") || prompt_text.contains("再び描写しない"), "繰り返し禁止を指示する");
+    }
+
+    /// 【spec 20-B ⑦ 共有メモの注入】メモが user 可変メッセージの state_brief の後に
+    /// 「# 共有メモ」節として載り (system 側に置くとキャッシュを壊す)、GM の提案は
+    /// TurnOutcome.memo で呼び出し側へ渡る (採否は apply_gm_memos の責務)。空なら節なし。
+    #[tokio::test]
+    async fn shared_memo_is_injected_into_user_message_and_proposals_flow_out() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let mut d = delta(vec![]);
+        d.memo = vec!["宿屋の主人は左頬に傷".into()];
+        let p = ScriptedProposer::new(vec![d]);
+        let memos = vec![MemoEntry {
+            id: 1,
+            origin: MemoOrigin::User,
+            text: "妹の名前はサキ".into(),
+            turn: 1,
+            score: 4,
+        }];
+
+        let out = run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &memos)
+            .await
+            .unwrap();
+
+        let prompt_text = p.seen_text(1);
+        assert!(prompt_text.contains("# 共有メモ"), "メモ節が prompt に載る");
+        assert!(prompt_text.contains("妹の名前はサキ"), "メモ本文が注入される");
+        // 注入位置: state の提示 (現在地) より後 = user 可変メッセージ内。
+        let state_pos = prompt_text.find("現在地").expect("state_brief がある");
+        let memo_pos = prompt_text.find("# 共有メモ").unwrap();
+        assert!(state_pos < memo_pos, "state_brief の後に注入される");
+        // GM の提案は未採否のまま運ばれる。
+        match out {
+            TurnOutcome::Accepted { memo, .. } => {
+                assert_eq!(memo, vec!["宿屋の主人は左頬に傷".to_string()]);
+            }
+            other => panic!("受理されるはず: {other:?}"),
+        }
+
+        // 空メモなら節を出さない (トークンを使わない)。
+        let p2 = ScriptedProposer::new(vec![delta(vec![])]);
+        let mut s2 = fresh(&sc);
+        run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
+            .await
+            .unwrap();
+        assert!(!p2.seen_text(1).contains("# 共有メモ"));
     }
 
     /// 【経緯ログ / chronicle】過去ターンの要約列が「これまでの経緯」として prompt に載り、
@@ -331,7 +382,7 @@ mod tests {
             },
         ];
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &history, &[])
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &history, &[], &[])
             .await
             .unwrap();
 
@@ -372,7 +423,7 @@ mod tests {
             ..Default::default()
         }];
 
-        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &history, &synopsis)
+        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &history, &synopsis, &[])
             .await
             .unwrap();
 
@@ -396,7 +447,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("# これまでのあらすじ"), "あらすじ無しなら注入しない");
         let system_count = p
             .seen_messages(1)
@@ -424,7 +475,7 @@ mod tests {
             title: "村の章".into(),
             text: "旅人は村に着き、長老から祠の封印の話を聞いた。".into(),
         }];
-        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &[], &synopsis)
+        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &[], &synopsis, &[])
             .await
             .unwrap();
 
@@ -453,7 +504,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
         // GM_SYSTEM は summary の説明で『これまでの経緯』に言及するので、注入見出し (#) で判定する。
         assert!(!p.seen_text(1).contains("# これまでの経緯"), "経緯なしなら注入しない");
     }
@@ -598,7 +649,7 @@ mod tests {
         let sc = scenario();
         let mut state = fresh(&sc);
         let p = FlakyProposer { calls: Mutex::new(0) };
-        let out = run_turn(&p, &mut state, &sc, "調べる", 3, Lang::Ja, &[], &[], "", &[], &[])
+        let out = run_turn(&p, &mut state, &sc, "調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
             .await
             .expect("パース失敗はエラーでなく再生成で回復する");
         match out {
@@ -729,6 +780,13 @@ mod tests {
             last_narration: "霧が窓を這う。".into(),
             pending_checks: vec![],
             pending_lore: vec![],
+            memo: vec![MemoEntry {
+                id: 1,
+                origin: MemoOrigin::User,
+                text: "妹の名前はサキ".into(),
+                turn: 1,
+                score: 4,
+            }],
             synopsis: Synopsis {
                 entries: vec![SynopsisEntry {
                     upto_turn: 5,
@@ -777,14 +835,17 @@ mod tests {
             last_narration: String::new(),
             pending_checks: vec![],
             pending_lore: vec![],
+            memo: vec![],
             synopsis: Synopsis::default(),
         };
-        // 現行形式から synopsis キーを取り除く = spec 07/08 期のセーブを機械的に再現。
+        // 現行形式から synopsis/memo キーを取り除く = spec 07/08 期のセーブを機械的に再現。
         let mut val = serde_yaml::to_value(&save).expect("直列化できる");
         val.as_mapping_mut().unwrap().remove("synopsis");
+        val.as_mapping_mut().unwrap().remove("memo");
         let loaded: SessionSave = serde_yaml::from_value(val).expect("旧形式が読める");
         assert!(loaded.synopsis.entries.is_empty(), "あらすじは空で始まる");
         assert!(loaded.synopsis.pending_transition.is_none());
+        assert!(loaded.memo.is_empty(), "共有メモは空で始まる (spec 20 旧セーブ互換)");
     }
 
     /// 【経緯の予算】history_note は文字予算内で新しい方を残し、古い方から省略する
@@ -983,7 +1044,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]),
         ]);
-        let o1 = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[])
+        let o1 = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
             .await
             .unwrap();
         match o1 {
@@ -994,7 +1055,7 @@ mod tests {
             }
             _ => panic!("受理されるはず"),
         }
-        let o2 = run_turn(&p, &mut s, &sc, "鍵を取る", 3, Lang::Ja, &[], &[], "", &[], &[])
+        let o2 = run_turn(&p, &mut s, &sc, "鍵を取る", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
             .await
             .unwrap();
         match o2 {
@@ -1033,7 +1094,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("直前までの語り"), "直前の語り無しなら注入しない");
     }
 
@@ -1047,7 +1108,7 @@ mod tests {
             value: true,
         }])]);
 
-        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "", &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("思い出された記憶"), "伏線無しなら注入しない");
     }
 
@@ -1077,7 +1138,7 @@ mod tests {
             degree: None, count: 1, times: 1, pushed: false, spent: 0, pending: false,
         }];
 
-        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[], &[], &[]).await.unwrap();
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前の判定結果"), "判定結果の見出しが載る");
         assert!(prompt_text.contains("成功"), "成否が載る");

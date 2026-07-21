@@ -72,6 +72,10 @@ pub struct SessionSave {
     /// history と同一セーブで snapshot されるので resume では常に整合する。
     #[serde(default)]
     pub synopsis: Synopsis,
+    /// 共有メモ (spec 20) — プレイヤーと GM の覚え書き。campaign 遷移でも持ち越す
+    /// (章を跨いで覚える = chronicle と同じ判断)。
+    #[serde(default)]
+    pub memo: Vec<crate::MemoEntry>,
 }
 
 /// セーブを YAML で書く。**tmp → rename の原子的置換** — 受理ターン毎の上書き運用で

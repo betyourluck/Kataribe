@@ -563,6 +563,18 @@ package_updates:
   duplicate_install: "2026-07-19 ユーザー決定 (spec 05 の名残の解消): サイトタブの取得は `unique_dir` で毎回 `_2` の別フォルダに増えていた → `list_packages` が `PackageEntry.source_site`/`source_id` (出所メタの写し) を返し、**現在の siteUrl かつ同じ書庫 id が既に手元に在るならボタンを「取得済み」で disable** する。更新はローカルタブの「更新」の役割 (同じフォルダへ据え替え) = 二重取得と更新の役割分担を UI で確定させる。判定は提示層のみ (frontend は登録パス一覧を持つが backend は持たない)、手動配置 (メタ無し)・別サイト由来は対象外で従来どおり取得できる"
   server: "outcast Spec 23 追補: PackageSummary に sha256: String を追加 (一覧+詳細の両方・決定3=DB 保存済み値の SELECT 追加のみ)。Kataribe 側 RemotePackage.sha256 は Option (None 耐性=未対応書庫で更新検知が静かに無効)"
 
+# --- 共有メモ (spec 20。プレイヤーと GM の覚え書きリスト = MemoriaAeterna の最小プロトタイプ) ---
+shared_memo:
+  memo_entry: "MemoEntry{id: u64(採番=現存 max+1・セッション内一意・不変), origin: gm|user, text: String, turn: u32, score: u32}。**正本 (GameState) の外** — 語り素材であって可変世界状態ではない (chronicle/Memoria と同じ境界)。置き場 = harness/app 層 + SessionSave.memo (serde default=旧セーブ互換)。campaign 遷移で持ち越し (章を跨いで覚える)"
+  limits: "20 件 × Unicode スカラー (chars) 60 文字 (超過は機械カット・非対話)。満杯 20×60=1200 字 + 従属規律ヘッダ ~150 字 ≈ 1500 字 ≈ 900〜1100 tok (プロンプトの 7〜10%)。60 字制限は LLM にも伝える (StateDelta.memo の schema description + GM_SYSTEM 書き込み規律)"
+  score: "参照スコア (Memoria weight/feedback の移植)。GM 提案の新規=1 / ユーザー追加=4 / ユーザー編集=+3 (origin→user) / dedup ヒット=既存行 +1 (**origin 不問** — user メモと同文の GM 提案は user メモを強化。text 不変ゆえ専権と無矛盾)。score は harness 機構の帳簿 — GM もユーザーも値を直接指定できない (操作の副作用としてのみ動く)。減衰なし (v1)"
+  eviction: "満杯時の 2 規則を分離: (a) 犠牲者選定 = 最低スコア帯の中で最古 (id 最小) / (b) 入場判定 (GM 提案のみ) = 新規 1 が現最低**以上**なら最古退場で入場 (同点は新規が勝つ=churn 許可。既存保護だと序盤の score 1×20 件が化石化する — 大事な行は強化/編集で同点帯を抜ける)。ユーザー操作 (add/edit) は入場判定**免除**で常に成立、満杯 add は (a) で 1 件退場させ退場行をトースト通知。エッジケース (自覚的に許容): user メモだけの同点帯では最古の user メモが消える — 規則を増やさず退場の可視化で守る"
+  dedup: "trim + NFKC 正規化後の完全一致 (60 字カット後の text で比較。実装は unicode-normalization)。編集の同文衝突は編集対象を削除し既存側へ +3 統合 (origin→user)"
+  ordering: "UI も LLM 注入も**スコア降順 (同点 id 昇順)** に統一 — LLM の先頭重視と表示の見え方を一致させ、消えかけが下に集まる退場予告を両側で再現"
+  gm_channel: "StateDelta.memo: Vec<String> (serde default 空・schemars 露出・非検証=engine 不解釈。gm_core の変更はこの 1 フィールドのみ)。GM の権能は**行の提案のみ** — text 不可侵・削除/編集は UI のユーザー専権。harness apply_gm_memos が採否を決め MemoDigest{accepted, reinforced} を返す (採用行=📝・強化行=📝⁺ を表示 — silent なスコア変化を作らない)"
+  injection: "user 可変メッセージ内「# 共有メモ」節 (state_brief の後) — 編集のたび変わるので system 側に置くと prompt caching を壊す (spec 14 構成不変)。従属規律ヘッダ=抑止+保護の対 (メモ<state・state に無い所持/能力/出来事を確定させない ＋ 呼称/約束/意図の一貫性には従う)。GM_SYSTEM に書き込み規律 (60 字 1 行・毎ターン書かない・繰り返しは強化) と読み取り規律 (メモ由来の付与禁止=語りの確定は ops で弾けない唯一の防衛線)。空リストは節なし"
+  persistence: "GUI のユーザー編集=即時 autosave (眺めるだけで消えない)。GM 提案の反映=受理ターンの autosave に同乗 (GM 追記はターン内でしか起きない=取りこぼしゼロ・CLI 同)。CLI は表示のみ (📝/📝⁺ print)・編集は GUI 専用"
+
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
   memoria_neural: "LoreStore の bigram TF-IDF cosine を**神経 embedding** に格上げ (同 Memoria trait 裏で差し替え)。usage-over-extension: TF-IDF cosine が不足と接地できてから。語彙の表層に依らない真の意味近傍が要る時のみ。recall→prompt 注入・bigram cosine は ✅実装済"

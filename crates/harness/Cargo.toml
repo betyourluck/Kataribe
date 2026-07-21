@@ -17,6 +17,8 @@ thiserror.workspace = true
 # time は spec 10 の要約タイムアウト (tokio::time::timeout) 用。
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 dotenvy.workspace = true
+# spec 20 共有メモの dedup (trim + NFKC 正規化後の完全一致)。
+unicode-normalization = "0.1"
 
 # 実クラウド通しプレイ用の bin (ネットワーク必須、テスト対象外)。
 [[bin]]

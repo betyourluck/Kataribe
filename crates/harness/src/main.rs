@@ -324,6 +324,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut synopsis: harness::Synopsis =
         resume_save.as_ref().map(|s| s.synopsis.clone()).unwrap_or_default();
 
+    // 共有メモ (spec 20)。CLI は表示のみ (編集は GUI 専用)、campaign 遷移でも持ち越す。
+    let mut memos: Vec<harness::MemoEntry> =
+        resume_save.as_ref().map(|s| s.memo.clone()).unwrap_or_default();
+
     // --- 開幕描写 ---
     println!("=== {} ===", scenario.title);
     if let Some(loc) = scenario.location(&state.location) {
@@ -382,6 +386,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 last_narration: last_narration.clone(),
                 pending_checks: pending_checks.clone(),
                 pending_lore: pending_lore.clone(),
+                memo: memos.clone(),
                 synopsis: synopsis.clone(),
             };
             if let Err(e) = harness::save_session(&save_path, &save) {
@@ -412,6 +417,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &last_narration,  // 前ターンの語りを継続文脈として注入 (繰り返し防止)
             &history,         // 経緯ログ (中期記憶)。過去ターンの要約を還流
             &synopsis.entries, // あらすじ (長期の物語記憶、spec 10)
+            &memos,           // 共有メモ (ピン留めの覚え書き、spec 20)
         )
         .await;
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
@@ -420,6 +426,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(TurnOutcome::Accepted {
                 narration,
                 summary,
+                memo,
                 rolls,
                 checks,
                 stat_rolls,
@@ -430,6 +437,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }) => {
                 // literal `\n` を実改行へ (#16 の CLI 版。正本は触らない提示層の掃除)。
                 println!("\n{}", narration.replace("\\n", "\n"));
+                // 共有メモ (spec 20): GM 提案の採否を決め、採用/強化だけを表示する
+                // (捨てられた行は見せない = 表示と保存の食い違いを作らない)。
+                let digest = harness::apply_gm_memos(&mut memos, &memo, state.turn);
+                for line in &digest.accepted {
+                    println!("📝 メモ: {line}");
+                }
+                for id in &digest.reinforced {
+                    if let Some(m) = memos.iter().find(|m| m.id == *id) {
+                        println!("📝⁺ 強化: {}", m.text);
+                    }
+                }
                 // 発火ビートを先に解決 (表示と GM への還流の素)。ビートは GM が見ていない
                 // 筋書きの出来事なので、経緯ログと継続文脈の両方へ併記する。
                 let beats = resolve_recall(&lore, &fired);

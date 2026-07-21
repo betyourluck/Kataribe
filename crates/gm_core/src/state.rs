@@ -315,6 +315,12 @@ pub struct StateDelta {
     pub summary: String,
     #[serde(default)]
     pub ops: Vec<StateOp>,
+    // spec 20 共有メモ: narration/summary と同じ非検証の語り素材 — engine は解釈しない。
+    // 採否 (60 字カット / dedup 強化 / スコア入場判定) は harness::memo が決める。
+    // doc comment は schemars で LLM に見える description になるため、規律 (60 字) だけを短く書く。
+    /// 覚えておきたい事実を 60 字以内の 1 行で (通常は空)
+    #[serde(default)]
+    pub memo: Vec<String>,
 }
 
 impl StateDelta {
@@ -322,6 +328,7 @@ impl StateDelta {
         Self {
             narration: narration.into(),
             summary: String::new(),
+            memo: Vec::new(),
             ops,
         }
     }
