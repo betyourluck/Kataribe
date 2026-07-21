@@ -1152,6 +1152,11 @@ mod tests {
         // ③ 分類に「目標・志望」を含み、具体例を示す。
         assert!(g.contains("目標や志望"), "最重要の分類が漏れていた: {g}");
         assert!(g.contains("医大"), "具体例で書き方を示す");
+        // ④ 締めの列挙に facts が入っている — 「何を出力するか」で最も効く位置が
+        // 「narration と ops」だけを名指ししていると、直前の要求と矛盾する (2026-07-21 発見)。
+        let tail = g.rsplit('\n').next().unwrap_or("");
+        assert!(tail.contains("facts"), "出力フィールドの列挙に facts が入る: {tail}");
+        assert!(tail.contains("summary"), "同じく summary も: {tail}");
     }
 
     /// 直前の語りが無い (初回ターン等) なら継続ブロックを注入しない。
