@@ -22,6 +22,7 @@ import ConfirmDialog from "./components/ConfirmDialog.vue";
 import ConversationLog from "./components/ConversationLog.vue";
 import StatePanel from "./components/StatePanel.vue";
 import ActionInput from "./components/ActionInput.vue";
+import TtsControls from "./components/TtsControls.vue";
 import Icon from "./components/Icon.vue";
 
 const game = useGameStore();
@@ -242,7 +243,13 @@ onMounted(() => {
         <!-- メッセージは背景画像 (暗幕) の上の物語コンテンツ = 背景がある時はテーマに関わらず
              dark 配色で描く (濃色文字が暗幕に埋もれない)。入力欄 (ActionInput) は UI クロームゆえ
              グローバルテーマに従う (ライトでは明るい入力欄)。 -->
-        <ConversationLog v-else :data-theme="game.background ? 'dark' : null" />
+        <!-- 会話ペイン。`group` + `relative` は読み上げ操作 (TtsControls) をホバーで
+             右下に浮き出させるための土台 — 常設せず、寄せれば届く位置に置く。 -->
+        <div v-else class="relative flex-1 flex flex-col min-h-0 group">
+          <ConversationLog :data-theme="game.background ? 'dark' : null" />
+          <!-- 作者が use_tts を宣言した盤面にだけ出す (宣言のない配布物は無音のまま)。 -->
+          <TtsControls v-if="game.useTts" />
+        </div>
         <ActionInput />
       </main>
 

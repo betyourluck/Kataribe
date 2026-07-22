@@ -246,6 +246,11 @@ export const messages = {
       buyTitle: "足りない分を支払って結果を買い上げる",
       note: "押すか、払うか、受け入れるか。この決断に AI は関与しません。",
     },
+    tts: {
+      enable: "読み上げを入にする",
+      disable: "読み上げを切にする",
+      skip: "読み上げを飛ばす",
+    },
     log: {
       you: "あなた",
       success: "成功",
@@ -655,6 +660,11 @@ export const messages = {
       buy: "Spend {cost} {from} for {degree} (left: {remaining})",
       buyTitle: "Pay the difference to buy the result",
       note: "Push, pay, or accept. The AI has no part in this decision.",
+    },
+    tts: {
+      enable: "Turn narration voice on",
+      disable: "Turn narration voice off",
+      skip: "Skip narration voice",
     },
     log: {
       you: "You",

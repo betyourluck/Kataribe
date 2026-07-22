@@ -245,6 +245,42 @@ mod tests {
         assert_eq!(sc2.facts_policy, FactsPolicy::Open);
     }
 
+    /// 【読み上げの可否は作者宣言】`use_tts` は既定 false (宣言を持たない配布物 = 書庫の
+    /// 既刊すべてを作者の意図どおり無音に置く) で、package.yaml の宣言が全モジュールを支配する
+    /// (セッション単位 = 章の途中で再生設定が変わらない)。
+    ///
+    /// **engine 非使用の提示層宣言**であることも固定する — `use_tts` を true にしても
+    /// prompt (`scenario_brief`) は 1 バイトも変わらない。TTS で語りが変わると
+    /// chronicle/synopsis に残る記録まで再生設定で食い違うため (文体は `world` の役目)。
+    #[test]
+    fn use_tts_defaults_off_and_package_declaration_wins_without_touching_prompt() {
+        let base = concat!(
+            "title: t\nstart: r\n",
+            "locations:\n  r: { description: d, items: {}, exits: [] }\n",
+            "goal: { kind: always }\n"
+        );
+        let sc = gm_core::Scenario::from_yaml(base).unwrap();
+        assert!(!sc.use_tts, "宣言なしは無音 (既刊を作者の意図どおりに置く)");
+
+        // package 宣言が全モジュールを支配する。
+        let mut injected = sc.clone();
+        let manifest: crate::PackageManifest =
+            serde_yaml::from_str("entry: x.yaml\nuse_tts: true\n").unwrap();
+        crate::inject_package(&mut injected, &manifest);
+        assert!(injected.use_tts, "package の宣言が scenario の既定を上書きする");
+
+        // scenario 直書きも効く (package を持たない単発シナリオ)。
+        let direct = gm_core::Scenario::from_yaml(&format!("{base}use_tts: true\n")).unwrap();
+        assert!(direct.use_tts);
+
+        // 提示層宣言ゆえ prompt は不変 = 語りが再生設定に依存しない。
+        assert_eq!(
+            crate::prompt::scenario_brief(&sc),
+            crate::prompt::scenario_brief(&injected),
+            "use_tts は prompt を変えない (文体は world の役目・TTS は再生手段)"
+        );
+    }
+
     /// 【注入】従属規律 (抑止+保護の対) + スコア降順。**空なら節を出さない**
     /// (GM は書けないので、空の節に意味がない = 書き込み経路の撤去に伴う収縮)。
     #[test]

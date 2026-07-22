@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "play" | "map" | "pencil";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip";
   size?: number;
 }>();
 </script>
@@ -102,6 +102,23 @@ defineProps<{
     <template v-else-if="name === 'pencil'">
       <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
       <path d="m15 5 4 4" />
+    </template>
+    <!-- 読み上げ ON: スピーカー + 音波 -->
+    <template v-else-if="name === 'speaker'">
+      <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+      <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+    </template>
+    <!-- 読み上げ OFF: スピーカー + 打ち消し -->
+    <template v-else-if="name === 'speaker-off'">
+      <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+      <path d="m16 9 5 6" />
+      <path d="m21 9-5 6" />
+    </template>
+    <!-- スキップ: 早送り (今の読み上げを飛ばす) -->
+    <template v-else-if="name === 'skip'">
+      <path d="M5 4l9 8-9 8V4Z" />
+      <path d="M19 5v14" />
     </template>
     <!-- 削除: ゴミ箱 -->
     <template v-else-if="name === 'trash'">

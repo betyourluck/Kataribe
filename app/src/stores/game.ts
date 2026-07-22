@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { t } from "../i18n";
+import * as tts from "../tts";
 import type {
   GameView,
   TurnView,
@@ -375,6 +376,10 @@ interface GameState {
   facts: FactView[];
   // 既成事実のユーザー権限 (spec 20): open=ユーザーが宣言できる / locked=非表示 (既定)。
   factsPolicy: string;
+  // 盤面が読み上げを想定しているか (作者宣言 use_tts)。false なら操作を一切出さない。
+  useTts: boolean;
+  // ユーザーの読み上げ ON/OFF (localStorage 永続)。盤面が許してもユーザーが最終決定権を持つ。
+  ttsEnabled: boolean;
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;
   // backend がエピローグ生成中 (epilogue-writing イベント、spec 11)。同じくローディング文言用。
@@ -442,6 +447,9 @@ export const useGameStore = defineStore("game", {
       facts: [],
       // 既定は locked = 宣言のない盤面では既成事実タブを出さない (GM 専用の内部記憶)。
       factsPolicy: "locked",
+      // 既定は無音 = 宣言のない盤面 (書庫の既刊すべて) で勝手に喋り出さない。
+      useTts: false,
+      ttsEnabled: tts.loadEnabled(),
       compacting: false,
       writingEpilogue: false,
       map: { nodes: [], edges: [] },
@@ -517,6 +525,17 @@ export const useGameStore = defineStore("game", {
   },
 
   actions: {
+    // 読み上げの ON/OFF。OFF にした瞬間、今喋っているものも止める (設定と体感を一致させる)。
+    toggleTts(): void {
+      this.ttsEnabled = !this.ttsEnabled;
+      tts.saveEnabled(this.ttsEnabled);
+      if (!this.ttsEnabled) tts.stop();
+    },
+    // 今の読み上げを飛ばす。**物語は進めない** — 音を切るだけ (提示層の操作)。
+    skipTts(): void {
+      tts.stop();
+    },
+
     // 自前の確認ダイアログを開き、ユーザーの選択 (OK=true / キャンセル=false) を Promise で返す。
     // WebView2 の window.confirm は本文に tauri://localhost を混ぜてしまうので、これで置き換える。
     // 二重呼び出し (前の確認が未解決) は前をキャンセル扱いで畳んでから開く。
@@ -1050,6 +1069,9 @@ export const useGameStore = defineStore("game", {
       // 既成事実 (spec 20): 新規開始は空、再開はセーブから復元。権限は盤面の宣言に従う。
       this.facts = view.facts ?? [];
       this.factsPolicy = view.facts_policy ?? "locked";
+      // 盤面が変わったら読み上げは必ず止める (前のゲームの語りが喋り続けない)。
+      tts.stop();
+      this.useTts = view.use_tts ?? false;
       this.compacting = false;
       // scenario の lint (作者向け・非 fatal)。死んだ flag_hint 等を開幕で報せる。
       for (const w of view.warnings ?? []) {
@@ -1333,7 +1355,12 @@ export const useGameStore = defineStore("game", {
           this.decision = turn.decision ?? null;
           // 対決 (spec 18 Phase C)。attempt_contest が開いたら ⚔ パネル。
           this.contest = turn.contest ?? null;
-          if (turn.narration) this.log.push({ kind: "narration", text: turn.narration });
+          if (turn.narration) {
+            this.log.push({ kind: "narration", text: turn.narration });
+            // 読み上げは narration だけ (判定結果やビートは読まない = ダイスの結果を
+            // 開帳前に音声で漏らさない)。await しない = 語りの表示を音声待ちにしない。
+            if (this.useTts && this.ttsEnabled) void tts.speak(turn.narration);
+          }
           // ダイス系 3 行は伏せて積む (revealed=0)。演出オフなら全開 (= 従来動作)。
           if (turn.rolls.length) {
             this.log.push({ kind: "rolls", rolls: turn.rolls, revealed: revealing ? 0 : turn.rolls.length });
@@ -1420,6 +1447,8 @@ export const useGameStore = defineStore("game", {
         // 権限だけ campaign 遷移で追従する。
         if (turn.facts) this.facts = turn.facts;
         if (turn.facts_policy) this.factsPolicy = turn.facts_policy;
+        // campaign 遷移で盤面の音声想定が変わりうる。
+        this.useTts = turn.use_tts ?? this.useTts;
         // あらすじ (spec 10): 追記差分を push (append-only)。章が確定したら「最近の出来事」から
         // その章に呑まれた行 (turn <= upto_turn) を取り除く。会話ログには出さない
         // (物語の外の帳簿イベント — 更新はタブを見れば分かる、ユーザーFB 2026-07-14)。

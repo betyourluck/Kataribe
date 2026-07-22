@@ -10,6 +10,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@aituber-onair/voice": "0.19.0",
     "@tauri-apps/api": "^2",
     "pinia": "^3",
     "vue": "^3.5"

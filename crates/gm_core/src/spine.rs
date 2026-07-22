@@ -1020,6 +1020,18 @@ pub struct Scenario {
     /// package.yaml の `facts_policy` から注入もできる。詳細は [`FactsPolicy`]。
     #[serde(default)]
     pub facts_policy: FactsPolicy,
+    /// 読み上げ (TTS) を**作者が想定しているか** (既定 false)。engine 非使用・非検証の
+    /// **提示層宣言** ([`Self::hidden_stats`] と同類) — 正本も prompt も語りも一切変わらず、
+    /// true の盤面でだけ提示層が読み上げ操作を出す。
+    ///
+    /// 意味は「技術的に読めるか」ではない (narration は常に文字列なので全パッケージが読める)。
+    /// 既定 false は、宣言を持たない配布物を作者の意図どおり無音に置くため。
+    ///
+    /// **文体は決めない**: TTS の ON/OFF で語りが変わると chronicle/synopsis に残る記録まで
+    /// 再生設定で食い違う。音声前提の会話文体は `world` に書く (作者がパッケージ固有に決め、
+    /// TTS はその上の再生手段、と分離する)。package.yaml の `use_tts` から注入もできる。
+    #[serde(default)]
+    pub use_tts: bool,
     /// 役職のランダム割り当て (spec 06 Phase A)。宣言があれば [`Self::initial_state`] が
     /// 専用ストリームで shuffle して配る。詳細は [`RoleAssignment`]。
     #[serde(default)]

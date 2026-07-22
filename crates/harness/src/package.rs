@@ -48,6 +48,11 @@ pub struct PackageManifest {
     /// 宣言があれば全モジュールへ注入。省略時は各 scenario の宣言 (既定 `locked`)。
     #[serde(default)]
     pub facts_policy: Option<gm_core::FactsPolicy>,
+    /// 読み上げ (TTS) を作者が想定しているか。**セッション単位の性質**なので
+    /// (再生設定が章の途中で変わると体験が割れる) モジュールごとでなくパッケージが所有する。
+    /// 宣言があれば全モジュールへ注入。省略時は各 scenario の宣言 (既定 false)。
+    #[serde(default)]
+    pub use_tts: Option<bool>,
 }
 
 /// 主人公の宣言。各モジュールの `initial_stats`/`initial_skills` へ注入される。
@@ -143,6 +148,10 @@ pub fn inject_package(scenario: &mut Scenario, manifest: &PackageManifest) {
     // (既成事実は campaign 遷移でも持ち越すので、モジュールごとに権限が変わると不整合になる)。
     if let Some(policy) = manifest.facts_policy {
         scenario.facts_policy = policy;
+    }
+    // 読み上げの可否も同じくセッション単位 (章を跨いで一貫させる)。
+    if let Some(use_tts) = manifest.use_tts {
+        scenario.use_tts = use_tts;
     }
     if let Some(p) = &manifest.player {
         for (k, v) in &p.stats {

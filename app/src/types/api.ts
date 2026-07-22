@@ -224,6 +224,8 @@ export interface GameView {
   facts: FactView[];
   /** 既成事実のユーザー権限 (spec 20): "open" | "locked" (既定)。 */
   facts_policy: string;
+  /** 読み上げ (TTS) を作者が想定しているか (既定 false)。false なら操作を出さない。 */
+  use_tts: boolean;
 }
 
 /** 既成事実の 1 行 (spec 20)。並びは backend がスコア降順で返す (LLM 注入と同じ見え方)。 */
@@ -382,6 +384,8 @@ export interface TurnView {
   facts: FactView[] | null;
   /** 既成事実のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。 */
   facts_policy: string;
+  /** 読み上げの可否。campaign 遷移で盤面が変われば追従する。 */
+  use_tts: boolean;
 }
 
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。
