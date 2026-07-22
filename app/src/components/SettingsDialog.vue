@@ -545,6 +545,12 @@ onMounted(async () => {
                 @change="persistVoice"
               />
             </label>
+            <p
+              v-if="voice.engine === 'aivisSpeech' && voice.pitch !== 0"
+              class="text-warn/80 text-xs"
+            >
+              {{ t("settings.voice.pitchWarnAivis") }}
+            </p>
             <label class="block text-sm text-parchment/70">
               {{ t("settings.voice.volume", { value: Math.round(voice.volume * 100) }) }}
               <input
