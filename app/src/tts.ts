@@ -60,6 +60,18 @@ let builtWith = "";
 let splitSentence: ((text: string) => string[]) | null = null;
 /** 今読み上げている世代。stop() / 次のターンで進め、古い世代の残りを捨てる。 */
 let generation = 0;
+/**
+ * 読み上げの直列鎖。**1 文ずつ順に合成・再生する**ための連結 Promise。
+ *
+ * まとめてアダプタへ投入すると、ネットワーク型エンジン (VOICEVOX/AivisSpeech) では
+ * 全文の合成リクエストが**一斉に並列発射**される。ローカル GPU に十数本を同時に投げると
+ * 後続がライブラリ既定の 30 秒タイムアウトに掛かり、こちらは失敗を握り潰すので
+ * **その文が黙って飛ぶ** (読み上げが途中で切れたように聞こえる)。
+ *
+ * かといって 1 文ずつ await して積むと、その隙間に後発の `queue: true` が割り込んで
+ * 順序が崩れる。**自前の鎖に繋ぐ**ことで、直列と順序保存を同時に満たす。
+ */
+let chain: Promise<void> = Promise.resolve();
 
 /** この環境で読み上げできるか (WebView2/Chromium は speechSynthesis を持つ)。 */
 export function isSupported(): boolean {
@@ -243,9 +255,9 @@ export async function listVoices(
  * 語りを途中で切らずに繋ぐ。
  *
  * 長文は文単位に割る (Chrome 系は 1 発話が長いと途中で切れる既知の癖があり、ライブラリの
- * `splitSentence` がそのまま使える)。**全文をまとめてアダプタのキューへ投入する**のが要点 —
- * 1 文ずつ await して次を積むと、その隙間に後発の `queue: true` が割り込んで順序が崩れる。
- * 中断は `stop()` がキューごと捨てるので、まとめ投入でも打ち切りは効く。
+ * `splitSentence` がそのまま使える)。**自前の直列鎖 (`chain`) に繋ぐ**のが要点 —
+ * まとめて投入すると合成リクエストが並列発射されてタイムアウトで文が飛び、1 文ずつ
+ * await して積むと隙間に後発が割り込む。鎖なら直列と順序保存を同時に満たす。
  */
 export async function speak(text: string, opts?: { queue?: boolean }): Promise<void> {
   const body = text.trim();
@@ -259,11 +271,19 @@ export async function speak(text: string, opts?: { queue?: boolean }): Promise<v
   if (!opts?.queue) {
     a.stop();
     globalThis.speechSynthesis?.cancel();
+    chain = Promise.resolve(); // 前の鎖は世代チェックで空回りするので繋ぎ直す
   }
   const sentences = splitSentence ? splitSentence(body) : [body];
-  // stop() は待機中の Promise を reject する = 中断の正常系。読み上げ失敗もプレイを
-  // 止める理由にならないので握り潰す (TTS は装飾であって正本ではない)。
-  await Promise.all(sentences.map((sentence) => a.speakText(sentence).catch(() => {})));
+  for (const sentence of sentences) {
+    chain = chain.then(async () => {
+      // 鎖に積んだ後で打ち切られたら (stop / 次のターン) 残りは読まない。
+      if (mine !== generation) return;
+      // stop() は待機中の Promise を reject する = 中断の正常系。読み上げ失敗もプレイを
+      // 止める理由にならないので握り潰す (TTS は装飾であって正本ではない)。
+      await a.speakText(sentence).catch(() => {});
+    });
+  }
+  await chain;
 }
 
 /**
