@@ -104,9 +104,13 @@ const AUTHORED_COLOR_KEY = "kataribe.authoredColor";
 /** 既定の本文色 (tailwind の parchment)。カラーピッカーの初期値と「既定に戻す」に使う。 */
 export const DEFAULT_MSG_COLOR = "#e8ddc8";
 /**
- * 既定の**作者文**の色 (tailwind の glow 寄り)。作者が YAML に書いた確定文 (結末文・
- * 判定の結末) は GM の即興と混ぜると「どこまでが作者の意図か」が読み手から見えないので、
- * 既定から別色にしておく。
+ * 既定の**システム文**の色 (tailwind の glow 寄り)。シナリオ側が示す文 (場所の説明・
+ * 結末文・判定の結末) は GM の即興と混ぜると読み分けられないので、既定から別色にする。
+ *
+ * **id は `authored`・表示名は「システム文」**(この repo の id=機械用キー / title=表示名の
+ * 流儀)。id が provenance を指すのは、**どの文をこの色にするかの判定規則が「作者が書いたか」
+ * だから** — 一方プレイヤーから見えるのは「システムが示す文」という役割なので、UI では
+ * そちらを名乗る。なお `kind: "system"` は別物 (⚠ 警告・章替わり等の中央寄せ標識行)。
  */
 export const DEFAULT_AUTHORED_COLOR = "#f0d9a8";
 /** 本文フォントの選択肢 (id → CSS font-family)。OS 同梱フォントへのフォールバック連鎖で環境差を吸収。 */
