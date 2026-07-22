@@ -135,6 +135,9 @@ export const messages = {
       },
       voice: {
         heading: "読み上げ (TTS)",
+        useTtsNote: "読み上げは、パッケージの package.yaml に use_tts: true と書かれたシナリオでだけ使えます (作者が音声を想定して書いた盤面という宣言)。手元のシナリオで読み上げたい場合は、その package.yaml に use_tts: true を足してください。宣言のない盤面では下の設定は効きません。",
+        boardOn: "▸ 今のシナリオ: 読み上げ対応 (use_tts: true)",
+        boardOff: "▸ 今のシナリオ: 未対応 (package.yaml に use_tts: true がありません)",
         engine: "エンジン",
         engineWebSpeech: "ブラウザ内蔵 (導入不要)",
         engineVoicevox: "VOICEVOX",
@@ -573,6 +576,9 @@ export const messages = {
       },
       voice: {
         heading: "Narration voice (TTS)",
+        useTtsNote: "Narration voice only works in scenarios whose package.yaml declares use_tts: true (the author's declaration that the board was written with voice in mind). To enable it for a scenario you have locally, add use_tts: true to its package.yaml. Without that declaration the settings below have no effect.",
+        boardOn: "▸ Current scenario: voice enabled (use_tts: true)",
+        boardOff: "▸ Current scenario: not declared (no use_tts: true in package.yaml)",
         engine: "Engine",
         engineWebSpeech: "Browser built-in (no setup)",
         engineVoicevox: "VOICEVOX",

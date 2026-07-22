@@ -520,6 +520,12 @@ onMounted(async () => {
             <!-- 読み上げ (TTS)。作者が use_tts を宣言した盤面でだけ効く。 -->
             <hr class="border-ash/40" />
             <h3 class="text-parchment font-bold pt-1">{{ t("settings.voice.heading") }}</h3>
+            <!-- 前提の明示。use_tts の宣言が無い盤面では下の設定が一切効かないので、
+                 「設定したのに鳴らない」を設定画面の中で解決できるようにする。 -->
+            <p class="text-parchment/50 text-xs leading-relaxed">{{ t("settings.voice.useTtsNote") }}</p>
+            <p v-if="game.started" class="text-xs" :class="game.useTts ? 'text-ember/90' : 'text-warn/80'">
+              {{ game.useTts ? t("settings.voice.boardOn") : t("settings.voice.boardOff") }}
+            </p>
 
             <label class="block text-sm text-parchment/70">
               {{ t("settings.voice.engine") }}
