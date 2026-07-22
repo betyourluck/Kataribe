@@ -1352,6 +1352,23 @@ mod tests {
         );
     }
 
+    /// 【即興判定のダイスの形】`check` op に `count` が無い (1d{sides} 固定) ので、GM_SYSTEM が
+    /// 「合計ダイス (3d6 等) は即興で書けない → 挑戦を選べ」「d100 は 1d100 と書く」を刷り込む。
+    /// 3d6 を `sides: 18` と書かれると一様分布に化ける (engine は忠実に振るので却下できない) 対策。
+    #[test]
+    fn gm_system_limits_improvised_checks_to_a_single_die() {
+        let s = prompt::GM_SYSTEM;
+        assert!(s.contains("1 個のダイス"), "即興 check は 1 個だけである旨を刷り込む");
+        assert!(
+            s.contains("合計する判定") && s.contains("attempt_challenge"),
+            "合計ダイスが要る判定は挑戦へ寄せる (即興では書けない)"
+        );
+        assert!(
+            s.contains("1d100"),
+            "d100 は 2 個振る系でも位取りゆえ 1〜100 の一様分布 = 1d100 と書かせる"
+        );
+    }
+
     /// 【galge spine の機構】好感度の閾値トリガーが関係の「段」を刻み、名前付き goal に至る:
     /// 20→素を見せる、40→打ち明ける、50(+打ち明け)→告白。**インライン安定シナリオ**で機構を固定する
     /// (houkago の authored 内容は作者が随時いじるので、テストは配布コンテンツに依存させない)。

@@ -372,13 +372,16 @@ pub enum ImageMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Natural {
-    /// 最小目 (`roll == 1`)。大失敗 (fumble) の定番条件。`threshold` 不要。
+    /// 最小目 (ダイスが全部 1 = 素の合計 `roll == count`。1d なら出目 1、3d6 なら合計 3)。
+    /// 大失敗 (fumble) の定番条件。`threshold` 不要。
     Min,
-    /// 最大目 (`roll == sides`)。大成功 (crit) の定番条件。`threshold` 不要。
+    /// 最大目 (全部が最大 = `roll == sides * count`)。大成功 (crit) の定番条件。`threshold` 不要。
     Max,
-    /// `roll <= threshold`。下位帯を極にする (d100 で「20 以下は大失敗」等)。`threshold` 必須 (`1..=sides`)。
+    /// `roll <= threshold`。下位帯を極にする (d100 で「20 以下は大失敗」等)。`threshold` 必須
+    /// (`1..=count*sides`)。**`count >= 2` では合計の下限が `count` なのでそれ未満は不発火**。
     AtMost,
-    /// `roll >= threshold`。上位帯を極にする (d100 で「96 以上は大成功」等)。`threshold` 必須 (`1..=sides`)。
+    /// `roll >= threshold`。上位帯を極にする (d100 で「96 以上は大成功」等)。`threshold` 必須
+    /// (`1..=count*sides`)。**`count >= 2` では `count` 以下を書くと常時発火**。
     AtLeast,
 }
 
@@ -388,7 +391,7 @@ pub enum Natural {
 pub struct TierDef {
     /// この tier が発火する自然出目の極。
     pub natural: Natural,
-    /// `at_most`/`at_least` の閾値 (`1..=sides`、[`Scenario::validate`] が検査)。
+    /// `at_most`/`at_least` の閾値 (`1..=count*sides`、[`Scenario::validate`] が検査)。
     /// `min`/`max` では不要 (無視される)。省略時 `None`。
     #[serde(default)]
     pub threshold: Option<u32>,
@@ -836,7 +839,8 @@ pub enum ScenarioError {
     SpendStatUndeclared { key: StatKey },
     /// `push_cost.from` が player の宣言済み stat でない (幻の代償元。spec 18 Phase B)。
     PushCostStatUndeclared { key: StatKey },
-    /// tier の `at_most`/`at_least` 閾値が `1..=sides` の範囲外 (常時発火/絶対不発火の幻値)。
+    /// tier の `at_most`/`at_least` 閾値が `1..=count*sides` の範囲外 (常時発火/絶対不発火の幻値)。
+    /// `sides` フィールドには実際に検査した上限 (`count*sides`) が載る。
     TierThresholdOutOfRange {
         challenge: ChallengeId,
         tier: String,
@@ -1446,7 +1450,7 @@ impl Scenario {
                     });
                 }
             }
-            // at_most/at_least は threshold が必須かつ 1..=sides の範囲内であること
+            // at_most/at_least は threshold が必須かつ 1..=count*sides の範囲内であること
             // (欠落=無制限、範囲外=常時発火/絶対不発火の幻値。load 時に弾く)。min/max は threshold 不要。
             // percentile は tiers 自体を禁止済みなので additive のみ検査 (sides=0 での誤報を避ける)。
             if def.resolution == Resolution::Additive {
