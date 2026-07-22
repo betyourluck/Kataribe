@@ -9,6 +9,12 @@
  */
 import { onBeforeUnmount, ref } from "vue";
 import { t } from "../i18n";
+import { useGameStore } from "../stores/game";
+// ダイスを振る音。**アプリ同梱の UI 音**であって、パッケージのアセットではない —
+// 開帳カードはどの盤面でも出る提示層の仕掛けなので、作者に同梱を強いると
+// 「音を入れていない配布物だけ無音」になる (かつ汎用音を全パッケージが複製する)。
+// 鳴らすのは store.playSe 経由 = サウンド設定の音量/ミュートが効く。
+import diceSfx from "../assets/doubledice3.ogg";
 
 const props = defineProps<{
   /** 何の判定か (結果を含めない)。例「探索者 の目星判定」「1d20 (DC 12)」 */
@@ -23,10 +29,12 @@ const emit = defineEmits<{ (e: "revealed"): void }>();
 const state = ref<"idle" | "rolling">("idle");
 const display = ref("?");
 let timer: number | undefined;
+const game = useGameStore();
 
 function start() {
   if (state.value !== "idle") return;
   state.value = "rolling";
+  game.playSe(diceSfx); // 転がる音はスクランブルと同時 (出目より先に音が出ても漏れない)
   const t0 = performance.now();
   const DURATION = 1100; // スクランブル時間 (減速込み)
   const tick = () => {
