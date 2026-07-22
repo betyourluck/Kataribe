@@ -33,7 +33,7 @@ StateOp:                        # 内部タグ "op" 付き列挙
   - { op: set_flag,     key: FlagKey, value: bool }
   - { op: move,         to: LocationId }
   - { op: request_roll, sides: u32, dc: u32 }   # 生のダイス。結果は書かない。エンジンが振って裁く
-  - { op: check, entity: EntityId, stat: StatKey, sides: u32, dc: u32 }  # 技能判定。engine が 1d{sides}+stat修正 vs dc を裁定。stat 未宣言→却下。結果(CheckOutcome)は次ターンの語りに還流
+  - { op: check, entity: EntityId, stat: StatKey, sides: u32, dc: u32 }  # 技能判定。engine が 1d{sides}+stat修正 vs dc を裁定。stat 未宣言→却下。結果(CheckOutcome)は次ターンの語りに還流。**count は無い=即興は常に 1 個のダイス** (合計ダイス 3d6 等は authored challenge の専権。sides:18 での代用は一様分布に化けるが様式は整合性でないので engine は却下しない → GM_SYSTEM が「即興は 1 個・合計が要るなら attempt_challenge・d100 は 1d100」を接地, 2026-07-23)
   - { op: check_under, entity: EntityId, key: StatKey }  # d100 ロールアンダー即興判定 (spec 16)。engine が 1d100 を振り目標値=stat 現在値、roll<=目標値で成功。成功度 degree (critical=01 常成功/extreme<=値/5/hard<=値/2/regular/failure/fumble=目標値<50 なら 96-100・>=50 なら 100 のみ。判定順 critical 先勝ち・整数除算) も engine が決定論計算。帰結は持たない (成否+degree の surface のみ)。stat 未宣言→却下 (UnknownStat)。check_style=percentile の盤面で schema 露出 (additive では check と入替)
   - { op: attempt_challenge, entity: EntityId, challenge: ChallengeId }  # authored challenge への挑戦。LLM は challenge を「選ぶ」だけ(stat/sides/dc/tier/帰結flag は Scenario.challenges 側=author の専権)。大失敗/大成功(natural)で engine が帰結フラグを直書き→trigger 発火。未宣言 challenge→却下。fumble-as-trigger の核 (PoC-1)。resolution: percentile なら d100 ロールアンダー + degree 別帰結 (spec 16)
   # --- 数値ステータス: LLM は「意図」だけ提案、算術はエンジンが実行 (四則演算) ---
@@ -166,7 +166,8 @@ ChallengeMod:
   when:  "Gate(純粋述語)。真ならこの修正が乗る。flag/stat/attribute/skill/all/any どれでも"
   bonus: "i64。additive=出目合計に加える / percentile=**目標値に加える** (「技能値+10 相当」。bonus 正=有利の意味論を両様式で一致させる。原典のボーナス/ペナルティダイスは extra tens die 方式で分布が異なる近似 — 将来対応はここに dice: bonus|penalty を足す, spec 16 決定2)。apply 時に when を評価して合算"
 TierDef:
-  natural: "Min|Max。発火する自然出目(修正前の素の roll)の極。sides 相対(Max は d6→6/d20→20)=die サイズ非依存。リテラル(20等)で端を焼かない"
+  natural: "Min|Max|AtMost|AtLeast (spec 16 で幅を追加)。発火する自然出目(修正前の素の roll=stat 修正も modifiers も乗る前)の極。**count 個の素の合計で判定** (2026-07-20 の複数ダイス以降): Min=全部 1(roll==count。1d なら 1・3d6 なら 3) / Max=roll==count×sides。sides 相対=die サイズ非依存でリテラル(20等)で端を焼かない。AtMost/AtLeast は兄弟フィールド threshold と組 (roll<=/>=threshold)"
+  threshold: "Option<u32>。AtMost/AtLeast の閾値。範囲 1..=count×sides 必須(範囲外・欠落は TierThresholdOutOfRange で load 拒否)。Min/Max では不要。**到達可能帯は count..=count×sides** なので count>=2 で count 未満の AtMost は永久に不発火・count 以下の AtLeast は常時発火 (validate は弾かない=作者側の作法, 2026-07-23)"
   flag:    "任意。該当時に engine が直書きする帰結フラグ。allowed_flags 宣言必須(Scenario::validate が load 時に弾く)。flag 無しの tier は認識だけ(語り用)"
   narration: "任意。該当時の結末ナレーション。CheckOutcome.narration に載り毎回・同ターンに出る(フラグ無しの極でも語れる)"
   sound: "任意。該当時の結末効果音のアセット ID(audios/ 配下, 2026-07-09)。CheckOutcome.sound に載り毎回・同ターンに one-shot 再生(narration と同列の不透明 string)"
@@ -539,7 +540,7 @@ Map:                                # spec 15 (2026-07-16, ユーザー要望): 
 
 # --- プレイヤーが振るダイス (spec 18。開帳 / 決断 / 交互) ------------------------
 player_dice:
-  reveal: "Phase A (提示層のみ・engine 無改修): ダイス系 3 行 (rolls/checks/stat_rolls) の LogEntry に revealed カウンタ。伏せカード DiceReveal.vue = クリック→数字スクランブル 1.1s 減速→確定出目に着地→本物の行へ差し替え。1 クリック 1 判定の直列 (revealTargetIndex=最初の未開帳 entry のみ)。漏洩防止: ダイスより後ろの行 (ビート/goal バナー/遷移/エピローグ) + ビート SE + イベント CG/BGM を pendingTail/pendingSe/pendingVisual に保留し全開帳で flush。結末 SE は開帳と同時。未開帳中は入力ロック。設定 kataribe.diceReveal (既定 on・オフ切替=revealAll=脱出口)。揮発 (リロード=自動開帳は許容)"
+  reveal: "Phase A (提示層のみ・engine 無改修): ダイス系 3 行 (rolls/checks/stat_rolls) の LogEntry に revealed カウンタ。伏せカード DiceReveal.vue = クリック→数字スクランブル 1.1s 減速→確定出目に着地→本物の行へ差し替え。1 クリック 1 判定の直列 (revealTargetIndex=最初の未開帳 entry のみ)。漏洩防止: ダイスより後ろの行 (ビート/goal バナー/遷移/エピローグ) + ビート SE + イベント CG/BGM を pendingTail/pendingSe/pendingVisual に保留し全開帳で flush。結末 SE は開帳と同時。未開帳中は入力ロック。設定 kataribe.diceReveal (既定 on・オフ切替=revealAll=脱出口)。揮発 (リロード=自動開帳は許容)。**転がる音** (2026-07-23): 開帳クリックでスクランブルと同時に one-shot (出目より先に鳴っても帰結は漏れない)。**アプリ同梱の UI 音** (app/src/assets/doubledice3.ogg・Vite が emit・CSP は既存の media-src 'self' で足りる) であってパッケージのアセットではない — 開帳カードはどの盤面でも出る提示層の仕掛けゆえ authored にすると『音を同梱していない配布物だけ無音』になり汎用音を全パッケージが複製する。再生は store.playSe 経由=サウンド設定の音量/ミュートが効く。作者による差し替えは未実装"
   decision: "Phase B (第三の権能=プレイヤー op。LLM 非関与=トークン消費ゼロ): pushable/spendable challenge の**素の失敗** (fumble/tier 該当は final・player 主体のみ・実行可能な選択肢が在る時のみ) は帰結を適用せず GameState.pending_decisions に凍結 (PendingDecision{challenge,entity,stat,sides,roll(生の出目=差分計算の基準),modifier,total,dc,degree,pushed}・セーブ対象)。resolve_decision(Accept/Push/Buy{degree}) が確定時に初めてスロット適用→トリガー settle→flag_turns (帰結の確定遅延=apply 済み帰結は巻き戻せないため)。turn は増えない"
   push: "プッシュ = 失敗した判定を 1 度だけ振り直す (本流 RNG 消費・成否に依らず final)。失敗連鎖 on_push_failure→(fumble なら on_fumble)→on_failure (「押した失敗はより悪い」は authored の帰結が本線)。Scenario.push_cost{from,amount} は任意の上乗せ (既定 None=CoC7 原典どおり無償)。additive の振り直しは tier を判定しない (会心/大失敗の二重抽選を作らない)"
   buy: "差分買い = 失敗の差分を stat から払って成功に変える。Scenario.spend_rules{from,rate=1} (opt-in・from は player 宣言済み stat 必須=SpendStatUndeclared)。**engine は stat 名を解釈しない** (幸運は一例・金/正気度/霊力でも同じ機構=LUCK 固定変数を作らない、2026-07-20 ユーザー決定)。percentile は regular/hard/extreme の段階買い (閾値=dc, dc/2, dc/5・費用=(roll-閾値)×rate)、additive は success 一段 (費用=(dc-total)×rate)。払える段だけ提示 (上限=現在値−宣言 min。払って死ぬ設計も作者が書ける)。critical/fumble は買えない・プッシュとは排他 (どちらも final)"
