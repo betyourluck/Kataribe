@@ -25,9 +25,18 @@ export function isSupported(): boolean {
   return typeof globalThis.speechSynthesis !== "undefined";
 }
 
-/** ユーザー設定の ON/OFF (localStorage 永続)。既定 OFF = 黙って鳴り出さない。 */
+/**
+ * ユーザー設定の ON/OFF (localStorage 永続)。
+ *
+ * **未設定は ON** — 読み上げ操作が出るのは作者が `use_tts: true` と宣言した盤面だけなので、
+ * そこで既定 OFF にすると宣言が何も起こさない (ホバーで隠れた操作を自力で見つけて押すまで
+ * 無音のまま = 二重に隠れる)。宣言のない盤面では speak 自体が呼ばれないので、
+ * 既定 ON にしても勝手に喋り出す事故は起きない。
+ *
+ * 明示的に切った選択は記憶する (三値: 未設定=ON / "1"=ON / "0"=OFF)。
+ */
 export function loadEnabled(): boolean {
-  return localStorage.getItem(LS_ENABLED) === "1";
+  return localStorage.getItem(LS_ENABLED) !== "0";
 }
 
 export function saveEnabled(on: boolean): void {

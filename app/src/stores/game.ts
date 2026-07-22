@@ -378,7 +378,8 @@ interface GameState {
   factsPolicy: string;
   // 盤面が読み上げを想定しているか (作者宣言 use_tts)。false なら操作を一切出さない。
   useTts: boolean;
-  // ユーザーの読み上げ ON/OFF (localStorage 永続)。盤面が許してもユーザーが最終決定権を持つ。
+  // ユーザーの読み上げ ON/OFF (localStorage 永続、未設定は ON)。盤面が use_tts を宣言していても
+  // ユーザーが最終決定権を持つ (切れば記憶する)。
   ttsEnabled: boolean;
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;
@@ -447,7 +448,8 @@ export const useGameStore = defineStore("game", {
       facts: [],
       // 既定は locked = 宣言のない盤面では既成事実タブを出さない (GM 専用の内部記憶)。
       factsPolicy: "locked",
-      // 既定は無音 = 宣言のない盤面 (書庫の既刊すべて) で勝手に喋り出さない。
+      // 盤面の宣言。既定 false = 宣言のない盤面 (書庫の既刊すべて) では読み上げ経路に
+      // 一切入らない。読み上げの ON/OFF (ttsEnabled) は宣言された盤面の中でだけ効く。
       useTts: false,
       ttsEnabled: tts.loadEnabled(),
       compacting: false,
