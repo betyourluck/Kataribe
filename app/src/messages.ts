@@ -247,9 +247,10 @@ export const messages = {
       note: "押すか、払うか、受け入れるか。この決断に AI は関与しません。",
     },
     tts: {
-      enable: "読み上げを入にする",
-      disable: "読み上げを切にする",
-      skip: "読み上げを飛ばす",
+      // 押したらどうなるか (状態でなく動作) を示す。今 OFF なら「読み上げON」が出る。
+      enable: "読み上げON",
+      disable: "読み上げOFF",
+      skip: "読み上げをスキップ",
     },
     log: {
       you: "あなた",
@@ -662,9 +663,9 @@ export const messages = {
       note: "Push, pay, or accept. The AI has no part in this decision.",
     },
     tts: {
-      enable: "Turn narration voice on",
-      disable: "Turn narration voice off",
-      skip: "Skip narration voice",
+      enable: "Voice ON",
+      disable: "Voice OFF",
+      skip: "Skip voice",
     },
     log: {
       you: "You",
