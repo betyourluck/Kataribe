@@ -717,8 +717,9 @@ pub enum CheckStyle {
 /// 発見の順序を迂回できてしまう (engine は無傷でも語りが誘導される) ので、**誰が虚構を所有するか**
 /// を盤面ごとに宣言する (三権分立の「シナリオが縛る」脚)。
 ///
-/// **GM 自身の書き込みは policy に関係なく常時有効** — 起きたことの記録は authored intent を
-/// 壊さない。縛るのはユーザー側の操作だけ。
+/// **書き手はユーザーだけ** (2026-07-21 の収縮で GM の書き込み経路を撤去した) — ゆえに
+/// `locked` は実質「機能オフ」で、既成事実は一件も生まれず注入する節も出ない。ゲーム性
+/// (作者が設計した発見の順序) を守るための既定であって、裏で効いているわけではない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FactsPolicy {
