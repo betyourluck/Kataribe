@@ -21,9 +21,68 @@ import {
   profileMatchesConfig,
   type AiModelProfile,
 } from "../stores/game";
+import * as tts from "../tts";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const game = useGameStore();
+
+// --- 読み上げ (TTS) --------------------------------------------------------
+// 設定は localStorage に閉じる (backend も正本も関与しない = 提示層の設定)。
+const voice = ref<tts.TtsSettings>(tts.loadSettings());
+const voiceList = ref<{ id: string; label: string }[]>([]);
+const voiceStatus = ref("");
+const voiceBusy = ref(false);
+const voiceNeedsServer = computed(() => tts.needsServer(voice.value.engine));
+
+function persistVoice() {
+  tts.saveSettings(voice.value);
+}
+
+/** エンジンを変えたら話者と一覧を捨てる (別エンジンの ID は通用しない)。 */
+function onVoiceEngineChange() {
+  voice.value.speaker = "";
+  voice.value.serverUrl = "";
+  voiceList.value = [];
+  voiceStatus.value = "";
+  persistVoice();
+}
+
+/** 話者一覧の取得。ローカルエンジンはサーバーへ問い合わせるので失敗を表に出す。 */
+async function loadVoiceList() {
+  voiceBusy.value = true;
+  voiceStatus.value = "";
+  try {
+    voiceList.value = await tts.listVoices(voice.value);
+    voiceStatus.value = t("settings.voice.ok");
+  } catch (e) {
+    voiceList.value = [];
+    voiceStatus.value = t("settings.voice.failed", { msg: String(e) });
+  } finally {
+    voiceBusy.value = false;
+  }
+}
+
+/** 試聴。**失敗をそのまま見せる** (サーバー未起動を無音で誤魔化さない)。 */
+async function testVoice() {
+  voiceBusy.value = true;
+  voiceStatus.value = "";
+  try {
+    persistVoice();
+    await tts.test(t("settings.voice.testSample"));
+    voiceStatus.value = t("settings.voice.ok");
+  } catch (e) {
+    voiceStatus.value = t("settings.voice.failed", { msg: String(e) });
+  } finally {
+    voiceBusy.value = false;
+  }
+}
+
+function resetVoice() {
+  voice.value = { ...tts.DEFAULT_SETTINGS };
+  voiceList.value = [];
+  voiceStatus.value = "";
+  persistVoice();
+}
 
 type Tab = "display" | "graphics" | "sound" | "log" | "language" | "model" | "dev" | "help";
 const tab = ref<Tab>("display");
@@ -414,6 +473,106 @@ onMounted(async () => {
             <p class="text-parchment/40 text-xs">
               {{ t("settings.sound.note") }}
             </p>
+
+            <!-- 読み上げ (TTS)。作者が use_tts を宣言した盤面でだけ効く。 -->
+            <hr class="border-ash/40" />
+            <h3 class="text-parchment font-bold pt-1">{{ t("settings.voice.heading") }}</h3>
+
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.voice.engine") }}
+              <select
+                v-model="voice.engine"
+                class="mt-1 block w-64 rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
+                @change="onVoiceEngineChange"
+              >
+                <option value="webSpeech">{{ t("settings.voice.engineWebSpeech") }}</option>
+                <option value="voicevox">{{ t("settings.voice.engineVoicevox") }}</option>
+                <option value="aivisSpeech">{{ t("settings.voice.engineAivis") }}</option>
+              </select>
+            </label>
+            <p class="text-parchment/40 text-xs">
+              {{ voiceNeedsServer ? t("settings.voice.serverNote") : t("settings.voice.webSpeechNote") }}
+            </p>
+
+            <label v-if="voiceNeedsServer" class="block text-sm text-parchment/70">
+              {{ t("settings.voice.serverUrl") }}
+              <input
+                v-model="voice.serverUrl"
+                type="text"
+                :placeholder="tts.DEFAULT_SERVER_URL[voice.engine]"
+                class="mt-1 block w-80 rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
+                @change="persistVoice"
+              />
+            </label>
+
+            <div class="flex items-end gap-2">
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.voice.speaker") }}
+                <select
+                  v-model="voice.speaker"
+                  class="mt-1 block w-64 rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
+                  @change="persistVoice"
+                >
+                  <option value="">{{ t("settings.voice.speakerAuto") }}</option>
+                  <option v-for="v in voiceList" :key="v.id" :value="v.id">{{ v.label }}</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                class="px-2 py-1 text-xs rounded bg-ash/40 text-parchment/80 hover:bg-ash/60 disabled:opacity-40"
+                :disabled="voiceBusy"
+                @click="loadVoiceList"
+              >
+                {{ t("settings.voice.loadVoices") }}
+              </button>
+            </div>
+
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.voice.rate", { value: voice.rate.toFixed(1) }) }}
+              <input
+                v-model.number="voice.rate"
+                type="range" min="0.5" max="2" step="0.1"
+                class="mt-1 block w-64 accent-ember"
+                @change="persistVoice"
+              />
+            </label>
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.voice.pitch", { value: voice.pitch.toFixed(1) }) }}
+              <input
+                v-model.number="voice.pitch"
+                type="range" min="-1" max="1" step="0.1"
+                class="mt-1 block w-64 accent-ember"
+                @change="persistVoice"
+              />
+            </label>
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.voice.volume", { value: Math.round(voice.volume * 100) }) }}
+              <input
+                v-model.number="voice.volume"
+                type="range" min="0" max="1" step="0.05"
+                class="mt-1 block w-64 accent-ember"
+                @change="persistVoice"
+              />
+            </label>
+
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="px-3 py-1 text-sm rounded bg-ember/80 text-ink font-bold hover:bg-ember disabled:opacity-40"
+                :disabled="voiceBusy"
+                @click="testVoice"
+              >
+                {{ t("settings.voice.test") }}
+              </button>
+              <button
+                type="button"
+                class="px-2 py-1 text-xs rounded bg-ash/40 text-parchment/80 hover:bg-ash/60"
+                @click="resetVoice"
+              >
+                {{ t("settings.voice.reset") }}
+              </button>
+              <span v-if="voiceStatus" class="text-xs text-parchment/60 break-all">{{ voiceStatus }}</span>
+            </div>
           </section>
 
           <!-- ログ (会話ログのテキスト保存) -->
