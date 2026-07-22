@@ -2330,6 +2330,29 @@ async fn facts_delete(
 /// `package_path` 省略時は**プレイ中 session のパッケージ** (セーブモード = 保存先の真実は
 /// session が握る — ヘッダーの選択を後から変えても保存先はプレイ中のゲーム)。
 /// 指定時はそのパッケージ (ロードモード = ヘッダーで選択中のパッケージ、「続きから」と同じ意味論)。
+/// **ダイスの seed を振り直す** (プレイヤーの meta 操作)。
+///
+/// 決定論の裏返しで、セーブ地点からやり直しても出目が同じになり別の筋を見られない。
+/// その逃げ道で、save/load と同じ層にある — LLM の op にも authored トリガーにも経路が無い。
+///
+/// **ここでは保存しない**。次に保存される時 (受理ターンの autosave / 手動スロット) に
+/// 新しい seed が書かれる。押しただけで既存のセーブを塗り替えないための線引き
+/// (押した直後にやめれば、セーブは元の seed のまま残る)。
+#[tauri::command]
+async fn reset_seed(session: tauri::State<'_, SharedSession>) -> Result<u64, String> {
+    let mut guard = session.lock().await;
+    let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+    // OS 時刻のナノ秒を種にする (gm_core は純粋なので乱数源を持たない = 上位の責務)。
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+        // 同一ナノ秒で二度押しても同じ種にならないよう、現在の seed を混ぜる。
+        ^ sess.state.rng.seed.rotate_left(17);
+    sess.state.reseed(seed);
+    Ok(seed)
+}
+
 #[tauri::command]
 async fn list_save_slots(
     app: tauri::AppHandle,
@@ -3122,6 +3145,7 @@ pub fn run() {
             play_contest_round,
             list_packages,
             list_save_slots,
+            reset_seed,
             save_slot,
             load_slot,
             get_llm_config,

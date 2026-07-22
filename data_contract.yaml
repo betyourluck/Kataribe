@@ -13,6 +13,7 @@ GameState:
   flags: { FlagKey: bool }      # 許可フラグのみ。SetFlag(true) は flag_rules の gate 達成時のみ
   entities: { EntityId: { StatKey: i64 } }  # キャラ別の数値の真実。算術はエンジン、LLMは値を持てない。"player" は主人公
   rng: { seed: u64, cursor: u64 }  # ダイスは決定論・監査可能。LLMは結果を持たない
+  rng_reset: "**シードのリセット** (2026-07-22)。`GameState::reseed(seed)` が rng を {seed, cursor:0} へ差し替える。**プレイヤーの meta 操作**であって LLM も authored トリガーも触れない (op も Gate も無い = 語りの内側から運命を振り直す経路は存在しない。save/load と同じ層)。動機: セーブ地点からやり直しても出目が同じで別の筋を見られない (決定論の裏返し)。**基本はゲーム開始時のシードのまま**で、ロードでも元のシードが残る (現状不変) — リセットを押した後にセーブされた時だけ新しいシードが書かれる。派生ストリームのうち投票の同数抽選 (VOTE_RNG) は eval 時に state.rng.seed から派生するのでリセットが波及するが、配役 (ROLE_RNG) は initial_state 時のみなので不変 (途中で役職が変わらないのが正しい)。cursor を 0 に戻すのは、同じ seed 内で位置だけずらすと『前回の続きの出目』になり得て『別の筋』にならないため"
   turn: u32                     # 受理されたデルタ数。却下では進まない
   fired: [TriggerId]            # 発火済みトリガー集合 (Phase C)。edge-triggered once の latch。セーブ対象
   skills: { EntityId: [SkillId] }  # キャラ別の獲得済み能力 (閉世界)。初期=宣言集合、開花は authored トリガーのみ

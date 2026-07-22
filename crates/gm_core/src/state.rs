@@ -167,6 +167,22 @@ pub struct PendingDecision {
 }
 
 impl GameState {
+    /// ダイスの seed を差し替える (**プレイヤーの meta 操作**)。
+    ///
+    /// 決定論の裏返しで、セーブ地点からやり直しても出目が同じになり別の筋を見られない。
+    /// これはその逃げ道で、**save/load と同じ層**にある — LLM の op にも authored トリガーにも
+    /// 経路が無く、語りの内側から運命を振り直すことは構造的にできない。
+    ///
+    /// `cursor` も 0 に戻す。位置だけずらすと「前回の続きの出目」になり得て、
+    /// 「別の筋を見る」という目的を満たさないため。
+    ///
+    /// 派生ストリームのうち、投票の同数抽選 (VOTE_RNG) は評価時に `rng.seed` から派生するので
+    /// リセットが波及する。配役 (ROLE_RNG) は `initial_state` 時にしか回さないので不変
+    /// (途中で役職が入れ替わらないのが正しい)。
+    pub fn reseed(&mut self, seed: u64) {
+        self.rng = RngState { seed, cursor: 0 };
+    }
+
     /// 開始地点と RNG seed から初期状態を作る。
     pub fn new(location: impl Into<LocationId>, seed: u64) -> Self {
         Self {

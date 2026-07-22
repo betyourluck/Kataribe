@@ -261,6 +261,20 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             </div>
             <div v-else class="text-parchment/30">{{ t("state.none") }}</div>
           </div>
+
+          <!-- シードリセット (プレイヤーの meta 操作)。セーブ地点からやり直しても出目が
+               同じ = 決定論の裏返しへの逃げ道。誤爆すると「この先の運命」が黙って変わる
+               のに見た目は何も動かないので、確認ダイアログを挟む。 -->
+          <div class="mt-4 pt-3 border-t border-ash/40 flex justify-end">
+            <button
+              type="button"
+              class="px-2 py-1 rounded text-[11px] text-parchment/40 hover:text-ember hover:bg-ash/40 transition-colors"
+              :title="t('state.resetSeedHint')"
+              @click="game.resetSeed()"
+            >
+              {{ t("state.resetSeed") }}
+            </button>
+          </div>
         </template>
 
         <!-- 3枚め「マップ」(spec 15): 訪問済み+1歩先の有向グラフ。 -->

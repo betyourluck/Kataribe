@@ -6379,3 +6379,42 @@ locations:
         let _ = old_state;
     }
 }
+
+#[cfg(test)]
+mod reseed_tests {
+    use crate::{GameState, RngState};
+
+    /// 【シードのリセット】セーブ地点からやり直しても出目が同じ、という決定論の裏返しへの
+    /// 逃げ道。`reseed` は seed を差し替え **cursor も 0 に戻す** (位置だけずらすと
+    /// 「前回の続きの出目」になり得て『別の筋を見る』目的を満たさない)。
+    ///
+    /// **同じ seed へ戻せば元の列が完全に再現する**ことも固定する — リセットは
+    /// 決定論そのものを壊さない (監査可能性は保たれる)。
+    #[test]
+    fn reseed_replaces_the_dice_stream_and_rewinds_the_cursor() {
+        let mut a = GameState::new("room", 42);
+        let original: Vec<u32> = (0..5).map(|_| a.rng.roll(20)).collect();
+        assert_eq!(a.rng.cursor, 5);
+
+        // リセット後は別の列になり、cursor は 0 から。
+        a.reseed(1234);
+        assert_eq!(a.rng, RngState { seed: 1234, cursor: 0 });
+        let after: Vec<u32> = (0..5).map(|_| a.rng.roll(20)).collect();
+        assert_ne!(original, after, "seed が変われば別の筋になる");
+
+        // 同じ seed へ戻せば元どおり = 決定論は壊れていない。
+        a.reseed(42);
+        let replay: Vec<u32> = (0..5).map(|_| a.rng.roll(20)).collect();
+        assert_eq!(original, replay, "同 seed なら完全再現 (監査可能性は不変)");
+
+        // 他の正本 (所持品・フラグ・ターン等) には触らない。
+        let mut b = GameState::new("room", 7);
+        b.add_to_inventory("player", "鍵");
+        b.turn = 3;
+        let before = b.clone();
+        b.reseed(999);
+        assert_eq!(b.inventory, before.inventory);
+        assert_eq!(b.turn, before.turn);
+        assert_eq!(b.location, before.location);
+    }
+}

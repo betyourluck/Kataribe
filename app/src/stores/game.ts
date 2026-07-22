@@ -559,6 +559,23 @@ export const useGameStore = defineStore("game", {
       tts.stop();
     },
 
+    /**
+     * ダイスの seed を振り直す (プレイヤーの meta 操作。save/load と同じ層)。
+     * 押した時点では保存しない — 次に保存される時に新しい seed が書かれる。
+     * 分岐した事実は会話ログに残す (いつ筋が変わったかを後から辿れるように)。
+     */
+    async resetSeed() {
+      if (!this.started) return;
+      if (!(await this.askConfirm(t("state.resetSeedConfirm"), t("state.resetSeed")))) return;
+      try {
+        await invoke<number>("reset_seed");
+        this.log.push({ kind: "system", text: t("state.resetSeedDone") });
+        this.logToast = t("state.resetSeedDone");
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+
     // 自前の確認ダイアログを開き、ユーザーの選択 (OK=true / キャンセル=false) を Promise で返す。
     // WebView2 の window.confirm は本文に tauri://localhost を混ぜてしまうので、これで置き換える。
     // 二重呼び出し (前の確認が未解決) は前をキャンセル扱いで畳んでから開く。
