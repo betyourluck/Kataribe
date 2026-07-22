@@ -36,6 +36,8 @@ const voiceList = ref<tts.VoiceOption[]>(tts.loadVoiceList(voice.value));
 const voiceStatus = ref("");
 const voiceBusy = ref(false);
 const voiceNeedsServer = computed(() => tts.needsServer(voice.value.engine));
+const voiceHasList = computed(() => tts.supportsVoiceList(voice.value.engine));
+const voiceHasPitch = computed(() => tts.supportsPitchAndVolume(voice.value.engine));
 
 function persistVoice() {
   tts.saveSettings(voice.value);
@@ -537,6 +539,7 @@ onMounted(async () => {
                 <option value="webSpeech">{{ t("settings.voice.engineWebSpeech") }}</option>
                 <option value="voicevox">{{ t("settings.voice.engineVoicevox") }}</option>
                 <option value="aivisSpeech">{{ t("settings.voice.engineAivis") }}</option>
+                <option value="openaiCompatible">{{ t("settings.voice.engineOpenai") }}</option>
               </select>
             </label>
             <p class="text-parchment/40 text-xs">
@@ -553,12 +556,37 @@ onMounted(async () => {
                 @change="onVoiceUrlChange"
               />
             </label>
+            <p v-if="voice.engine === 'openaiCompatible'" class="text-warn/70 text-xs leading-relaxed">
+              {{ t("settings.voice.openaiNote") }}
+            </p>
+            <label v-if="voice.engine === 'openaiCompatible'" class="block text-sm text-parchment/70">
+              {{ t("settings.voice.model") }}
+              <input
+                v-model="voice.model"
+                type="text"
+                placeholder="irodori-tts"
+                class="mt-1 block w-full rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
+                @change="persistVoice"
+              />
+              <span class="block mt-1 text-parchment/40 text-xs">{{ t("settings.voice.modelNote") }}</span>
+            </label>
 
             <!-- 話者は**インラインのリストボックス** (size 付き)。ネイティブの select は
                  ポップアップを OS が描くので CSS で高さを縛れず、話者が多いと画面外へ
                  はみ出して下まで届かない。size を付けると枠内描画になり、高さ固定 +
                  スクロールが効く。 -->
-            <label class="block text-sm text-parchment/70">
+            <!-- 話者一覧を持たないエンジン (OpenAI 互換) は自由入力。voice の語彙は
+                 サーバー実装ごとに違い、共通の列挙 API が無い。 -->
+            <label v-if="!voiceHasList" class="block text-sm text-parchment/70">
+              {{ t("settings.voice.speakerFree") }}
+              <input
+                v-model="voice.speaker"
+                type="text"
+                class="mt-1 block w-full rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
+                @change="persistVoice"
+              />
+            </label>
+            <label v-else class="block text-sm text-parchment/70">
               {{ t("settings.voice.speaker") }}
               <select
                 v-model="voice.speaker"
@@ -574,6 +602,7 @@ onMounted(async () => {
               </select>
             </label>
             <button
+              v-if="voiceHasList"
               type="button"
               class="px-2 py-1 text-xs rounded bg-ash/40 text-parchment/80 hover:bg-ash/60 disabled:opacity-40"
               :disabled="voiceBusy"
@@ -596,7 +625,8 @@ onMounted(async () => {
               <input
                 v-model.number="voice.pitch"
                 type="range" min="-1" max="1" step="0.1"
-                class="mt-1 block w-64 accent-ember"
+                :disabled="!voiceHasPitch"
+                class="mt-1 block w-64 accent-ember disabled:opacity-30"
                 @change="persistVoice"
               />
             </label>
@@ -611,7 +641,8 @@ onMounted(async () => {
               <input
                 v-model.number="voice.volume"
                 type="range" min="0" max="1" step="0.05"
-                class="mt-1 block w-64 accent-ember"
+                :disabled="!voiceHasPitch"
+                class="mt-1 block w-64 accent-ember disabled:opacity-30"
                 @change="persistVoice"
               />
             </label>

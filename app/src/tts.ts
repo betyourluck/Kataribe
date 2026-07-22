@@ -11,7 +11,7 @@
 import type { VoiceEngineAdapter } from "@aituber-onair/voice";
 
 /** 対応エンジン。ブラウザ内蔵は導入ゼロ、ローカル 2 種は別アプリの常駐が要る。 */
-export type TtsEngine = "webSpeech" | "voicevox" | "aivisSpeech";
+export type TtsEngine = "webSpeech" | "voicevox" | "aivisSpeech" | "openaiCompatible";
 
 export interface TtsSettings {
   engine: TtsEngine;
@@ -25,6 +25,8 @@ export interface TtsSettings {
   pitch: number;
   /** 音量。1.0 = 標準・最大。 */
   volume: number;
+  /** OpenAI 互換エンドポイントのモデル名 (**必須** — 空だとライブラリが例外を投げる)。 */
+  model: string;
 }
 
 /** ローカルエンジンの既定エンドポイント (ライブラリの定数と同じ値)。 */
@@ -32,7 +34,26 @@ export const DEFAULT_SERVER_URL: Record<TtsEngine, string> = {
   webSpeech: "",
   voicevox: "http://localhost:50021",
   aivisSpeech: "http://localhost:10101",
+  // OpenAI 互換は**エンドポイント全体**を渡す (base URL ではない)。既定は
+  // Irodori-TTS-Server の既定ポート。他の OpenAI 互換 TTS サーバーにも同じ口で刺さる。
+  openaiCompatible: "http://localhost:8088/v1/audio/speech",
 };
+
+/**
+ * 話者一覧をサーバーから引けるか。**OpenAI 互換は非対応** (ライブラリが例外を投げる) —
+ * voice の語彙はサーバー実装ごとに違い、共通の列挙 API が無いため。UI は自由入力にする。
+ */
+export function supportsVoiceList(engine: TtsEngine): boolean {
+  return engine !== "openaiCompatible";
+}
+
+/**
+ * 高さ・音量を持つか。**OpenAI 互換は速度 (`speed`) しか持たない** — API の仕様であって
+ * 実装の手抜きではないので、UI 側でスライダを無効化して誤解を作らない。
+ */
+export function supportsPitchAndVolume(engine: TtsEngine): boolean {
+  return engine !== "openaiCompatible";
+}
 
 /** ブラウザ内蔵以外は外部サーバーが要る (UI が導入の注意を出す判断に使う)。 */
 export function needsServer(engine: TtsEngine): boolean {
@@ -46,6 +67,7 @@ export const DEFAULT_SETTINGS: TtsSettings = {
   rate: 1.0,
   pitch: 0,
   volume: 1.0,
+  model: "",
 };
 
 const LS_ENABLED = "kataribe.tts.enabled";
@@ -146,6 +168,15 @@ function engineOptions(s: TtsSettings): Record<string, unknown> {
         aivisSpeechSpeedScale: s.rate,
         aivisSpeechPitchScale: s.pitch * 0.15,
         aivisSpeechVolumeScale: s.volume,
+      };
+    case "openaiCompatible":
+      // **未検証** (2026-07-22): サーバーを立てずに口だけ作った。CORS を返すか、
+      // 実際に鳴るかは実サーバーで要確認。速度以外のパラメータは API に無い。
+      return {
+        engineType: "openaiCompatible",
+        openAiCompatibleApiUrl: effectiveUrl(s),
+        openAiCompatibleModel: s.model.trim(),
+        openAiCompatibleSpeed: s.rate,
       };
     default:
       return {
