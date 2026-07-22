@@ -36,8 +36,8 @@ function statRollFinal(sr: StatRollView): number {
       <!-- 開幕描写 -->
       <p
         v-if="entry.kind === 'opening'"
-        class="text-glow/90 italic whitespace-pre-wrap leading-relaxed"
-        :style="game.narrationStyle"
+        class="italic whitespace-pre-wrap leading-relaxed"
+        :style="game.authoredStyle"
       >
         {{ entry.text }}
       </p>
