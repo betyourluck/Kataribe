@@ -543,7 +543,7 @@ onMounted(async () => {
                 v-model="voice.serverUrl"
                 type="text"
                 :placeholder="tts.DEFAULT_SERVER_URL[voice.engine]"
-                class="mt-1 block w-80 rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
+                class="mt-1 block w-full rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
                 @change="onVoiceUrlChange"
               />
             </label>
@@ -557,12 +557,14 @@ onMounted(async () => {
               <select
                 v-model="voice.speaker"
                 size="8"
-                class="mt-1 block w-64 h-44 overflow-y-auto rounded bg-ink border border-ash/60 px-1 py-1 text-parchment"
+                class="mt-1 block w-full h-44 overflow-y-auto rounded bg-ink border border-ash/60 px-1 py-1 text-parchment"
                 @change="persistVoice"
               >
                 <option value="">{{ t("settings.voice.speakerAuto") }}</option>
-                <option v-if="orphanSpeaker" :value="orphanSpeaker">{{ orphanSpeaker }}</option>
-                <option v-for="v in voiceList" :key="v.id" :value="v.id">{{ v.label }}</option>
+                <option v-if="orphanSpeaker" :value="orphanSpeaker" :title="orphanSpeaker">{{ orphanSpeaker }}</option>
+                <!-- 話者名は長くなりうる (「れな(現実20代女子AIボイチェン@…」等)。option は
+                     折り返さず切れるので、全文は title (hover) で読めるようにする。 -->
+                <option v-for="v in voiceList" :key="v.id" :value="v.id" :title="v.label">{{ v.label }}</option>
               </select>
             </label>
             <button
