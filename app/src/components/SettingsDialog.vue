@@ -548,28 +548,31 @@ onMounted(async () => {
               />
             </label>
 
-            <div class="flex items-end gap-2">
-              <label class="block text-sm text-parchment/70">
-                {{ t("settings.voice.speaker") }}
-                <select
-                  v-model="voice.speaker"
-                  class="mt-1 block w-64 rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
-                  @change="persistVoice"
-                >
-                  <option value="">{{ t("settings.voice.speakerAuto") }}</option>
-                  <option v-if="orphanSpeaker" :value="orphanSpeaker">{{ orphanSpeaker }}</option>
-                  <option v-for="v in voiceList" :key="v.id" :value="v.id">{{ v.label }}</option>
-                </select>
-              </label>
-              <button
-                type="button"
-                class="px-2 py-1 text-xs rounded bg-ash/40 text-parchment/80 hover:bg-ash/60 disabled:opacity-40"
-                :disabled="voiceBusy"
-                @click="loadVoiceList"
+            <!-- 話者は**インラインのリストボックス** (size 付き)。ネイティブの select は
+                 ポップアップを OS が描くので CSS で高さを縛れず、話者が多いと画面外へ
+                 はみ出して下まで届かない。size を付けると枠内描画になり、高さ固定 +
+                 スクロールが効く。 -->
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.voice.speaker") }}
+              <select
+                v-model="voice.speaker"
+                size="8"
+                class="mt-1 block w-64 h-44 overflow-y-auto rounded bg-ink border border-ash/60 px-1 py-1 text-parchment"
+                @change="persistVoice"
               >
-                {{ t("settings.voice.loadVoices") }}
-              </button>
-            </div>
+                <option value="">{{ t("settings.voice.speakerAuto") }}</option>
+                <option v-if="orphanSpeaker" :value="orphanSpeaker">{{ orphanSpeaker }}</option>
+                <option v-for="v in voiceList" :key="v.id" :value="v.id">{{ v.label }}</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              class="px-2 py-1 text-xs rounded bg-ash/40 text-parchment/80 hover:bg-ash/60 disabled:opacity-40"
+              :disabled="voiceBusy"
+              @click="loadVoiceList"
+            >
+              {{ t("settings.voice.loadVoices") }}
+            </button>
 
             <label class="block text-sm text-parchment/70">
               {{ t("settings.voice.rate", { value: voice.rate.toFixed(1) }) }}

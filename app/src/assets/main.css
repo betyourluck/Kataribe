@@ -56,3 +56,9 @@ select option {
 select option:disabled {
   @apply text-parchment/40;
 }
+/* size 付き (インラインのリストボックス) では選択行のハイライトが要る。
+   option に一律 bg-ink を当てているので、指定しないと「どれを選んでいるか」が
+   見えなくなる。checked に ember を敷いて選択を明示する。 */
+select[size] option:checked {
+  @apply bg-ember text-ink;
+}
