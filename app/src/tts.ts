@@ -80,6 +80,8 @@ let booting: Promise<VoiceEngineAdapter | null> | null = null;
 let builtWith = "";
 /** 文分割 (長文の打ち切り対策)。アダプタと同じ動的 import から受け取る。 */
 let splitSentence: ((text: string) => string[]) | null = null;
+/** 選んだ日本語音声名 (webSpeech)。アダプタを組み直すたびに探し直さないため。 */
+let pickedJaVoice = "";
 /** 今読み上げている世代。stop() / 次のターンで進め、古い世代の残りを捨てる。 */
 let generation = 0;
 /**
@@ -194,6 +196,9 @@ function engineOptions(s: TtsSettings): Record<string, unknown> {
  * OS ロケール次第で英語音声になりうるので、ja を明示的に拾う。
  */
 async function pickJapaneseVoice(): Promise<string> {
+  // 一度見つけたら覚える。中断のたびにアダプタを組み直す (stop() の注記) ので、
+  // ここで毎回 voiceschanged を最大 1 秒待つと読み上げの出だしが遅れる。
+  if (pickedJaVoice) return pickedJaVoice;
   const synth = globalThis.speechSynthesis;
   if (!synth) return "";
   let voices = synth.getVoices();
@@ -207,7 +212,10 @@ async function pickJapaneseVoice(): Promise<string> {
       }, { once: true });
     });
   }
-  return voices.find((v) => /^ja/i.test(v.lang))?.name ?? "";
+  // 見つからなかった時は覚えない (後から voices が揃う環境で拾い直せるように)。
+  const found = voices.find((v) => /^ja/i.test(v.lang))?.name ?? "";
+  if (found) pickedJaVoice = found;
+  return found;
 }
 
 /** アダプタを遅延生成する (TTS を使うまでエンジン群のチャンクを読み込まない)。 */
@@ -293,17 +301,18 @@ export async function listVoices(
 export async function speak(text: string, opts?: { queue?: boolean }): Promise<void> {
   const body = text.trim();
   if (!body) return;
-  // 割り込みは世代を進める。続けて足す時は現在の世代に相乗りする (互いを無効化しない)。
-  const mine = opts?.queue ? generation : ++generation;
+  if (!opts?.queue) {
+    // 割り込み = 前の読み上げを捨てる。世代を進めるのもアダプタの始末も stop() が担う
+    // ので、**アダプタを取る前に**呼ぶ (後だと今から使うアダプタを捨ててしまう)。
+    stop();
+    chain = Promise.resolve(); // 前の鎖は世代チェックで空回りするので繋ぎ直す
+  }
+  // 続けて足す時は現在の世代に相乗りする (互いを無効化しない)。
+  const mine = generation;
   const a = await ensureAdapter();
   if (!a) return;
   // アダプタ生成を待つ間に stop() / 次のターンが来ていたら、もう投入しない。
   if (mine !== generation) return;
-  if (!opts?.queue) {
-    a.stop();
-    globalThis.speechSynthesis?.cancel();
-    chain = Promise.resolve(); // 前の鎖は世代チェックで空回りするので繋ぎ直す
-  }
   const sentences = splitSentence ? splitSentence(body) : [body];
   for (const sentence of sentences) {
     chain = chain.then(async () => {
@@ -328,10 +337,32 @@ export async function test(sample: string): Promise<void> {
   await a.speakText(sample);
 }
 
-/** 読み上げを即座に止める (スキップ / OFF / 新しいターン / ゲーム切り替え)。 */
+/**
+ * 読み上げを即座に止める (スキップ / OFF / 新しいターン / ゲーム切り替え)。
+ *
+ * **再生中に止めたアダプタは二度と喋らない** (ライブラリの罠・実測で確認):
+ * `BrowserAudioPlayer.stop()` は `audioElement.pause()` と `currentTime = 0` をするだけで
+ * `play()` の Promise を settle しない (pause は `ended` も `error` も発火しない)。すると
+ * `VoiceEngineAdapter.processQueue` が `await playPreparedSpeech` で永久に止まり
+ * **`isProcessingQueue` が true のまま残る** → 以後の `speakText` は
+ * `if (this.isProcessingQueue) return;` で即座に捨てられる (キューに積まれたまま鳴らない)。
+ * こちらは失敗を握り潰す設計なので、症状は例外でなく**無音**として現れる。
+ *
+ * ゆえに**再生中に止めたときだけ**アダプタを捨てて次の speak で組み直す。合成待ちや
+ * 停止済みならライブラリのキューは正常に巻き戻るので、そのまま使い回す。
+ * ブラウザ内蔵 (webSpeech) は self-playing で `speechSynthesis.cancel()` が発話を
+ * settle させるため本来この罠を踏まないが、判定を分けても得がないので一律で扱う。
+ */
 export function stop(): void {
   generation++;
-  adapter?.stop();
+  const dying = adapter;
+  const wasPlaying = dying?.isPlaying() ?? false; // stop() が畳む前に見る
+  dying?.stop();
   // アダプタ生成前に停止が来た場合の保険。
   globalThis.speechSynthesis?.cancel();
+  if (wasPlaying) {
+    adapter = null;
+    booting = null;
+    builtWith = "";
+  }
 }
