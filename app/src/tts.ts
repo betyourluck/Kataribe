@@ -236,30 +236,34 @@ export async function listVoices(
 }
 
 /**
- * narration を読み上げる。**前の読み上げは必ず打ち切る** — ターンが進んだのに前の語りが
+ * 読み上げる。既定は**前の読み上げを打ち切って置き換える** — ターンが進んだのに前の語りが
  * 喋り続けるのは「矛盾しない GM」の音声版の破れになる。
  *
- * 長文は文単位に割って順に流す (Chrome 系は 1 発話が長いと途中で切れる既知の癖があり、
- * ライブラリの `splitSentence` がそのまま使える)。
+ * `queue: true` は**前に続けて足す**。同じターンの中で後から出る文 (エピローグ) 用で、
+ * 語りを途中で切らずに繋ぐ。
+ *
+ * 長文は文単位に割る (Chrome 系は 1 発話が長いと途中で切れる既知の癖があり、ライブラリの
+ * `splitSentence` がそのまま使える)。**全文をまとめてアダプタのキューへ投入する**のが要点 —
+ * 1 文ずつ await して次を積むと、その隙間に後発の `queue: true` が割り込んで順序が崩れる。
+ * 中断は `stop()` がキューごと捨てるので、まとめ投入でも打ち切りは効く。
  */
-export async function speak(text: string): Promise<void> {
+export async function speak(text: string, opts?: { queue?: boolean }): Promise<void> {
   const body = text.trim();
   if (!body) return;
+  // 割り込みは世代を進める。続けて足す時は現在の世代に相乗りする (互いを無効化しない)。
+  const mine = opts?.queue ? generation : ++generation;
   const a = await ensureAdapter();
   if (!a) return;
-  stop();
-  const mine = ++generation;
-  for (const sentence of splitSentence ? splitSentence(body) : [body]) {
-    // 世代が進んでいたら (= スキップされた/次のターンが来た) 残りは捨てる。
-    if (mine !== generation) return;
-    try {
-      await a.speakText(sentence);
-    } catch {
-      // stop() は待機中の Promise を reject する = 中断の正常系。読み上げ失敗も
-      // プレイを止める理由にならないので握り潰す (TTS は装飾であって正本ではない)。
-      return;
-    }
+  // アダプタ生成を待つ間に stop() / 次のターンが来ていたら、もう投入しない。
+  if (mine !== generation) return;
+  if (!opts?.queue) {
+    a.stop();
+    globalThis.speechSynthesis?.cancel();
   }
+  const sentences = splitSentence ? splitSentence(body) : [body];
+  // stop() は待機中の Promise を reject する = 中断の正常系。読み上げ失敗もプレイを
+  // 止める理由にならないので握り潰す (TTS は装飾であって正本ではない)。
+  await Promise.all(sentences.map((sentence) => a.speakText(sentence).catch(() => {})));
 }
 
 /**

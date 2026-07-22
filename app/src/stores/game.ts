@@ -324,6 +324,9 @@ interface GameState {
   pendingSe: (string | null)[];
   // 保留中の見た目 (イベント CG 背景 / BGM)。発火 CG は結果の漏洩そのものなので開帳まで遅延。
   pendingVisual: { background: string | null; bgm: string | null } | null;
+  // 開帳待ちの読み上げ (エピローグ)。**結末を語る文なので、ダイスが伏せられたまま
+  // 喋ると出目の帰結を音声で漏らす** — pendingTail と同じ契機で解き放つ。
+  pendingSpeech: string | null;
   // --- 決断つき判定 (spec 18 Phase B) ---
   // 決断待ち (受け入れ/押す/払う)。非 null の間は入力を締め、全開帳後に決断パネルを出す。
   decision: DecisionView | null;
@@ -426,6 +429,7 @@ export const useGameStore = defineStore("game", {
       pendingTail: [],
       pendingSe: [],
       pendingVisual: null,
+      pendingSpeech: null,
       decision: null,
       deciding: false,
       contest: null,
@@ -1107,6 +1111,7 @@ export const useGameStore = defineStore("game", {
       this.pendingTail = [];
       this.pendingSe = [];
       this.pendingVisual = null;
+      this.pendingSpeech = null;
       // 決断待ち (B)・対決 (C) はセーブを跨いで生きる — 再開時に復元する (新規は null)。
       this.decision = view.decision ?? null;
       this.deciding = false;
@@ -1379,6 +1384,11 @@ export const useGameStore = defineStore("game", {
         if (this.pendingVisual.bgm !== this.bgm) this.bgm = this.pendingVisual.bgm;
         this.pendingVisual = null;
       }
+      if (this.pendingSpeech) {
+        const text = this.pendingSpeech;
+        this.pendingSpeech = null;
+        if (this.useTts && this.ttsEnabled) void tts.speak(text, { queue: true });
+      }
     },
 
     async playTurn(action: string) {
@@ -1475,6 +1485,12 @@ export const useGameStore = defineStore("game", {
           if (turn.epilogue) {
             pushLog({ kind: "system", text: t("store.epilogueMarker") });
             pushLog({ kind: "narration", text: turn.epilogue });
+            // エピローグは **LLM が書く本文** (epilogue_prompt は作者の生成指示であって
+            // 本文ではない) なので読み上げ対象。ただし結末を語るため、ダイスが伏せられた
+            // ままだと帰結を音声で漏らす → 開帳待ちなら flush まで保留する。
+            // **queue** = 同じターンの語りを途中で切らず、その後ろに続けて読む。
+            if (revealing) this.pendingSpeech = turn.epilogue;
+            else if (this.useTts && this.ttsEnabled) void tts.speak(turn.epilogue, { queue: true });
           }
         } else {
           this.log.push({ kind: "reject", reasons: turn.reasons, attempts: turn.attempts });
