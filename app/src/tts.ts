@@ -50,6 +50,7 @@ export const DEFAULT_SETTINGS: TtsSettings = {
 
 const LS_ENABLED = "kataribe.tts.enabled";
 const LS_SETTINGS = "kataribe.tts.settings";
+const LS_VOICES = "kataribe.tts.voices";
 
 let adapter: VoiceEngineAdapter | null = null;
 let booting: Promise<VoiceEngineAdapter | null> | null = null;
@@ -188,10 +189,44 @@ async function ensureAdapter(): Promise<VoiceEngineAdapter | null> {
   return booting;
 }
 
+export interface VoiceOption {
+  id: string;
+  label: string;
+}
+
+/**
+ * 取得済みの話者一覧のキャッシュ。**話者 ID だけ保存しても選択肢が無ければ select は
+ * 空白に見える**ので、一覧ごと持ち越す (設定を開き直すたびにサーバーへ問い合わせない
+ * 利点もある)。エンジンとサーバー URL を鍵にし、どちらか変わったら捨てる
+ * (別エンジンの ID は通用しない)。
+ */
+export function loadVoiceList(s: TtsSettings): VoiceOption[] {
+  try {
+    const raw = localStorage.getItem(LS_VOICES);
+    if (!raw) return [];
+    const c = JSON.parse(raw) as { engine?: string; url?: string; voices?: VoiceOption[] };
+    if (c.engine !== s.engine || c.url !== effectiveUrl(s)) return [];
+    return c.voices ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveVoiceList(s: TtsSettings, voices: VoiceOption[]): void {
+  localStorage.setItem(
+    LS_VOICES,
+    JSON.stringify({ engine: s.engine, url: effectiveUrl(s), voices }),
+  );
+}
+
+export function clearVoiceList(): void {
+  localStorage.removeItem(LS_VOICES);
+}
+
 /** 設定画面の話者一覧。ローカルエンジンはサーバーへ問い合わせる (失敗は例外)。 */
 export async function listVoices(
   s: TtsSettings,
-): Promise<{ id: string; label: string }[]> {
+): Promise<VoiceOption[]> {
   const mod = await import("@aituber-onair/voice");
   const voices = await mod.getVoiceEngineVoiceList(s.engine, {
     apiUrl: effectiveUrl(s) || undefined,

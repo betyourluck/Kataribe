@@ -30,7 +30,9 @@ const game = useGameStore();
 // --- 読み上げ (TTS) --------------------------------------------------------
 // 設定は localStorage に閉じる (backend も正本も関与しない = 提示層の設定)。
 const voice = ref<tts.TtsSettings>(tts.loadSettings());
-const voiceList = ref<{ id: string; label: string }[]>([]);
+// 一覧はキャッシュから復元する。話者 ID だけ保存しても選択肢が無ければ select は
+// 空白に見える (開き直すと選択が消えたように見えた症状の正体)。
+const voiceList = ref<tts.VoiceOption[]>(tts.loadVoiceList(voice.value));
 const voiceStatus = ref("");
 const voiceBusy = ref(false);
 const voiceNeedsServer = computed(() => tts.needsServer(voice.value.engine));
@@ -44,9 +46,27 @@ function onVoiceEngineChange() {
   voice.value.speaker = "";
   voice.value.serverUrl = "";
   voiceList.value = [];
+  tts.clearVoiceList();
   voiceStatus.value = "";
   persistVoice();
 }
+
+/** サーバー URL を変えたら一覧は別サーバーのものになる → 捨てる。 */
+function onVoiceUrlChange() {
+  voiceList.value = [];
+  tts.clearVoiceList();
+  persistVoice();
+}
+
+/**
+ * 保存済みの話者が一覧に無いとき用のフォールバック選択肢。一覧を取り直す前でも
+ * 「何が選ばれているか」が見える (空白の select を作らない)。
+ */
+const orphanSpeaker = computed(() =>
+  voice.value.speaker && !voiceList.value.some((v) => v.id === voice.value.speaker)
+    ? voice.value.speaker
+    : "",
+);
 
 /** 話者一覧の取得。ローカルエンジンはサーバーへ問い合わせるので失敗を表に出す。 */
 async function loadVoiceList() {
@@ -54,9 +74,9 @@ async function loadVoiceList() {
   voiceStatus.value = "";
   try {
     voiceList.value = await tts.listVoices(voice.value);
+    tts.saveVoiceList(voice.value, voiceList.value);
     voiceStatus.value = t("settings.voice.ok");
   } catch (e) {
-    voiceList.value = [];
     voiceStatus.value = t("settings.voice.failed", { msg: String(e) });
   } finally {
     voiceBusy.value = false;
@@ -81,6 +101,7 @@ async function testVoice() {
 function resetVoice() {
   voice.value = { ...tts.DEFAULT_SETTINGS };
   voiceList.value = [];
+  tts.clearVoiceList();
   voiceStatus.value = "";
   persistVoice();
 }
@@ -523,7 +544,7 @@ onMounted(async () => {
                 type="text"
                 :placeholder="tts.DEFAULT_SERVER_URL[voice.engine]"
                 class="mt-1 block w-80 rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
-                @change="persistVoice"
+                @change="onVoiceUrlChange"
               />
             </label>
 
@@ -536,6 +557,7 @@ onMounted(async () => {
                   @change="persistVoice"
                 >
                   <option value="">{{ t("settings.voice.speakerAuto") }}</option>
+                  <option v-if="orphanSpeaker" :value="orphanSpeaker">{{ orphanSpeaker }}</option>
                   <option v-for="v in voiceList" :key="v.id" :value="v.id">{{ v.label }}</option>
                 </select>
               </label>
