@@ -58,6 +58,15 @@ function statRollFinal(sr: StatRollView): number {
         {{ entry.text }}
       </p>
 
+      <!-- 作者が YAML に書いた確定文 (結末文など)。GM の即興と色で分ける。 -->
+      <p
+        v-else-if="entry.kind === 'authored'"
+        class="whitespace-pre-wrap leading-relaxed"
+        :style="game.authoredStyle"
+      >
+        {{ entry.text }}
+      </p>
+
       <!-- 反応ビート + 想起された伏線 (黒の透過背景 = 表示設定で濃さ調整、可読性の手当て) -->
       <div
         v-else-if="entry.kind === 'beat'"
@@ -116,7 +125,7 @@ function statRollFinal(sr: StatRollView): number {
             <span :class="c.success ? 'text-glow' : 'text-ember/60'">{{ c.success ? t("log.success") : t("log.fail") }}</span>
           </p>
           <!-- authored 結末ナレーション (毎回・同ターン)。失敗を必ず描く。 -->
-          <p v-if="c.narration" class="text-parchment/90 whitespace-pre-wrap" :style="game.narrationStyle">{{ c.narration }}</p>
+          <p v-if="c.narration" class="whitespace-pre-wrap" :style="game.authoredStyle">{{ c.narration }}</p>
         </template>
         <DiceReveal
           v-if="entry.revealed < entry.checks.length && i === game.revealTargetIndex"

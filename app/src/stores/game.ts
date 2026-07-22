@@ -100,8 +100,15 @@ function loadDiceReveal(): boolean {
 const MSG_FONT_KEY = "kataribe.msgFont";
 const MSG_COLOR_KEY = "kataribe.msgColor";
 const MSG_SHADOW_KEY = "kataribe.msgShadow";
+const AUTHORED_COLOR_KEY = "kataribe.authoredColor";
 /** 既定の本文色 (tailwind の parchment)。カラーピッカーの初期値と「既定に戻す」に使う。 */
 export const DEFAULT_MSG_COLOR = "#e8ddc8";
+/**
+ * 既定の**作者文**の色 (tailwind の glow 寄り)。作者が YAML に書いた確定文 (結末文・
+ * 判定の結末) は GM の即興と混ぜると「どこまでが作者の意図か」が読み手から見えないので、
+ * 既定から別色にしておく。
+ */
+export const DEFAULT_AUTHORED_COLOR = "#f0d9a8";
 /** 本文フォントの選択肢 (id → CSS font-family)。OS 同梱フォントへのフォールバック連鎖で環境差を吸収。 */
 export const MESSAGE_FONTS: { id: string; label: string; family: string }[] = [
   { id: "default", label: "標準 (UI と同じ)", family: "" },
@@ -297,6 +304,8 @@ interface GameState {
   msgFont: string;
   // 本文の文字色 (hex)。空 = テーマ既定 (parchment)。表示設定。
   msgColor: string;
+  // 作者が書いた確定文の色 (空 = 既定)。
+  authoredColor: string;
   // 本文の影の濃さ 0..100 (0=なし)。背景画像の上の可読性向上。表示設定。
   msgShadow: number;
   // ビート (✦) / 想起 (┊) ブロックの黒背景の濃さ 0..100 (0=なし)。表示設定。
@@ -419,6 +428,7 @@ export const useGameStore = defineStore("game", {
       fighting: false,
       msgFont: loadMsgFont(),
       msgColor: loadMsgColor(),
+      authoredColor: localStorage.getItem(AUTHORED_COLOR_KEY) ?? "",
       msgShadow: loadMsgShadow(),
       beatBgOpacity: loadBeatBgOpacity(),
       panelWidth: loadPanelWidth(),
@@ -516,6 +526,13 @@ export const useGameStore = defineStore("game", {
           `0 1px ${(1 + a * 5).toFixed(1)}px rgba(0,0,0,${(a * 0.95).toFixed(2)}), ` +
           `0 0 ${Math.round(a * 14)}px rgba(0,0,0,${(a * 0.6).toFixed(2)})`;
       }
+      return style;
+    },
+    // 作者が書いた確定文のスタイル。影は本文と共通 (背景画像への可読性の手当ては同じ)、
+    // 色だけ別に持つ = 「作者の意図」と「GM の即興」を読み手が見分けられる。
+    authoredStyle(s): Record<string, string> {
+      const style: Record<string, string> = { ...this.narrationStyle };
+      style.color = s.authoredColor || DEFAULT_AUTHORED_COLOR;
       return style;
     },
     // ビート/想起ブロックに敷く黒の透過背景 (0 なら敷かない)。ember/glow の色付き文字が
@@ -652,6 +669,12 @@ export const useGameStore = defineStore("game", {
       this.msgColor = hex;
       if (hex) localStorage.setItem(MSG_COLOR_KEY, hex);
       else localStorage.removeItem(MSG_COLOR_KEY);
+    },
+    // 作者文の色を設定 (空 = 既定へ戻す)。
+    setAuthoredColor(hex: string) {
+      this.authoredColor = hex;
+      if (hex) localStorage.setItem(AUTHORED_COLOR_KEY, hex);
+      else localStorage.removeItem(AUTHORED_COLOR_KEY);
     },
     // 本文の影の濃さを設定 (0 = なし)。
     setMsgShadow(v: number) {
@@ -905,6 +928,9 @@ export const useGameStore = defineStore("game", {
             lines.push(`> ${t("log.you")}: ${e.text}`);
             break;
           case "narration":
+            lines.push(e.text);
+            break;
+          case "authored":
             lines.push(e.text);
             break;
           case "beat":
@@ -1255,7 +1281,7 @@ export const useGameStore = defineStore("game", {
         }
         // 決断の帰結で goal に達しうる (押して失敗 → HP0 の死など)。
         if (r.goal_reached) {
-          if (r.goal_narration) pushTail({ kind: "narration", text: r.goal_narration });
+          if (r.goal_narration) pushTail({ kind: "authored", text: r.goal_narration });
           const goalLabel = r.goal_title ?? r.goal_id;
           const label = goalLabel
             ? t("store.clearedNamed", { goal: goalLabel })
@@ -1302,7 +1328,7 @@ export const useGameStore = defineStore("game", {
           tail({ kind: "system", text: r.ended.digest });
         }
         if (r.goal_reached) {
-          if (r.goal_narration) tail({ kind: "narration", text: r.goal_narration });
+          if (r.goal_narration) tail({ kind: "authored", text: r.goal_narration });
           const goalLabel = r.goal_title ?? r.goal_id;
           tail({
             kind: "system",
@@ -1399,7 +1425,7 @@ export const useGameStore = defineStore("game", {
           if (turn.goal_reached || turn.transition) {
             // 結末ナレーション (authored) があれば語りとして出す (遷移元モジュールの結末)。
             if (turn.goal_narration) {
-              pushLog({ kind: "narration", text: turn.goal_narration });
+              pushLog({ kind: "authored", text: turn.goal_narration });
             }
             // 表示は authored title を優先し、無ければ id (機械用セレクタ) へフォールバック。
             const goalLabel = turn.goal_title ?? turn.goal_id;

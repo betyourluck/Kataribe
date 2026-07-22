@@ -13,6 +13,7 @@ import Icon from "./Icon.vue";
 import { t, setLocale, locale, type Locale } from "../i18n";
 import {
   DEFAULT_MSG_COLOR,
+  DEFAULT_AUTHORED_COLOR,
   MESSAGE_FONTS,
   useGameStore,
   loadAiProfiles,
@@ -128,6 +129,7 @@ function applyFont() {
 const messageFonts = MESSAGE_FONTS;
 // カラーピッカーは常に具体値が要る (空 = テーマ既定 parchment を表示)。
 const msgColorValue = computed(() => game.msgColor || DEFAULT_MSG_COLOR);
+const authoredColorValue = computed(() => game.authoredColor || DEFAULT_AUTHORED_COLOR);
 // プレビュー: 本文フォント + 色/影を実際の見た目で確認する。
 const previewStyle = computed(() => ({
   fontFamily: game.messageFontFamily,
@@ -358,6 +360,26 @@ onMounted(async () => {
                 {{ t("settings.display.resetDefault") }}
               </button>
             </div>
+            <div class="flex items-end gap-3">
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.display.authoredColor") }}
+                <input
+                  type="color"
+                  :value="authoredColorValue"
+                  class="mt-1 block h-8 w-16 cursor-pointer rounded bg-ash/40 p-0.5"
+                  @input="game.setAuthoredColor(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+              <button
+                class="rounded bg-ash/40 hover:bg-ash/70 px-2 py-1 text-xs text-parchment/70"
+                :disabled="!game.authoredColor"
+                :class="{ 'opacity-40': !game.authoredColor }"
+                @click="game.setAuthoredColor('')"
+              >
+                {{ t("settings.display.resetDefault") }}
+              </button>
+            </div>
+            <p class="text-parchment/40 text-xs">{{ t("settings.display.authoredNote") }}</p>
             <label class="block text-sm text-parchment/70">
               {{ t("settings.display.shadow", { value: game.msgShadow }) }}
               <input

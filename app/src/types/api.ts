@@ -393,6 +393,9 @@ export type LogEntry =
   | { kind: "opening"; text: string }
   | { kind: "player"; text: string }
   | { kind: "narration"; text: string }
+  // 作者が YAML に書いた確定文 (GoalDef.narration の結末文など)。GM の即興と混ぜると
+  // 「どこまでが作者の意図か」が読み手から見えなくなるので、色で分ける。
+  | { kind: "authored"; text: string }
   // narration は authored な物語ビート (常時表示)。recalled (memoria/伏線) は次ターンに GM が
   // 語りへ織り込むので既定で畳む (expanded で展開)。
   | { kind: "beat"; narration: string; recalled: string[]; expanded?: boolean }

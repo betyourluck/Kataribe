@@ -109,6 +109,8 @@ export const messages = {
         font: "フォント",
         color: "文字色",
         resetDefault: "既定に戻す",
+        authoredColor: "作者の文の色",
+        authoredNote: "作者がシナリオに書いた確定文 (結末文・判定の結末) の色。GM が即興で書いた語りと見分けるため。",
         shadow: "文字の影（{value}）",
         preview:
           "霧が窓の外を這う。囲炉裏の火が爆ぜて、誰かが息を呑んだ。—— 本文はこの見た目で表示されます。",
@@ -545,6 +547,8 @@ export const messages = {
         font: "Font",
         color: "Text color",
         resetDefault: "Reset to default",
+        authoredColor: "Authored text color",
+        authoredNote: "Color for text the author wrote in the scenario (endings, challenge outcomes), so it reads apart from the GM's improvised narration.",
         shadow: "Text shadow ({value})",
         preview:
           "Mist crawls past the window. The hearth crackles, and someone catches their breath. —— Body text appears in this style.",
