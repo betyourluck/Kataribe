@@ -21,7 +21,7 @@ import {
   hostStartTimer,
   hostStopTimer,
   knockUrl,
-  leaveTable,
+  confirmAndLeave,
   setAutoClose,
   setKnockUrl,
   setTableName,
@@ -123,16 +123,8 @@ function closeWindowAndDismiss() {
   emit("close");
 }
 
-/** 卓を畳む。ホストが抜けると全員のセッションが終わるので、ホストにだけ確認を挟む。 */
-const confirmLeave = ref(false);
-function leave() {
-  if (multi.value.role === "host" && !confirmLeave.value) {
-    confirmLeave.value = true;
-    return;
-  }
-  confirmLeave.value = false;
-  leaveTable();
-}
+/** 卓を畳む。確認は table.ts の confirmAndLeave が一手に引き受ける (卓バーと共通)。 */
+const leave = confirmAndLeave;
 </script>
 
 <template>
@@ -269,15 +261,11 @@ function leave() {
           </div>
         </template>
 
-        <!-- ホストが抜けると全員のセッションが終わる (正本はホストにしか無い) ので確認を挟む。 -->
-        <p v-if="confirmLeave" class="mt-4 rounded border border-ember/60 bg-ember/10 p-2 text-xs">
-          {{ t("table.closeTableConfirm") }}
-        </p>
         <button
-          class="mt-2 rounded border border-ember/60 px-3 py-1 text-sm text-ember hover:bg-ember/10"
+          class="mt-4 rounded border border-ember/60 px-3 py-1 text-sm text-ember hover:bg-ember/10"
           @click="leave"
         >
-          {{ confirmLeave ? t("table.closeTableReally") : t("table.closeTable") }}
+          {{ t("table.closeTable") }}
         </button>
       </template>
 

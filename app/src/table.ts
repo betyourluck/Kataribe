@@ -510,6 +510,22 @@ export async function toggleMic(on: boolean): Promise<void> {
   if (!voice.micOn) store.multi.voiceLevels = {};
 }
 
+/**
+ * 確認してから卓を畳む (両ロール)。**押し間違いの取り返しがつかない**ので必ず訊く —
+ * ホストは全員のセッションが終わり、ゲストは部屋コードの入れ直しになる。
+ * 卓バーとダイアログの両方がここを呼ぶ (確認の実装を二箇所に持たない)。
+ */
+export async function confirmAndLeave(): Promise<void> {
+  const store = useGameStore();
+  const host = store.multi.role === "host";
+  const ok = await store.askConfirm(
+    host ? t("table.closeTableConfirm") : t("table.leaveTableConfirm"),
+    host ? t("table.closeTableReally") : t("table.leaveTable"),
+  );
+  if (!ok) return;
+  leaveTable();
+}
+
 /** 卓を畳む (両ロール)。ゲストは単騎の配送路へ戻る。 */
 export function leaveTable() {
   const store = useGameStore();

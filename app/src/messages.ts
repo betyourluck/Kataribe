@@ -503,6 +503,8 @@ export const messages = {
         "再接続できませんでした (部屋の待受が終了した可能性があります)。部屋コードで入り直してください",
       closeTableConfirm:
         "卓を閉じると参加者全員のセッションが終わります (正本はあなたの環境にあります)。よろしいですか？",
+      leaveTableConfirm:
+        "卓を出ると盤面はホストから届かなくなります。戻るには部屋コードで入り直しが必要です。よろしいですか？",
       closeTableReally: "本当に閉じる",
     },
     store: {
@@ -1037,6 +1039,8 @@ export const messages = {
         "Couldn't reconnect (the room may have expired). Join again with the room code",
       closeTableConfirm:
         "Closing the table ends the session for everyone (the source of truth lives on your machine). Are you sure?",
+      leaveTableConfirm:
+        "Leaving the table stops the host's board from reaching you. You'll need the room code to rejoin. Are you sure?",
       closeTableReally: "Close it",
     },
     store: {

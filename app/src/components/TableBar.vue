@@ -14,7 +14,7 @@
 import { computed } from "vue";
 import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
-import { hostCloseWindow, leaveTable, toggleMic } from "../table";
+import { confirmAndLeave, hostCloseWindow, toggleMic } from "../table";
 
 const game = useGameStore();
 const multi = computed(() => game.multi);
@@ -60,14 +60,8 @@ async function toggle() {
   await toggleMic(!multi.value.micOn);
 }
 
-/** ホストが抜けると全員のセッションが終わるので、ホストにだけ確認を挟む。 */
-async function leave() {
-  if (multi.value.role === "host") {
-    const ok = await game.askConfirm(t("table.closeTableConfirm"), t("table.closeTableReally"));
-    if (!ok) return;
-  }
-  leaveTable();
-}
+/** 退出は両ロールとも確認を挟む (押し間違いの取り返しがつかない — table.ts が文言を持つ)。 */
+const leave = confirmAndLeave;
 </script>
 
 <template>
