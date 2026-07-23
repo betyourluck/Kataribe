@@ -255,6 +255,8 @@ export class HostTable {
   /** hello 済みのゲスト席 (UI の「入室: ○○」表示素材)。 */
   seats = new Map<string, GuestSeat>();
   onSeatsChanged?: () => void;
+  /** 同じ表示名の席を置き換えた (入り直し or 同名の別人)。ホストへ知らせる。 */
+  onSeatReplaced?: (displayName: string) => void;
   /** ゲスト発の開帳が確定した (ホスト UI も追従して開く)。 */
   onRevealOrder?: (rv: { revealed: number; total: number }) => void;
   /** ゲストの提出で入力窓が動いた (ホスト UI の「入力待ち」更新)。 */
@@ -328,6 +330,9 @@ export class HostTable {
           this.pcs.get(old)?.close();
           this.pcs.delete(old);
           this.seats.delete(old);
+          // **黙って追い出さない**。同一人物の入り直しなら情報だが、たまたま同名の
+          // 別人なら先客が理由も分からず消えることになる (卓は名前で人を識別する)。
+          this.onSeatReplaced?.(h.display_name);
         }
       }
       this.seats.set(peerId, {

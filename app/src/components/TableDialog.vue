@@ -148,7 +148,8 @@ const leave = confirmAndLeave;
       <!-- 未参加: ホスト開設 / ゲスト参加の二択 -->
       <template v-if="multi.role === 'solo'">
         <label class="mb-1 block text-sm text-parchment/70">{{ t("table.yourName") }}</label>
-        <input v-model="name" class="mb-3 w-full rounded border border-ash bg-ash/30 px-2 py-1" :placeholder="t('table.namePlaceholder')" />
+        <input v-model="name" class="mb-1 w-full rounded border border-ash bg-ash/30 px-2 py-1" :placeholder="t('table.namePlaceholder')" />
+        <p class="mb-3 text-xs text-parchment/50">{{ t("table.nameRequired") }}</p>
         <label class="mb-1 block text-sm text-parchment/70">{{ t("table.knockUrl") }}</label>
         <input v-model="knock" class="mb-4 w-full rounded border border-ash bg-ash/30 px-2 py-1 font-mono text-xs" />
 
@@ -157,7 +158,7 @@ const leave = confirmAndLeave;
           <p class="mb-2 text-xs text-parchment/60">{{ t("table.hostHint") }}</p>
           <button
             class="rounded bg-ember/80 px-3 py-1 font-bold text-ink hover:bg-ember disabled:opacity-40"
-            :disabled="busy || !game.started"
+            :disabled="busy || !game.started || !name.trim()"
             @click="openTable"
           >
             {{ t("table.openTable") }}
@@ -182,7 +183,7 @@ const leave = confirmAndLeave;
           </template>
           <button
             class="rounded bg-ember/80 px-3 py-1 font-bold text-ink hover:bg-ember disabled:opacity-40"
-            :disabled="busy || !roomInput.trim() || (manualPkg && !joinPackage)"
+            :disabled="busy || !name.trim() || !roomInput.trim() || (manualPkg && !joinPackage)"
             @click="join"
           >
             {{ t("table.join") }}

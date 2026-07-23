@@ -66,12 +66,15 @@ export async function hostOpenTable(): Promise<string> {
     packagePath: store.activePackagePath,
   });
   const table = new HostTable(new LocalTransport(), {
-    displayName: tableName() || "GM",
+    displayName: tableName(),
     packageId: null,
     contentHash: hash,
     relaySha256: null, // 部屋コードが要るのでアップロードは open の後
   });
   table.onSeatsChanged = () => syncSeats();
+  table.onSeatReplaced = (name) => {
+    store.log.push({ kind: "system", text: t("table.seatReplaced", { name }) });
+  };
   table.onRevealOrder = (rv) => store.applyRevealOrder(rv);
   table.onInputStatus = (st) => {
     store.multi.inputStatus = st as { submitted: string[]; waiting: string[] };
@@ -139,7 +142,7 @@ function syncSeats() {
   const seats = [
     {
       peerId: "host",
-      displayName: tableName() || "GM",
+      displayName: tableName(),
       packageMatch: "ok",
       connected: true,
       entityId: store.multi.seats.find((s) => s.peerId === "host")?.entityId ?? "player",
@@ -290,7 +293,7 @@ export async function guestJoin(roomCode: string, manualPackagePath?: string): P
     });
   }
   const link = new GuestLink({
-    displayName: tableName() || "guest",
+    displayName: tableName(),
     packageId: null,
     contentHash: hash,
     relaySha256: null,
