@@ -8,6 +8,7 @@
  * - 最小化/最大化トグル/閉じるは @tauri-apps/api/window を動的 import で叩く
  *   (ブラウザ環境=Tauri 外でも crash しない)。
  */
+import { computed } from "vue";
 import { theme, toggleTheme } from "../theme";
 import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
@@ -47,6 +48,19 @@ function badgeStyle(model: string): Record<string, string> {
   if (m.startsWith("grok")) return paint("#3f3f46", "#e4e4e7"); // 濃い灰色
   return {};
 }
+
+/**
+ * ゲストとして卓に居る間のバッジ文言 (spec 23)。AI もセーブもホストの環境が担うので、
+ * 自分のモデル名を出すのは嘘になる。接続の実状をそのまま出す — 切れているのに
+ * 「接続中」と出すのが一番よくないので、再接続中と未接続も区別する。
+ * ゲスト以外 (単騎・ホスト) は空 = 従来どおりモデル名を出す。
+ */
+const guestBadge = computed(() => {
+  const m = game.multi;
+  if (m.role !== "guest") return "";
+  if (m.connected) return t("titlebar.guestConnected");
+  return m.reconnecting !== null ? t("titlebar.guestReconnecting") : t("titlebar.guestOffline");
+});
 
 const emit = defineEmits<{
   (e: "open-settings"): void;
@@ -152,9 +166,24 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
       </svg>
     </button>
 
+    <!-- ゲストとして卓に居る間は、AI を回しているのは**ホストの環境**なので、
+         自分のモデル名を出すと「これで遊んでいる」という嘘になる。接続状態に置き換える。 -->
+    <span
+      v-if="guestBadge"
+      data-tauri-drag-region
+      class="mx-1 max-w-[12rem] truncate rounded-full border px-2 text-[10px] font-bold leading-4"
+      :class="
+        game.multi.connected
+          ? 'border-transparent bg-ember/80 text-ink'
+          : 'border-ember/60 bg-ember/10 text-ember'
+      "
+      :title="t('titlebar.guestBadgeTitle')"
+    >
+      {{ guestBadge }}
+    </span>
     <!-- 使用中の AI モデル名バッジ (どのモデルで遊んでいるかの常時表示。設定 → AIモデル で変更) -->
     <span
-      v-if="model"
+      v-else-if="model"
       data-tauri-drag-region
       class="mx-1 max-w-[12rem] truncate rounded-full border border-ash bg-ash/40 px-2 text-[10px] font-bold leading-4 text-parchment/70"
       :style="badgeStyle(model)"

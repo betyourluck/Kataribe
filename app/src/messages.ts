@@ -24,6 +24,11 @@ export const messages = {
       updateOpen: "最新版 {version} を配布サイトで開く",
       updateOpenGeneric: "配布サイトを開く",
       modelBadge: "使用中の AI モデル: {model} (設定 → AIモデル で変更)",
+      guestConnected: "ホスト接続中",
+      guestReconnecting: "再接続中…",
+      guestOffline: "ホスト未接続",
+      guestBadgeTitle:
+        "卓に参加中です。AI とセーブはホストの環境が担うので、あなたのモデル設定は使われません",
       minimize: "最小化",
       maximize: "最大化/復帰",
       close: "閉じる",
@@ -543,6 +548,11 @@ export const messages = {
       updateOpen: "Open the site to get {version}",
       updateOpenGeneric: "Open the distribution site",
       modelBadge: "Current AI model: {model} (change in Settings → AI Model)",
+      guestConnected: "connected to host",
+      guestReconnecting: "reconnecting…",
+      guestOffline: "host not connected",
+      guestBadgeTitle:
+        "You're at a table. The AI and saves run on the host, so your own model settings are unused",
       minimize: "Minimize",
       maximize: "Maximize / Restore",
       close: "Close",
