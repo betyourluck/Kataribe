@@ -26,7 +26,6 @@ import {
   setKnockUrl,
   setTableName,
   tableName,
-  toggleMic,
 } from "../table";
 
 defineEmits<{ (e: "close"): void }>();
@@ -117,15 +116,6 @@ function copyCode() {
   void navigator.clipboard?.writeText(multi.value.roomCode);
 }
 
-async function mic() {
-  busy.value = true;
-  try {
-    await toggleMic(!multi.value.micOn);
-  } finally {
-    busy.value = false;
-  }
-}
-
 /** 卓を畳む。ホストが抜けると全員のセッションが終わるので、ホストにだけ確認を挟む。 */
 const confirmLeave = ref(false);
 function leave() {
@@ -148,22 +138,12 @@ function leave() {
 
       <p v-if="error" class="mb-3 rounded border border-ember/60 bg-ember/10 p-2 text-sm">{{ error }}</p>
 
-      <!-- 音声 (spec 23 Phase D)。既定 OFF = 一度も getUserMedia を呼ばない
-           (音声なし参加では権限ダイアログも出ない)。OFF は完全解放で、
-           OS のマイク使用インジケータが消えることが「切れている」の実体。 -->
-      <div v-if="multi.role !== 'solo'" class="mb-3 flex items-center gap-2 rounded border border-ash p-2">
-        <button
-          class="rounded px-3 py-1 text-sm font-bold transition"
-          :class="multi.micOn ? 'bg-ember/80 text-ink hover:bg-ember' : 'border border-ash text-parchment/80 hover:bg-ash/40'"
-          :disabled="busy"
-          @click="mic"
-        >
-          {{ multi.micOn ? t("table.micOn") : t("table.micOff") }}
-        </button>
-        <span class="text-xs text-parchment/60">
-          {{ multi.micOn ? t("table.micOnHint") : t("table.micOffHint") }}
-        </span>
-      </div>
+      <!-- 音声 (spec 23 Phase D) の ON/OFF は会話ペインの FAB (MicFab) が持つ。
+           ダイアログに置くと閉じた瞬間に「マイクが入っているか」が見えなくなるため
+           (ユーザーFB 2026-07-23)。ここでは状態を二重に持たない。 -->
+      <p v-if="multi.role !== 'solo'" class="mb-3 text-xs text-parchment/60">
+        {{ multi.micOn ? t("table.micOnHint") : t("table.micOffHint") }}
+      </p>
 
       <!-- 未参加: ホスト開設 / ゲスト参加の二択 -->
       <template v-if="multi.role === 'solo'">
