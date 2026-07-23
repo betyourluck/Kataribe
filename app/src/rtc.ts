@@ -317,6 +317,19 @@ export class HostTable {
     }
     if (m.type === "hello") {
       const h = m as unknown as TableHello;
+      // **同じ表示名の古い席は畳む**。再入場は新しい peer_id で来る (再 knock と違い
+      // identity が変わる) ので、放っておくと同じ人が二席を占め、参加者が水増しされる。
+      // 席を消すだけでなく接続も切る — 残しておくと本人は入れているつもりのまま、
+      // ホストからは見えない席で待ち続けることになる。
+      for (const [old, seat] of [...this.seats]) {
+        if (old !== peerId && seat.displayName === h.display_name) {
+          this.channels.get(old)?.close();
+          this.channels.delete(old);
+          this.pcs.get(old)?.close();
+          this.pcs.delete(old);
+          this.seats.delete(old);
+        }
+      }
       this.seats.set(peerId, {
         peerId,
         displayName: h.display_name,

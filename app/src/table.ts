@@ -151,7 +151,12 @@ function syncSeats() {
       displayName: seat.displayName,
       packageMatch: seat.packageMatch,
       connected: seat.connected,
-      entityId: store.multi.seats.find((s) => s.peerId === seat.peerId)?.entityId ?? "",
+      // peer_id が変わって入り直した人にも席を返す (表示名で拾い直す) —
+      // 入り直すたびに割り当てが白紙になると、ホストが毎回選び直すことになる。
+      entityId:
+        store.multi.seats.find((s) => s.peerId === seat.peerId)?.entityId ??
+        store.multi.seats.find((s) => s.displayName === seat.displayName)?.entityId ??
+        "",
     });
   }
   store.multi.seats = seats;
@@ -268,6 +273,11 @@ export async function hostCloseWindow(): Promise<void> {
  */
 export async function guestJoin(roomCode: string, manualPackagePath?: string): Promise<void> {
   const store = useGameStore();
+  // 前の接続を畳んでから入り直す。閉じずに差し替えると WS も PC も生き残り、
+  // ホストからは**別の peer として二人目が入ってきた**ように見える (参加者の水増し)。
+  cancelReconnect();
+  guestLink?.close();
+  guestLink = null;
   let hash: string | null = null;
   guestPackagePath = "";
   hostClosedTable = false;
