@@ -2,10 +2,11 @@
 /**
  * 卓ダイアログ (spec 23 Phase C) — 多人数プレイの開設と参加。
  *
- * - ホスト: ゲーム開始済みの状態で「卓を開く」→ 部屋コードを友人に伝える →
- *   入室した席に entity を割り当てて「卓を開始」。以後の入力窓の運用 (自動締切 /
- *   タイマー / 手動締切) もここから。
- * - ゲスト: 表示名・部屋コード・手持ちのパッケージを選んで「参加」。以後の画面は
+ * - ホスト: ゲーム開始済みの状態で「卓を開く」→ パッケージが中継へ預けられる →
+ *   部屋コードを友人に伝える → 入室した席に entity を割り当てて「卓を開始」。
+ *   以後の入力窓の運用 (自動締切 / タイマー / 手動締切) もここから。
+ * - ゲスト: 表示名と部屋コードだけで「参加」— パッケージはホストから自動で届く
+ *   (契約 package_relay)。中継を使わない卓のために手動選択も残してある。以後の画面は
  *   ホストから届く view で描かれ、入力は「提出」になる。
  */
 import { computed, ref } from "vue";
@@ -33,6 +34,8 @@ const game = useGameStore();
 const name = ref(tableName());
 const knock = ref(knockUrl());
 const roomInput = ref("");
+// 既定は中継 (ホストの実ファイルが届く)。手動選択は中継を使わない卓のための逃げ道。
+const manualPkg = ref(false);
 const joinPackage = ref(game.packagePath || game.packagePaths[0] || "");
 const busy = ref(false);
 const error = ref<string | null>(null);
@@ -85,7 +88,7 @@ async function join() {
   error.value = null;
   try {
     persistInputs();
-    await guestJoin(roomInput.value, joinPackage.value);
+    await guestJoin(roomInput.value, manualPkg.value ? joinPackage.value : undefined);
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -152,13 +155,20 @@ function leave() {
           <h3 class="mb-1 font-bold">{{ t("table.guestSection") }}</h3>
           <label class="mb-1 block text-sm text-parchment/70">{{ t("table.roomCode") }}</label>
           <input v-model="roomInput" class="mb-2 w-full rounded border border-ash bg-ash/30 px-2 py-1 font-mono" />
-          <label class="mb-1 block text-sm text-parchment/70">{{ t("table.pkgForJoin") }}</label>
-          <select v-model="joinPackage" class="mb-3 w-full rounded border border-ash bg-ash/30 px-2 py-1">
-            <option v-for="p in game.packagePaths" :key="p" :value="p">{{ p }}</option>
-          </select>
+          <p class="mb-2 text-xs text-parchment/60">{{ t("table.pkgAutoHint") }}</p>
+          <label class="mb-2 flex items-center gap-1 text-xs text-parchment/70">
+            <input v-model="manualPkg" type="checkbox" />
+            {{ t("table.manualPkg") }}
+          </label>
+          <template v-if="manualPkg">
+            <label class="mb-1 block text-sm text-parchment/70">{{ t("table.pkgForJoin") }}</label>
+            <select v-model="joinPackage" class="mb-3 w-full rounded border border-ash bg-ash/30 px-2 py-1">
+              <option v-for="p in game.packagePaths" :key="p" :value="p">{{ p }}</option>
+            </select>
+          </template>
           <button
             class="rounded bg-ember/80 px-3 py-1 font-bold text-ink hover:bg-ember disabled:opacity-40"
-            :disabled="busy || !roomInput.trim() || !joinPackage"
+            :disabled="busy || !roomInput.trim() || (manualPkg && !joinPackage)"
             @click="join"
           >
             {{ t("table.join") }}
@@ -182,6 +192,21 @@ function leave() {
             {{ t("table.copy") }}
           </button>
         </div>
+
+        <!-- パッケージ中継の現況 (契約 package_relay)。失敗しても卓は成立する。 -->
+        <p
+          v-if="multi.relay !== 'off'"
+          class="mb-3 text-xs"
+          :class="multi.relay === 'failed' ? 'text-ember' : 'text-parchment/60'"
+        >
+          {{
+            multi.relay === "uploading"
+              ? t("table.relayUploading")
+              : multi.relay === "ready"
+                ? t("table.relayReady")
+                : t("table.relayFailed")
+          }}
+        </p>
 
         <h3 class="mb-1 font-bold">{{ t("table.seats") }}</h3>
         <div v-for="s in multi.seats" :key="s.peerId" class="mb-1 flex items-center gap-2 text-sm">
@@ -237,6 +262,9 @@ function leave() {
         <p class="mb-2 text-sm">
           {{ t("table.guestStatus", { host: multi.hostName || "?" }) }}
           <span :class="multi.connected ? 'text-green-400' : 'text-ember'">●</span>
+        </p>
+        <p v-if="multi.relay === 'downloading'" class="mb-2 text-sm text-parchment/60">
+          {{ t("table.relayDownloading") }}
         </p>
         <p v-if="multi.packageWarning" class="mb-2 rounded border border-ember/60 bg-ember/10 p-2 text-xs">⚠ {{ multi.packageWarning }}</p>
         <p v-if="!multi.started" class="mb-2 text-sm text-parchment/60">{{ t("table.waitingStart") }}</p>

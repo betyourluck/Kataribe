@@ -2,10 +2,11 @@
 //
 // store は transport しか知らない (tableHooks 経由の逆呼び出しのみ)。ここが
 // HostTable / GuestLink のライフサイクルと、卓メッセージ ↔ store 反映を仲介する。
-// - ホスト: 卓を開く → 席に entity を割り当て → set_participants → table_start 配布 →
+// - ホスト: 卓を開く → パッケージを中継へ預ける → 席に entity を割り当て →
+//   set_participants → table_start 配布 → 卓開始と同時に中継を捨てる →
 //   入力窓の運用 (自動締切 all_submitted / タイマー / 手動 = 三系統、契約 input_window)。
-// - ゲスト: join → hello (package_match) → table_start で盤面を受信 → 提出/開帳は
-//   RemoteTransport (GuestLink) 越し。
+// - ゲスト: join → hello (中継の sha256 を受け取る) → パッケージを自動取得 →
+//   table_start で盤面を受信 → 提出/開帳は RemoteTransport (GuestLink) 越し。
 
 import { invoke } from "@tauri-apps/api/core";
 import { GuestLink, HostTable, judgePackageMatch } from "./rtc";
@@ -37,6 +38,8 @@ let hostTable: HostTable | null = null;
 let guestLink: GuestLink | null = null;
 let autoClose = true;
 let timerHandle: number | undefined;
+/** ゲストが実際に使うパッケージのパス (中継で受け取ったもの、または手動選択)。 */
+let guestPackagePath = "";
 
 /** ホスト: 卓を開く (ゲーム開始済みが前提 — 正本はもう在る)。戻り = 部屋コード。 */
 export async function hostOpenTable(): Promise<string> {
@@ -49,6 +52,7 @@ export async function hostOpenTable(): Promise<string> {
     displayName: tableName() || "GM",
     packageId: null,
     contentHash: hash,
+    relaySha256: null, // 部屋コードが要るのでアップロードは open の後
   });
   table.onSeatsChanged = () => syncSeats();
   table.onRevealOrder = (rv) => store.applyRevealOrder(rv);
@@ -75,7 +79,40 @@ export async function hostOpenTable(): Promise<string> {
     hostTable?.broadcastInputStatus(st);
     maybeAutoClose();
   };
+  // --- パッケージを中継へ預ける (契約 package_relay) ---
+  // 正はホストの実ファイル (改変版で遊ぶ卓が成立する)。失敗しても卓は開いたまま —
+  // ゲストは手動選択の旧経路へ落ちる (LAN 卓・サーバ不達の fallback)。
+  store.multi.relay = "uploading";
+  try {
+    const up = await invoke<{ sha256: string }>("relay_upload_package", {
+      siteUrl: store.siteUrl,
+      roomCode: code,
+      packagePath: store.activePackagePath,
+    });
+    table.setRelaySha256(up.sha256);
+    store.multi.relay = "ready";
+  } catch (e) {
+    console.warn("[relay] パッケージの配布に失敗:", e);
+    store.multi.relay = "failed";
+    store.logToast = t("table.relayFailed");
+  }
   return code;
+}
+
+/** ホスト: 中継の一時ファイルを捨てる (卓開始・卓を閉じたとき)。取りこぼしは TTL が回収。 */
+async function relayDelete() {
+  const store = useGameStore();
+  if (store.multi.role !== "host" || !store.multi.roomCode) return;
+  if (store.multi.relay !== "ready") return;
+  try {
+    await invoke("relay_delete_package", {
+      siteUrl: store.siteUrl,
+      roomCode: store.multi.roomCode,
+    });
+  } catch (e) {
+    // 失敗は握り潰してよい — サーバ側 TTL sweep が残骸を回収する (削除の二層)。
+    console.warn("[relay] 取り下げに失敗 (TTL で回収される):", e);
+  }
 }
 
 /** ホスト: 席一覧を store へ写す (自分 + hello 済みゲスト)。 */
@@ -130,6 +167,9 @@ export async function hostStartTable(): Promise<void> {
   store.multi.inputStatus = { submitted: [], waiting: seats.map((s) => s.peerId) };
   hostTable.broadcastInputStatus(store.multi.inputStatus);
   store.log.push({ kind: "system", text: t("table.started") });
+  // 全員そろった = 中継の役目は終わり (契約 package_relay の削除の二層・一層目)。
+  // hello の sha256 は announce し続ける — 既に持っている人はキャッシュで繋がる。
+  void relayDelete();
 }
 
 /** ホスト: 自動締切 (all_submitted) — 全員提出で即締め (契約 input_window ①)。 */
@@ -197,32 +237,51 @@ export async function hostCloseWindow(): Promise<void> {
   }
 }
 
-/** ゲスト: 部屋へ入る。パッケージはローカルの手持ちを指定 (契約 asset_wire / package_match)。 */
-export async function guestJoin(roomCode: string, packagePath: string): Promise<void> {
+/**
+ * ゲスト: 部屋へ入る。
+ *
+ * 既定ではパッケージを選ばない — ホストが中継へ預けた実ファイルを hello の sha256 を
+ * 鍵に自動取得する (契約 `package_relay`)。`manualPackagePath` は fallback
+ * (中継を使わない卓 = 自前 knock の LAN 卓・サーバ不達) で、その時だけ手持ちとの
+ * hash 照合 (`package_match`) が生きる。
+ */
+export async function guestJoin(roomCode: string, manualPackagePath?: string): Promise<void> {
   const store = useGameStore();
-  // アセット解決 root の登録 (ゲストの backend は session を持たない — これだけを持つ)。
-  await invoke("begin_guest_session", { packagePath });
-  const hash = await invoke<string | null>("package_content_hash", { packagePath });
+  let hash: string | null = null;
+  guestPackagePath = "";
+  if (manualPackagePath) {
+    // アセット解決 root の登録 (ゲストの backend は session を持たない — これだけを持つ)。
+    await invoke("begin_guest_session", { packagePath: manualPackagePath });
+    guestPackagePath = manualPackagePath;
+    hash = await invoke<string | null>("package_content_hash", {
+      packagePath: manualPackagePath,
+    });
+  }
   const link = new GuestLink({
     displayName: tableName() || "guest",
     packageId: null,
     contentHash: hash,
+    relaySha256: null,
   });
-  link.onTable = (m) => void onGuestTable(m, packagePath, hash);
+  link.onTable = (m) => enqueueGuestTable(m, hash);
   link.onDisconnected = () => {
     store.multi.connected = false;
     store.logToast = t("table.disconnected");
   };
-  await link.join(knockUrl(), roomCode);
+  // **join の前に**卓の状態を据える。hello は接続直後に飛んでくるので、後から
+  // freshMultiState で上書きすると hello が書いた値 (connected / 中継の現況) が消え、
+  // 中継の取得も roomCode 空で走ることになる。
   guestLink = link;
   transport.swap(link);
   store.multi = {
     ...freshMultiState(),
     role: "guest",
     roomCode,
-    myPeerId: link.peerId,
+    myPeerId: "",
     connected: false, // hello (host) を受けて true
   };
+  await link.join(knockUrl(), roomCode);
+  store.multi.myPeerId = link.peerId;
 }
 
 /** ゲスト: 再接続 (再 knock = identity 維持の張り直し)。 */
@@ -232,24 +291,57 @@ export async function guestReconnect(): Promise<void> {
   await guestLink.reconnect(store.multi.roomCode);
 }
 
+/**
+ * ゲスト: 卓メッセージを**到着順に直列で**処理する。
+ *
+ * hello の処理はパッケージ取得 (DL・展開) を待つので、素朴に `void` で投げると
+ * `table_start` が追い越して「まだパッケージが無いのに盤面を描く」ことになる。
+ * 鎖にすれば直列と順序保存を同時に満たす (tts.ts の投入鎖と同型)。
+ */
+let guestChain: Promise<void> = Promise.resolve();
+function enqueueGuestTable(m: Record<string, unknown>, myHash: string | null) {
+  guestChain = guestChain
+    .then(() => onGuestTable(m, myHash))
+    .catch((e) => console.warn("[table] 卓メッセージの処理に失敗:", e));
+}
+
 /** ゲスト: 卓メッセージの反映。 */
-async function onGuestTable(
-  m: Record<string, unknown>,
-  packagePath: string,
-  myHash: string | null,
-) {
+async function onGuestTable(m: Record<string, unknown>, myHash: string | null) {
   const store = useGameStore();
   switch (m.type) {
     case "hello": {
       const h = m as unknown as TableHello;
       store.multi.connected = true;
       store.multi.hostName = h.display_name;
+      const relaySha = h.relay_sha256 ?? null;
+      if (relaySha) {
+        // --- 中継経路: 正はホストの実ファイル (改変版でもそのまま遊べる) ---
+        // 同一版を持っていれば再 DL しない (キャッシュ鍵 = zip の sha256)。
+        store.multi.relay = "downloading";
+        try {
+          const pkg = await invoke<{ path: string; title: string }>("relay_fetch_package", {
+            siteUrl: store.siteUrl,
+            roomCode: store.multi.roomCode,
+            expectedSha256: relaySha,
+          });
+          guestPackagePath = pkg.path;
+          await invoke("begin_guest_session", { packagePath: pkg.path });
+          store.multi.relay = "ready";
+          store.multi.packageWarning = null;
+        } catch (e) {
+          store.multi.relay = "failed";
+          store.multi.packageWarning = t("table.relayDownloadFailed", { error: String(e) });
+        }
+        break;
+      }
+      // --- fallback: 中継を使わない卓 — 手持ちとの hash 照合 (契約 package_match) ---
       const match = judgePackageMatch(
         { package_id: null, content_hash: myHash },
         { package_id: h.package_id, content_hash: h.content_hash },
       );
       store.multi.packageWarning =
         match === "ok" ? null : match === "mismatch" ? t("table.pkgMismatch") : t("table.pkgUnknown");
+      if (!guestPackagePath) store.multi.packageWarning = t("table.noPackage");
       break;
     }
     case "table_start": {
@@ -260,7 +352,11 @@ async function onGuestTable(
         displayName: p.display_name,
         color: SEAT_COLORS[i % SEAT_COLORS.length],
       }));
-      await store.applyGameView(view, packagePath);
+      if (!guestPackagePath) {
+        // 中継が使えず手動選択もしていない = アセットを解決する足場が無い。
+        store.multi.packageWarning = t("table.noPackage");
+      }
+      await store.applyGameView(view, guestPackagePath);
       store.multi.started = true;
       store.log.push({ kind: "system", text: t("table.joinedStarted", { host: store.multi.hostName }) });
       if (store.multi.packageWarning) {
@@ -297,6 +393,8 @@ export function guestPeerId(): string {
 export function leaveTable() {
   const store = useGameStore();
   hostStopTimer();
+  // 卓を開いたまま閉じた場合の中継の後始末 (開始時に消していれば冪等な二度目)。
+  void relayDelete();
   hostTable?.close();
   hostTable = null;
   guestLink?.close();
@@ -304,5 +402,6 @@ export function leaveTable() {
   tableHooks.onLocalReveal = undefined;
   tableHooks.onLocalInputStatus = undefined;
   transport.reset();
+  guestPackagePath = "";
   store.multi = freshMultiState();
 }

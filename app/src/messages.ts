@@ -459,6 +459,17 @@ export const messages = {
       pkgUnknown: "パッケージの同一性を照合できません (手動配置のため)",
       pkgMismatchShort: "版ズレ",
       pkgUnknownShort: "照合不可",
+      // --- パッケージ中継 (契約 package_relay) ---
+      relayUploading: "パッケージを配布中……",
+      relayReady: "パッケージを配布しました (参加者は自動で受け取ります)",
+      relayFailed:
+        "⚠ パッケージを配布できませんでした。参加者は手持ちのパッケージを手動で選ぶ必要があります",
+      relayDownloading: "ホストのパッケージを受け取っています……",
+      relayDownloadFailed:
+        "ホストのパッケージを受け取れませんでした ({error})。手動でパッケージを選んで入り直してください",
+      noPackage: "パッケージがありません (アセットが表示されません)。手動選択で入り直してください",
+      pkgAutoHint: "パッケージはホストから自動で受け取ります (改変版でもそのまま遊べます)",
+      manualPkg: "手動でパッケージを選ぶ (中継を使わない卓)",
     },
     store: {
       brandFallback: "語り部",
@@ -948,6 +959,17 @@ export const messages = {
       pkgUnknown: "Cannot verify package identity (manually installed)",
       pkgMismatchShort: "version drift",
       pkgUnknownShort: "unverified",
+      // --- Package relay (contract package_relay) ---
+      relayUploading: "Sharing the package…",
+      relayReady: "Package shared (guests receive it automatically)",
+      relayFailed:
+        "⚠ Couldn't share the package. Guests will have to pick their own copy manually",
+      relayDownloading: "Receiving the host's package…",
+      relayDownloadFailed:
+        "Couldn't receive the host's package ({error}). Pick a package manually and join again",
+      noPackage: "No package (assets won't show). Rejoin with a manual selection",
+      pkgAutoHint: "The package comes from the host automatically (even a modified one)",
+      manualPkg: "Pick a package manually (table without the relay)",
     },
     store: {
       brandFallback: "Kataribe",

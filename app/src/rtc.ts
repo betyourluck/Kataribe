@@ -36,6 +36,22 @@ export interface TableHello {
   /** spec 17 出所メタ由来。手動配置は null = 「照合できません」(プレイは止めない)。 */
   package_id: string | null;
   content_hash: string | null;
+  /**
+   * ホストが中継へ預けた zip の sha256 (契約 `package_relay`)。ゲストはこれを鍵に
+   * キャッシュを引き、無ければ部屋コードで落とす。**null = 中継を使わない卓**
+   * (アップロード失敗・自前 knock の LAN 卓) で、その時だけ手動選択 + hash 照合の
+   * 旧経路が生きる。古い版のピアはこの欄を持たない → undefined も null 扱い。
+   */
+  relay_sha256?: string | null;
+}
+
+/** hello に載せる自己紹介 (両ロール共通の材料)。 */
+export interface HelloIdentity {
+  displayName: string;
+  packageId: string | null;
+  contentHash: string | null;
+  /** ホストのみ: 中継に預けた zip の sha256 (預けていなければ null)。 */
+  relaySha256: string | null;
 }
 
 /** hash 照合の結果 (契約 package_match)。 */
@@ -242,8 +258,16 @@ export class HostTable {
 
   constructor(
     private local: GameTransport,
-    private hello: { displayName: string; packageId: string | null; contentHash: string | null },
+    private hello: HelloIdentity,
   ) {}
+
+  /**
+   * 中継へ預けた zip の sha256 を確定する (契約 `package_relay`)。
+   * 部屋コードが要るので**アップロードは open の後**になる — 以後の hello に載る。
+   */
+  setRelaySha256(sha256: string | null) {
+    this.hello.relaySha256 = sha256;
+  }
 
   /** 部屋を開く。以後、ゲストの offer を待ち受ける (offer は入る側が出す規約)。 */
   async open(knockUrl: string): Promise<string> {
@@ -305,6 +329,7 @@ export class HostTable {
         display_name: this.hello.displayName,
         package_id: this.hello.packageId,
         content_hash: this.hello.contentHash,
+        relay_sha256: this.hello.relaySha256,
       };
       this.sendTo(peerId, reply);
       this.onSeatsChanged?.();
@@ -410,9 +435,7 @@ export class GuestLink implements GameTransport {
   /** 全断した (再 knock は reconnect() で。部屋は TTL まで待受)。 */
   onDisconnected?: () => void;
 
-  constructor(
-    private hello: { displayName: string; packageId: string | null; contentHash: string | null },
-  ) {}
+  constructor(private hello: HelloIdentity) {}
 
   /** 自分の peer_id (join 後に確定。submit_turn_input / state_view_for の鍵)。 */
   get peerId(): string {
@@ -453,6 +476,7 @@ export class GuestLink implements GameTransport {
           display_name: this.hello.displayName,
           package_id: this.hello.packageId,
           content_hash: this.hello.contentHash,
+          relay_sha256: null, // 中継へ預けるのはホストだけ
         };
         sendJson(ch, hello);
       }

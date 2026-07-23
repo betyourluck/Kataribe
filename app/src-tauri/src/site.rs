@@ -24,6 +24,18 @@ const DENIED_EXTENSIONS: &[&str] = &[
     "app", "js", "wasm",
 ];
 
+/// エントリ名が拒否拡張子か。展開時の検査と、卓の中継 (spec 23 `package_relay`) の
+/// **送る前**の検査で共用する = denylist の定義を 1 箇所に保つ。
+pub fn is_denied_name(name: &str) -> bool {
+    if !name.contains('.') {
+        return false;
+    }
+    match name.rsplit('.').next() {
+        Some(ext) => DENIED_EXTENSIONS.contains(&ext.to_lowercase().as_str()),
+        None => false,
+    }
+}
+
 /// zip 内フォルダ名 (top) に許さない文字。top は単一コンポーネントなので `/` は来ないが、
 /// Windows のパス特殊文字と制御文字は展開先パスの安全のため拒否する (リネームでなく拒否 —
 /// サーバが sanitize 済みの契約なので、ここに来る名前は改竄シグナル)。
@@ -91,12 +103,8 @@ fn extract_impl(zip_path: &Path, dest_spec: Dest<'_>) -> Result<PathBuf, String>
         if total_uncompressed > MAX_UNCOMPRESSED_TOTAL {
             return Err("展開後サイズが上限 (500MB) を超えています".to_string());
         }
-        if !entry.is_dir() {
-            if let Some(ext) = name.rsplit('.').next() {
-                if name.contains('.') && DENIED_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
-                    return Err(format!("実行ファイル・スクリプトは同梱できません: {name}"));
-                }
-            }
+        if !entry.is_dir() && is_denied_name(&name) {
+            return Err(format!("実行ファイル・スクリプトは同梱できません: {name}"));
         }
         names.push(name);
     }

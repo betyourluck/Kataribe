@@ -172,6 +172,12 @@ export interface MultiState {
   timerRemaining: number | null;
   /** 確定した割り当て (卓開始後)。entity → 操作プレイヤー名 + 席色 (可視化用)。 */
   assignments: { entityId: string; displayName: string; color: string }[];
+  /**
+   * パッケージ中継の現況 (契約 `package_relay`)。ホストは預ける側、ゲストは受け取る側。
+   * `off` = 中継を使わない卓 (未着手・手動選択の fallback) / `failed` = サーバ不達等で
+   * 手動選択へ落ちた。プレイ自体は止めない。
+   */
+  relay: "off" | "uploading" | "downloading" | "ready" | "failed";
 }
 
 /** 席色 (participants 宣言順)。青=1人目 / 赤=2人目 / 黄=3人目… (ユーザーFB 2026-07-23)。 */
@@ -191,6 +197,7 @@ export function freshMultiState(): MultiState {
     revealApplied: 0,
     timerRemaining: null,
     assignments: [],
+    relay: "off",
   };
 }
 

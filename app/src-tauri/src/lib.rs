@@ -9,6 +9,7 @@
 //! - `new_game(scenario_path?)`: シナリオ + characters + 伏線をロードし初期 state を作って session に格納
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
+mod relay;
 mod site;
 mod update;
 
@@ -2553,6 +2554,262 @@ async fn begin_guest_session(
     Ok(())
 }
 
+// =============================================================================
+// 卓の一時パッケージ中継 (spec 23 契約 package_relay / outcast Spec 30)
+// =============================================================================
+//
+// 正はホストの実ファイル。卓を開く = ホストが zip を預ける / join = ゲストが落とす /
+// 卓の開始 = ホストが捨てる。認可は room_code そのもの (bearer capability) で、
+// 追加の認証は作らない。書庫 (spec 05) とは別経路 — 一覧に出ず恒久保存もしない。
+// 純関数部 (zip 化・形式検査) は [`relay`]、ここは HTTP と置き場の解決だけ。
+
+/// 中継 PUT の応答 (outcast Spec 30 が Kataribe 側へ戻した確定値)。
+#[derive(Serialize, Deserialize)]
+struct RelayUpload {
+    /// 預けたバイト列の sha256 (クォート**なし**の生 hex)。キャッシュ鍵になる。
+    sha256: String,
+    size: i64,
+    /// RFC3339 の **目安**。実削除は sweep 実行時なので最大 30 分遅れる (早くは消えない)。
+    #[serde(default)]
+    expires_at: String,
+}
+
+/// サーバのエラー応答から人が読める一文を作る (本文があればそれを優先)。
+async fn relay_error(action: &str, res: reqwest::Response) -> String {
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    let detail = body.trim();
+    let hint = match status.as_u16() {
+        400 => "パッケージの内容が受け付けられませんでした",
+        413 => "パッケージが大きすぎます (上限 100MB)",
+        429 => "アップロードが続きすぎました。少し待ってからもう一度お試しください",
+        503 => "サーバの空き容量が不足しています",
+        _ => "サーバがエラーを返しました",
+    };
+    if detail.is_empty() {
+        format!("{action}に失敗しました: {hint} ({status})")
+    } else {
+        format!("{action}に失敗しました: {hint} ({status}) {detail}")
+    }
+}
+
+/// **ホスト**: パッケージを zip に固めて中継へ預ける (卓を開いた直後)。
+///
+/// 失敗しても卓は成立する (呼び出し側は手動選択へ fallback する) ので、ここでは
+/// 素直にエラーを返す。zip はメモリに載せてから送る — 上限 100MB で、実際の
+/// パッケージは数 MB 級 (アセット作法が WebP/Ogg 推奨なのはこの経済にも効く)。
+#[tauri::command]
+async fn relay_upload_package(
+    app: tauri::AppHandle,
+    site_url: String,
+    room_code: String,
+    package_path: String,
+) -> Result<RelayUpload, String> {
+    let base = normalize_site_url(&site_url)?;
+    let url = relay::relay_url(&base, &room_code)?;
+    let dir = normalize_path(&resolve_pkg_dir(&package_path));
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("アプリデータ置き場を解決できません: {e}"))?;
+    let dl_dir = data_dir.join("downloads");
+    std::fs::create_dir_all(&dl_dir).map_err(|e| format!("一時置き場を作成できません: {e}"))?;
+    // room_code は英数 22 桁を検証済み = ファイル名に直接使える。
+    let tmp = dl_dir.join(format!("table_{room_code}.zip.part"));
+
+    // zip 化 + 読み出し + 一時ファイルの後始末は同期 IO/CPU なので blocking プールへ。
+    let tmp2 = tmp.clone();
+    let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        relay::zip_package_folder(&dir, &tmp2)?;
+        let body = std::fs::read(&tmp2).map_err(|e| format!("一時 zip を読めません: {e}"));
+        let _ = std::fs::remove_file(&tmp2);
+        body
+    })
+    .await
+    .map_err(|e| format!("zip 化タスクの実行に失敗: {e}"))??;
+
+    let size = bytes.len() as i64;
+    let res = site_client()?
+        .put(&url)
+        .header("content-type", "application/zip")
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| format!("中継サーバに接続できません: {e}"))?;
+    if !res.status().is_success() {
+        return Err(relay_error("パッケージの配布", res).await);
+    }
+    // 応答が読めなくても預かりは成功している → 自前計算に落とさず素直に失敗を返す
+    // (sha256 が無いとゲストのキャッシュ鍵が立たないので、ここは黙って進めない)。
+    let mut up: RelayUpload = res
+        .json()
+        .await
+        .map_err(|e| format!("中継サーバの応答が読めません: {e}"))?;
+    if !relay::valid_sha256(&up.sha256) {
+        return Err("中継サーバの応答が不正です (sha256 の形式)".to_string());
+    }
+    if up.size == 0 {
+        up.size = size;
+    }
+    Ok(up)
+}
+
+/// **ゲスト**: 中継からパッケージを受け取る (join 時)。
+///
+/// `expected_sha256` はホストが hello で申告した値。**キャッシュ命中なら再 DL しない**
+/// (同一版の再 join・翌週の同卓)。展開先は `app_data_dir/packages/table/{sha256}` で、
+/// 書庫の取得物 (`packages/<フォルダ名>`) とは置き場ごと分ける — 卓限りの一時物を
+/// パッケージ一覧に混ぜない。zip 検証はサーバを信用しない二層 (`site::extract_*` と同一)。
+#[tauri::command]
+async fn relay_fetch_package(
+    app: tauri::AppHandle,
+    site_url: String,
+    room_code: String,
+    expected_sha256: Option<String>,
+) -> Result<InstalledPackage, String> {
+    let base = normalize_site_url(&site_url)?;
+    let url = relay::relay_url(&base, &room_code)?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("アプリデータ置き場を解決できません: {e}"))?;
+    let table_dir = data_dir.join("packages").join("table");
+    let dl_dir = data_dir.join("downloads");
+    std::fs::create_dir_all(&table_dir).map_err(|e| format!("展開先を作成できません: {e}"))?;
+    std::fs::create_dir_all(&dl_dir).map_err(|e| format!("一時置き場を作成できません: {e}"))?;
+
+    // 遠隔由来の値をパス成分にするので形式を検査してから使う (`..` を差し込ませない)。
+    let expected = match expected_sha256.as_deref().map(str::trim) {
+        Some(h) if !h.is_empty() => {
+            if !relay::valid_sha256(h) {
+                return Err("ホストが申告したハッシュの形式が不正です".to_string());
+            }
+            Some(h.to_string())
+        }
+        _ => None,
+    };
+
+    // --- キャッシュ命中 (再 DL しない) ---
+    if let Some(h) = &expected {
+        let cached = table_dir.join(h);
+        if cached.join("package.yaml").is_file() {
+            if let Ok(m) = read_manifest(&cached) {
+                return Ok(InstalledPackage {
+                    path: cached.to_string_lossy().into_owned(),
+                    title: m.title,
+                });
+            }
+        }
+    }
+
+    // --- DL (ストリームで一時ファイルへ。上限超過で即中断) ---
+    let tmp = dl_dir.join(format!("table_{room_code}.zip.part"));
+    let mut res = site_client()?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("中継サーバに接続できません: {e}"))?;
+    if res.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err("ホストのパッケージが中継に見つかりません (卓が既に始まっているか、期限切れです)".to_string());
+    }
+    if !res.status().is_success() {
+        return Err(relay_error("パッケージの受け取り", res).await);
+    }
+    // ETag は保存時に計算済みの sha256 (ダブルクォート込み)。剥がして比較材料にする。
+    let etag = res
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_matches('"').to_ascii_lowercase());
+
+    let mut out =
+        std::fs::File::create(&tmp).map_err(|e| format!("一時ファイルを作成できません: {e}"))?;
+    let mut written: u64 = 0;
+    loop {
+        let chunk = match res.chunk().await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(format!("受信中に切断されました: {e}"));
+            }
+        };
+        written += chunk.len() as u64;
+        if written > MAX_DOWNLOAD_BYTES {
+            let _ = std::fs::remove_file(&tmp);
+            return Err("ファイルが大きすぎます (110MB 超)".to_string());
+        }
+        if let Err(e) = std::io::Write::write_all(&mut out, &chunk) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("一時ファイルへの書き込みに失敗: {e}"));
+        }
+    }
+    drop(out);
+
+    // --- 指紋の照合 (ホスト申告 > ETag の順。どちらも無ければ自前計算をそのまま採る) ---
+    let actual = match update::sha256_file(&tmp) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("受信データの検証に失敗: {e}"));
+        }
+    };
+    let reference = expected.clone().or(etag);
+    if let Some(r) = &reference {
+        if !r.eq_ignore_ascii_case(&actual) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err("受け取ったパッケージがホストのものと一致しません (再取得してください)".to_string());
+        }
+    }
+
+    // --- 検証 + 展開 (hash キーの置き場へ。同一版が既にあれば展開し直さない) ---
+    let dest = table_dir.join(&actual);
+    if !dest.join("package.yaml").is_file() {
+        let tmp2 = tmp.clone();
+        let dest2 = dest.clone();
+        let extracted =
+            tokio::task::spawn_blocking(move || site::extract_package_zip_to(&tmp2, &dest2))
+                .await
+                .map_err(|e| format!("展開タスクの実行に失敗: {e}"));
+        let _ = std::fs::remove_file(&tmp);
+        extracted??;
+    } else {
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    match read_manifest(&dest) {
+        Ok(m) => Ok(InstalledPackage {
+            path: dest.to_string_lossy().into_owned(),
+            title: m.title,
+        }),
+        Err(e) => {
+            // 読めない配布物は据え置かない (次の join で壊れたキャッシュに当たらない)。
+            let _ = std::fs::remove_dir_all(&dest);
+            Err(format!("パッケージとして読めません: {e}"))
+        }
+    }
+}
+
+/// **ホスト**: 中継の一時ファイルを捨てる (卓の開始時・卓を閉じたとき)。
+///
+/// 冪等 (不在でも成功)。呼び出し側は失敗を握り潰してよい — 取りこぼしはサーバ側の
+/// TTL sweep が回収する (削除の二層)。
+#[tauri::command]
+async fn relay_delete_package(site_url: String, room_code: String) -> Result<(), String> {
+    let base = normalize_site_url(&site_url)?;
+    let url = relay::relay_url(&base, &room_code)?;
+    let res = site_client()?
+        .delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("中継サーバに接続できません: {e}"))?;
+    if res.status().is_success() {
+        Ok(())
+    } else {
+        Err(relay_error("パッケージの取り下げ", res).await)
+    }
+}
+
 /// **ダイスの seed を振り直す** (プレイヤーの meta 操作)。
 ///
 /// 決定論の裏返しで、セーブ地点からやり直しても出目が同じになり別の筋を見られない。
@@ -3596,7 +3853,10 @@ pub fn run() {
             resume_from_file,
             package_content_hash,
             current_game_view,
-            begin_guest_session
+            begin_guest_session,
+            relay_upload_package,
+            relay_fetch_package,
+            relay_delete_package
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
