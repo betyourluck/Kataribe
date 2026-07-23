@@ -3866,6 +3866,40 @@ pub fn run() {
 mod tests {
     use super::{meta_matches_site, normalize_path, normalize_site_url};
 
+    /// 【CSP がノックサーバーへの WebSocket を通すこと (spec 23)】
+    ///
+    /// **開発ビルドでは CSP が効かない** — `devUrl` の間は画面を Vite が配るので、
+    /// Tauri が自分で配る本番だけに CSP が乗る。つまり CSP 由来の破れは
+    /// `npm run tauri dev` では絶対に再現せず、**インストールした exe で初めて出る**
+    /// (2026-07-23 実測: dev は繋がるがリリースだけ「ノックサーバーに接続できません」)。
+    /// 人が dev で気づけない層なので、設定の字面をここで固定する。
+    ///
+    /// 部屋コードの配送先はユーザーが差し替えられる (契約 `knock_hosting` = 信頼点を
+    /// 自前ホストできることが安全装置) ので、単一ホストの allowlist にはできない。
+    #[test]
+    fn csp_allows_websocket_to_a_user_configurable_knock_server() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let csp = conf["app"]["security"]["csp"]
+            .as_str()
+            .expect("csp が宣言されていること");
+        let connect = csp
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("connect-src"))
+            .expect("connect-src ディレクティブ");
+        // `default-src` に落ちず connect-src が明示されている以上、ここに無い scheme は
+        // 全て遮断される (WebSocket も connect-src の管轄)。
+        assert!(
+            connect.contains("wss:"),
+            "TLS の WebSocket を通さないと公式・自前ホストどちらのノックサーバーにも繋がらない: {connect}"
+        );
+        assert!(
+            connect.contains("ws://localhost:*") && connect.contains("ws://127.0.0.1:*"),
+            "手元で knock を立てて試す経路 (平文 ws) も通しておく: {connect}"
+        );
+    }
+
     /// 【SSRF 遮断 (spec 17 rev2 A-4)】照会に出るのは**現在設定の siteUrl と一致する
     /// 出所メタだけ**。細工メタ (別サイト) を手動配置されても、Kataribe が触りに行く先は
     /// 常にユーザー自身が登録したサイトに限られる。末尾スラッシュの揺れは吸収する。
