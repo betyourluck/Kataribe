@@ -1,9 +1,12 @@
 # spec 23: 複数同時プレイ — ホスト権威 + WebRTC (P2P)
 
-**Status**: Draft rev2 + **Phase 0 凍結済み + Phase A Done + Phase B Done**
-（2026-07-23 ユーザー発案・同日設計対話で骨格確定 → 同日査読 12 件（矛盾 1〜12）+
-接地情報 4 件を反映 → 同日 data_contract `Multiplayer` 節を凍結 → Phase A 実装 +
-目視回帰 Green → Phase B 実装 = 多人数ターンループをネット無しで固定。C〜E 残）
+**Status**: Draft rev2 + **Phase 0 凍結 + Phase A/B Done + Phase C 実装完了**
+（2026-07-23 ユーザー発案 → 同日査読 12 件反映 → data_contract 凍結 → A 実装+目視
+Green → B 実装 = 多人数ターンループをネット無しで固定 → C 実装 = knock/coturn/
+RemoteTransport/卓 UI。**live 検証は Phase E**。同日追加決定: Phase D 仕様凍結
+〔マイク OFF=完全解放・発話=席色リング脈動〕+ **package_relay**〔パッケージ入手は
+ホストの一時アップロード中継へ改訂・outcast へ伝文設置済み〕。
+残 = package_relay 実装（サーバ endpoint が先）→ D → デプロイ → E）
 
 > 番号の注: spec 22 は「あらすじ圧縮時の意味記憶抽出」に予約済み（ユーザー判断で保留中・
 > ファイル未作成）。本 spec は 23 を取る。outcast リポジトリの Spec 23（書庫サーバ）とは
