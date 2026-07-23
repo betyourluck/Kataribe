@@ -590,6 +590,20 @@ shared_facts:
   persistence: "GUI のユーザー編集=**即時 autosave** (眺めるだけで消えない)。ターン処理では変わらない (GM は書かない) ので受理ターンの autosave はスナップショットを書き戻すだけ。CLI は読むだけ (編集は GUI 専用)"
   facts_policy: "spec 20。**ユーザーが既成事実を宣言できるかを盤面が縛る**。ユーザーの宣言は GM への指示として毎ターン注入されるので、作者が設計した発見の順序 (謎・段階開示) を語りで迂回できてしまう。誰が虚構を所有するかは盤面で違う (TRPG=作者 / キャラ RP=共同) → 三権分立の「シナリオが縛る」脚。`Scenario.facts_policy`(serde default) + package.yaml `facts_policy`(Option・注入で全モジュールを支配=既成事実はセッション単位でモジュール跨ぎに持ち越すため)。**二値**: **locked (既定)**=タブごと非表示 / **open**=追加・編集・削除。既定 locked の根拠=宣言を持たない配布物 (書庫の既刊すべて) を安全側に置く (spec 18 pushable:false 既定と同じ判断)。当初は三値で中間に prune (削除のみ) を置いていたが、あれは **GM も書く**前提の非対称 (加算を封じ減算だけ許して誤記憶を消させる) だったので、GM 書き込み経路の撤去 (#66) と同時に撤去した — 書き手がユーザーだけなら足せないものは消せない。二層防衛 (#50): UI で隠す + commands で拒否。作者テストの開放は既存の開発者モードで足りる (ユーザー向け上書き設定は作らない=作ると作者の制約が飾りになる)"
 
+# --- 複数同時プレイ (spec 23 Phase 0 凍結 2026-07-23) -------------------------
+Multiplayer:                        # ホスト権威 + WebRTC P2P。正本はホストの GameSession のみ、ゲスト = ネット越しに view DTO を受け取る frontend
+  protocol_version: "u32 (=1)。join 時に交換し、不一致は接続拒否 (静かな解釈違いを作らない)。wire は JSON・backend 非依存 (将来 DataChannel を frontend RTCPeerConnection から Rust webrtc-rs へ移しても形を変えない)"
+  participants: "[{peer_id, entity_id, display_name}]。誰がどの entity を操作するかの正 (帰属マッピング・rev2 矛盾12)。主人公は entity_id=player の 1 行 (ホストとは限らない)。合成 prompt の発話者名 = display_name / ops の帰属 = entity_id / state_view(viewer) の宛先解決もこれ。セッション中は不変 (交代は v2)"
+  room_code: "base62 22 桁 (~131bit)。推測参加を計算量で遮断。部屋 TTL 10 分 (接続イベントで延長)・同一コードで再 knock 可 = 既存 participant の張り直し (再接続は v1 に含む。中途参加ではない)"
+  messages: "シグナリング = join / offer / answer / candidate。ゲーム = game_request / game_response (transport seam の request 面 = invoke 相当) + game_event (push 面 = Tauri emit 相当。synopsis-compacting 等をホスト frontend が中継) + timer_sync (ホスト時刻基準の残り秒ブロードキャスト。ゲスト時計と同期しない=締切の正はホストの受信締切のみ) + reveal_order (開帳の順序づけ配信)。全メッセージに sig? を予約 (v1 未使用。公開運用時の SDP 署名用=ノックサーバーは信頼点で改竄すれば MITM 可能、友人卓の v1 は自前 VPS を信頼する割り切り)"
+  package_match: "{package_id, content_hash}。hash はパッケージ zip 全体の sha256 (spec 17 SourceMeta.content_hash 流用・アセット単位ではない)。不一致は警告のみでプレイ継続 (絵が違うだけで正本はホスト)。メタ無し (手動配置) は「照合できません」表示"
+  input_window: "締切三系統 = all_submitted (全員提出で即締め) | timer (満了) | host_forced (AFK の脱出口)。未提出者は「(黙って様子を見ている)」として prompt に載せる — 省くと GM が不在と誤認する (#37 系 = presence は明示接地) + 他プレイヤーへ AFK が透明になる。既定秒数は playtest で較正 (未決1)"
+  transport: "DataChannel は reliable + ordered (SCTP が断片化・フロー制御を担う)。メッセージ上限 64KB — 16KB 超は一時的 Head-of-Line blocking を許容し、恒常的に超えうるのは GameView 全量 sync のみ (実測で超えるなら分割を実装 = 条件付き項目・未決2)。TURN = coturn を ノックサーバーと同 VPS に同居、turns:443?transport=tcp を ICE に含める (日本のモバイル CGNAT = 対称 NAT は TURN 必中・v1 必須)。クレデンシャルは一時方式 (ノックサーバーが期限付き username + HMAC を発行 = 静的パスワードの野良リレー化を防ぐ)。リレー経由でも中身は DTLS-SRTP (VPS は復号できない)"
+  asset_wire: "DTO のアセット欄は絶対パスでなく**アセット ID** (Phase A で Local 含め一本化 = DTO 二形態分裂の回避)。各クライアントが自分のローカルパッケージで resolve_asset。解決失敗は表示スキップ + 警告 (プレイ継続)"
+  item_idiom: "アイテムの拾得/譲渡/消費は**必ず主人公を経由する 2 手**で表現 (拾得 = add_item→give_item / 消費 = give_item(仲間→主人公)→remove_item)。spec 09 逐次射影が同一ターンの束ねを受理する。仲間単独の add/remove は出さない (GM_SYSTEM 接地。per-entity 化は location 分裂とセットで v2)"
+  language: "卓の言語 = ホストの言語 (GM の語り・却下理由 localize・システム文はホスト設定で生成)。ゲストの UI クロームはゲスト自身の t() のまま。参加時に「卓の言語: 日本語」を明示"
+  resume_handoff: "ホスト引き継ぎ = SessionSave の受け渡し (手動・v1 は機構化しない)。SessionSave.content.path はホストのローカル絶対パスなのでセーブ形式は変えず、resume 系 command に path_override 引数 (任意) を足す。パッケージ同一性は content_hash で照合し不一致は警告"
+
 # --- まだ繋がない脚 ----------------------------------------------------------
 deferred:
   memoria_neural: "LoreStore の bigram TF-IDF cosine を**神経 embedding** に格上げ (同 Memoria trait 裏で差し替え)。usage-over-extension: TF-IDF cosine が不足と接地できてから。語彙の表層に依らない真の意味近傍が要る時のみ。recall→prompt 注入・bigram cosine は ✅実装済"
