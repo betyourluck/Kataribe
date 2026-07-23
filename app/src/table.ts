@@ -269,6 +269,7 @@ export async function guestJoin(roomCode: string, manualPackagePath?: string): P
   link.onDisconnected = () => {
     store.multi.connected = false;
     store.logToast = t("table.disconnected");
+    scheduleReconnect(); // 手動ボタンを待たずに取りに行く
   };
   // **join の前に**卓の状態を据える。hello は接続直後に飛んでくるので、後から
   // freshMultiState で上書きすると hello が書いた値 (connected / 中継の現況) が消え、
@@ -286,11 +287,65 @@ export async function guestJoin(roomCode: string, manualPackagePath?: string): P
   store.multi.myPeerId = link.peerId;
 }
 
-/** ゲスト: 再接続 (再 knock = identity 維持の張り直し)。 */
+// ---------------------------------------------------------------------------
+// 自動再接続 — 切れたら黙って諦めない
+// ---------------------------------------------------------------------------
+//
+// WebRTC は切断が日常で、部屋は TTL (既定 10 分・接続イベントで延長) まで待ち受けている。
+// その間なら identity (peer_id) を保ったまま張り直せるので、手動ボタンを待たずに取りに行く。
+// 間隔は指数的に伸ばす — ノックサーバーは IP 単位のレート制限を持つので、詰めて叩くと
+// 自分で自分を締め出す。TTL を越えたら諦めて「入り直してほしい」と言う (黙って止まらない)。
+
+const RECONNECT_DELAYS = [1_000, 2_000, 4_000, 8_000, 15_000, 15_000, 30_000];
+/** 諦めるまでの試行回数 (末尾 30s × 残り ≒ 部屋の TTL 10 分をわずかに越える)。 */
+const RECONNECT_MAX = 20;
+
+let reconnectTimer: number | undefined;
+
+function cancelReconnect() {
+  if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+  reconnectTimer = undefined;
+  useGameStore().multi.reconnecting = null;
+}
+
+function scheduleReconnect() {
+  const store = useGameStore();
+  const attempt = (store.multi.reconnecting ?? 0) + 1;
+  if (attempt > RECONNECT_MAX) {
+    store.multi.reconnecting = null;
+    store.logToast = t("table.reconnectGaveUp");
+    return;
+  }
+  store.multi.reconnecting = attempt;
+  const delay = RECONNECT_DELAYS[Math.min(attempt - 1, RECONNECT_DELAYS.length - 1)];
+  reconnectTimer = window.setTimeout(() => {
+    void attemptReconnect();
+  }, delay);
+}
+
+async function attemptReconnect() {
+  const store = useGameStore();
+  // 卓を出た後に発火した遅延は捨てる (leaveTable は guestLink を null にする)。
+  if (!guestLink || store.multi.role !== "guest") return cancelReconnect();
+  if (store.multi.connected) return cancelReconnect();
+  try {
+    await guestLink.reconnect(store.multi.roomCode);
+    // ここで成功なのは**シグナリングまで**。ホストとの DataChannel が開いて hello が
+    // 返るまで connected は立たないので、次の試行を予約したまま待つ (hello 受信で畳む)。
+  } catch (e) {
+    console.warn("[table] 再接続に失敗:", e);
+  }
+  scheduleReconnect();
+}
+
+/** ゲスト: 再接続 (再 knock = identity 維持の張り直し)。手動ボタンからも呼ぶ。 */
 export async function guestReconnect(): Promise<void> {
   const store = useGameStore();
   if (!guestLink) return;
+  cancelReconnect(); // 手動で押されたら自動の待ち時間は捨てて今すぐ行く
+  store.multi.reconnecting = 1;
   await guestLink.reconnect(store.multi.roomCode);
+  scheduleReconnect();
 }
 
 /**
@@ -314,6 +369,7 @@ async function onGuestTable(m: Record<string, unknown>, myHash: string | null) {
     case "hello": {
       const h = m as unknown as TableHello;
       store.multi.connected = true;
+      cancelReconnect(); // ホストと繋がった = 再接続の輪はここで畳む
       store.multi.hostName = h.display_name;
       const relaySha = h.relay_sha256 ?? null;
       if (relaySha) {
@@ -439,6 +495,7 @@ export async function toggleMic(on: boolean): Promise<void> {
 export function leaveTable() {
   const store = useGameStore();
   hostStopTimer();
+  cancelReconnect();
   // 卓を開いたまま閉じた場合の中継の後始末 (開始時に消していれば冪等な二度目)。
   void relayDelete();
   hostTable?.close();

@@ -86,6 +86,13 @@ async function leave() {
       <span v-if="multi.timerRemaining !== null" class="text-ember">⏱ {{ multi.timerRemaining }}s</span>
     </template>
     <span v-else class="text-parchment/50">{{ t("table.waitingStart") }}</span>
+    <!-- 切断は WebRTC の日常。黙って止まらず、取りに行っていることを見せる。 -->
+    <span v-if="multi.reconnecting !== null" class="text-ember">
+      {{ t("table.reconnecting", { n: multi.reconnecting }) }}
+    </span>
+    <span v-else-if="multi.role === 'guest' && !multi.connected" class="text-ember">
+      {{ t("table.barDisconnected") }}
+    </span>
 
     <!-- 退出 → 締切 → マイク の順で右寄せ。退出は破壊的なので締切から一番遠い側に置き、
          ホストには確認を挟む (卓を閉じると全員のセッションが終わる)。 -->

@@ -179,6 +179,8 @@ export interface MultiState {
    * 手動選択へ落ちた。プレイ自体は止めない。
    */
   relay: "off" | "uploading" | "downloading" | "ready" | "failed";
+  /** 自動再接続の試行回数 (null = 再接続していない)。切れたら黙って諦めず取りに行く。 */
+  reconnecting: number | null;
   /** マイクが入っているか (spec 23 Phase D)。**OFF は完全解放** = デバイスを掴んでいない。 */
   micOn: boolean;
   /** 発話レベル (entityId → 0..1)。席色リングの脈動の素材。~12Hz で更新。 */
@@ -203,6 +205,7 @@ export function freshMultiState(): MultiState {
     timerRemaining: null,
     assignments: [],
     relay: "off",
+    reconnecting: null,
     micOn: false,
     voiceLevels: {},
   };

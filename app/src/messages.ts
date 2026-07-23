@@ -479,6 +479,10 @@ export const messages = {
       barSubmitted: "提出済み (打ち直せば上書き)",
       barWaiting: "待ち: {names}",
       barCloseDisabled: "まだ誰も提出していません",
+      reconnecting: "再接続中… ({n} 回目)",
+      barDisconnected: "接続が切れています",
+      reconnectGaveUp:
+        "再接続できませんでした (部屋の待受が終了した可能性があります)。部屋コードで入り直してください",
       closeTableConfirm:
         "卓を閉じると参加者全員のセッションが終わります (正本はあなたの環境にあります)。よろしいですか？",
       closeTableReally: "本当に閉じる",
@@ -991,6 +995,10 @@ export const messages = {
       barSubmitted: "submitted (retype to overwrite)",
       barWaiting: "waiting on: {names}",
       barCloseDisabled: "Nobody has submitted yet",
+      reconnecting: "reconnecting… (attempt {n})",
+      barDisconnected: "disconnected",
+      reconnectGaveUp:
+        "Couldn't reconnect (the room may have expired). Join again with the room code",
       closeTableConfirm:
         "Closing the table ends the session for everyone (the source of truth lives on your machine). Are you sure?",
       closeTableReally: "Close it",

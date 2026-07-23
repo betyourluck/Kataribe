@@ -463,6 +463,10 @@ export class GuestLink implements GameTransport {
   /** 再 knock (契約 room_code)。identity (peer_id) を保って張り直す。 */
   async reconnect(roomCode: string): Promise<void> {
     const reuse = this.sig.peerId || undefined;
+    // 古い WS を先に畳む。DataChannel だけが死んで WS が生きている場合、閉じずに
+    // 再 join すると同じ peer_id の接続がノックサーバー側で二重になる
+    // (close() は peerId を保持するので reuse は生き残る)。
+    this.sig.close();
     const peers = await this.sig.join(this.knockUrl, roomCode, reuse);
     this.sig.events.onSignal = (from, kind, payload) => void this.onSignal(from, kind, payload);
     this.helloSent.clear();
