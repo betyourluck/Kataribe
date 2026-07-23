@@ -23,6 +23,7 @@ import ConfirmDialog from "./components/ConfirmDialog.vue";
 import ConversationLog from "./components/ConversationLog.vue";
 import StatePanel from "./components/StatePanel.vue";
 import ActionInput from "./components/ActionInput.vue";
+import TableBar from "./components/TableBar.vue";
 import TtsControls from "./components/TtsControls.vue";
 import Icon from "./components/Icon.vue";
 
@@ -258,6 +259,9 @@ onUnmounted(() => {
           <!-- 作者が use_tts を宣言した盤面にだけ出す (宣言のない配布物は無音のまま)。 -->
           <TtsControls v-if="game.useTts" />
         </div>
+        <!-- 卓の入力窓の現況 (提出数・待ち・締切)。卓ダイアログはモーダルなので、
+             ここに常設しないと「提出する」と「締める」が同時に見えない。 -->
+        <TableBar />
         <ActionInput />
       </main>
 

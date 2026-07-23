@@ -476,6 +476,9 @@ export const messages = {
       micOnHint: "話せます。OFF にするとマイクを完全に手放します",
       micOffHint: "マイクを掴んでいません (OS の使用中表示も出ません)",
       micDenied: "マイクを使えませんでした ({error})",
+      barSubmitted: "提出済み (打ち直せば上書き)",
+      barWaiting: "待ち: {names}",
+      barCloseDisabled: "まだ誰も提出していません",
       closeTableConfirm:
         "卓を閉じると参加者全員のセッションが終わります (正本はあなたの環境にあります)。よろしいですか？",
       closeTableReally: "本当に閉じる",
@@ -985,6 +988,9 @@ export const messages = {
       micOnHint: "You can talk. Turning it off releases the microphone completely",
       micOffHint: "The microphone is not held (no OS in-use indicator)",
       micDenied: "Couldn't use the microphone ({error})",
+      barSubmitted: "submitted (retype to overwrite)",
+      barWaiting: "waiting on: {names}",
+      barCloseDisabled: "Nobody has submitted yet",
       closeTableConfirm:
         "Closing the table ends the session for everyone (the source of truth lives on your machine). Are you sure?",
       closeTableReally: "Close it",
