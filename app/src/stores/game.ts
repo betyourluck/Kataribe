@@ -1567,17 +1567,17 @@ export const useGameStore = defineStore("game", {
     // --- 多人数プレイ (spec 23 Phase C) ---
 
     // 入力窓へ自分の行動を提出する (再提出は上書き)。締切はホストが握る (決定 4)。
-    async submitPartyInput(action: string) {
+    async submitPartyInput(action: string, pass = false) {
       const text = action.trim();
-      if (!text || !this.multi.myPeerId) return;
+      if ((!text && !pass) || !this.multi.myPeerId) return;
       try {
         const st = await transport.request<{ submitted: string[]; waiting: string[] }>(
           "submit_turn_input",
-          { peerId: this.multi.myPeerId, action: text },
+          { peerId: this.multi.myPeerId, action: text, pass },
         );
         // 自分の提出だけログに出す (他人の文面は narration が映す)。再提出は上書き表示しない。
         if (!this.multi.inputStatus?.submitted.includes(this.multi.myPeerId)) {
-          this.log.push({ kind: "player", text });
+          this.log.push({ kind: "player", text: pass ? t("table.passLogged") : text });
         }
         this.multi.inputStatus = st;
         tableHooks.onLocalInputStatus?.(st);

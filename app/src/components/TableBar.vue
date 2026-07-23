@@ -94,10 +94,23 @@ async function leave() {
       {{ t("table.barDisconnected") }}
     </span>
 
+    <!-- 操作は右寄せでひと塊に (卓開始前は PASS と締切が消えるので、囲って位置を保つ)。 -->
+    <span class="ml-auto flex items-center gap-2">
+    <!-- PASS = 「意図して何もしない」。未提出 (離席・考え中) と区別して提出済みに数えるので、
+         全員が決めた時点で番が進む。待つことも手であり、遅延イベントはこれでしか進まない。 -->
+    <button
+      v-if="multi.started"
+      class="rounded border border-ash px-2 py-0.5 text-parchment/70 hover:border-ember hover:text-parchment disabled:opacity-40"
+      :disabled="game.loading || iSubmitted"
+      :title="t('table.passHint')"
+      @click="game.submitPartyInput('', true)"
+    >
+      {{ t("table.pass") }}
+    </button>
     <!-- 退出 → 締切 → マイク の順で右寄せ。退出は破壊的なので締切から一番遠い側に置き、
          ホストには確認を挟む (卓を閉じると全員のセッションが終わる)。 -->
     <button
-      class="ml-auto rounded border border-ember/60 px-2 py-0.5 text-ember hover:bg-ember/10"
+      class="rounded border border-ember/60 px-2 py-0.5 text-ember hover:bg-ember/10"
       @click="leave"
     >
       {{ multi.role === "host" ? t("table.closeTable") : t("table.leaveTable") }}
@@ -132,5 +145,6 @@ async function leave() {
         <path v-if="!multi.micOn" d="M4 4l16 16" stroke-linecap="round" />
       </svg>
     </button>
+    </span>
   </div>
 </template>

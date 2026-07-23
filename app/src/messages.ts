@@ -494,6 +494,9 @@ export const messages = {
       barWaiting: "待ち: {names}",
       barCloseDisabled: "まだ誰も提出していません",
       hostClosed: "―― ホストが卓を閉じました ――",
+      pass: "何もしない",
+      passHint: "この番は動かないと決める（未提出とは違い、提出済みとして数えます）",
+      passLogged: "（何もしないと決めた）",
       reconnecting: "再接続中… ({n} 回目)",
       barDisconnected: "接続が切れています",
       reconnectGaveUp:
@@ -1025,6 +1028,9 @@ export const messages = {
       barWaiting: "waiting on: {names}",
       barCloseDisabled: "Nobody has submitted yet",
       hostClosed: "―― The host closed the table ――",
+      pass: "pass",
+      passHint: "Decide not to act this turn (counts as submitted, unlike staying silent)",
+      passLogged: "(chose to do nothing)",
       reconnecting: "reconnecting… (attempt {n})",
       barDisconnected: "disconnected",
       reconnectGaveUp:

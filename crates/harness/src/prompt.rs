@@ -193,25 +193,46 @@ pub struct PartyInput {
 /// 省くと GM が不在と誤認して語りから消す (#37 系 = presence は明示接地が要る)。
 pub const SILENT_ACTION: &str = "（黙って様子を見ている）";
 
+/// **意図して何もしない**と宣言した人の行動 (PASS)。未提出 ([`SILENT_ACTION`]) とは
+/// 別物として扱う — あちらは「分からない」(離席・考え中)、こちらは「決めた」。
+/// 締切の判断でも差が出る: PASS は提出済みなので全員提出の自動締切が発火する。
+pub const PASS_ACTION: &str = "（何もしないと決めた）";
+
+/// 誰も動かなかったターンに添える枠づけ。**待つことは行動である** — 遅延イベント
+/// (`turns_since`) は受理ターンでしか進まないので、全員 PASS で番を送れないと
+/// 「N ターン待つ」が盤面から書けなくなる。GM には世界の側を動かすよう促しつつ、
+/// **プレイヤーが取っていない行動を捏造させない**線を同時に引く。
+pub const NOBODY_ACTED_NOTE: &str = "（この番、誰も動かなかった。時間だけが流れる。世界の側の変化を描き、プレイヤーが取っていない行動を勝手に足さないこと）";
+
 /// 全員の入力を発話者名つきで 1 つの行動文に束ねる (spec 23 決定 4)。
 ///
 /// 各行は「名前 (entity): 行動」— state_brief の presence が「名前 (id)」形式で
 /// 語りと ops の両方に接地するのと同じ流儀で、帰属 (どの行が誰の entity か) を
 /// 行そのものに埋め込む。未提出者は [`SILENT_ACTION`] で必ず載せる。
 pub fn compose_party_action(inputs: &[PartyInput]) -> String {
-    inputs
+    let acts: Vec<&str> = inputs
         .iter()
         .map(|i| {
-            let act = i
-                .action
+            i.action
                 .as_deref()
                 .map(str::trim)
                 .filter(|a| !a.is_empty())
-                .unwrap_or(SILENT_ACTION);
-            format!("{} ({}): {}", i.member.name, i.member.entity, act)
+                .unwrap_or(SILENT_ACTION)
         })
+        .collect();
+    let mut out = inputs
+        .iter()
+        .zip(&acts)
+        .map(|(i, act)| format!("{} ({}): {}", i.member.name, i.member.entity, act))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    // 誰一人動かなかった番は、そのままだと GM が「何も起きない」で終わらせがち。
+    // 世界の側が動く番であることを枠づける (= 待機を有効な手にする)。
+    if !acts.is_empty() && acts.iter().all(|a| *a == SILENT_ACTION || *a == PASS_ACTION) {
+        out.push('\n');
+        out.push_str(NOBODY_ACTED_NOTE);
+    }
+    out
 }
 
 /// 多人数プレイの接地ブロック (GM_SYSTEM の末尾に足す)。2 人未満なら空 = 単騎の

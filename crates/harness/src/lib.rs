@@ -48,7 +48,10 @@ pub use synopsis::{
     SynopsisRequest, SynopsisTrigger, SYNOPSIS_KEEP_RECENT, SYNOPSIS_MIN_LLM_TURNS,
     SYNOPSIS_OVERFLOW_THRESHOLD, SYNOPSIS_TEXT_MAX, SYNOPSIS_TIMEOUT_SECS,
 };
-pub use prompt::{compose_party_action, party_note, PartyInput, PartyMember, SILENT_ACTION};
+pub use prompt::{
+    compose_party_action, party_note, PartyInput, PartyMember, NOBODY_ACTED_NOTE, PASS_ACTION,
+    SILENT_ACTION,
+};
 pub use turn::{
     carryover_narration, chronicle_entry, contest_digest, excluded_check_ops, run_turn,
     ChronicleTags, RetryCause, TurnLog,
@@ -424,6 +427,40 @@ mod tests {
             action: Some("   ".into()),
         }];
         assert!(compose_party_action(&blank).contains("黙って様子を見ている"));
+    }
+
+    /// 【spec 23 PASS】**待つことは行動である**。誰も動かなかった番には枠づけを添えて、
+    /// GM に「世界の側が動く番」だと伝える (そのままだと「何も起きない」で終わらせがち)。
+    /// 同時に**プレイヤーが取っていない行動を捏造させない**線も引く。
+    ///
+    /// 動機は表示でなく機構: 遅延イベント (`turns_since`) は受理ターンでしか進まないので、
+    /// 全員 PASS で番を送れないと「N ターン待つ」が盤面から書けない。
+    /// 未提出 (分からない) と PASS (決めた) は別物として行に出す。
+    #[test]
+    fn all_pass_turn_is_framed_as_the_world_moving() {
+        use prompt::{compose_party_action, PartyInput, PartyMember, PASS_ACTION};
+        let member = |e: &str, n: &str| PartyMember { entity: e.into(), name: n.into() };
+
+        // 全員 PASS (+ 未提出が混ざっても「誰も動かなかった」は成立する)。
+        let idle = vec![
+            PartyInput { member: member("player", "アキラ"), action: Some(PASS_ACTION.into()) },
+            PartyInput { member: member("alice", "ユイ"), action: None },
+        ];
+        let composed = compose_party_action(&idle);
+        assert!(composed.contains("アキラ (player): （何もしないと決めた）"), "{composed}");
+        assert!(composed.contains("ユイ (alice): （黙って様子を見ている）"), "PASS と未提出は別の文言");
+        assert!(composed.contains("誰も動かなかった"), "枠づけが添う: {composed}");
+        assert!(composed.contains("勝手に足さない"), "行動の捏造は禁じる: {composed}");
+
+        // 一人でも動いていれば枠づけは出ない (通常のターンを汚さない)。
+        let acting = vec![
+            PartyInput { member: member("player", "アキラ"), action: Some("扉を調べる".into()) },
+            PartyInput { member: member("alice", "ユイ"), action: Some(PASS_ACTION.into()) },
+        ];
+        assert!(
+            !compose_party_action(&acting).contains("誰も動かなかった"),
+            "動いた人が居る番には添えない"
+        );
     }
 
     /// 【spec 23 Phase B 多人数接地】party ≥2 なら GM_SYSTEM の system ブロック末尾に

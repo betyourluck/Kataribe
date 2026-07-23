@@ -3676,6 +3676,8 @@ async fn set_participants(
 async fn submit_turn_input(
     peer_id: String,
     action: String,
+    // pass = true なら PASS (意図して何もしない)。action は無視され定型文が入る。
+    pass: Option<bool>,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<InputStatusView, String> {
     let mut guard = session.lock().await;
@@ -3683,9 +3685,16 @@ async fn submit_turn_input(
     if !sess.participants.iter().any(|p| p.peer_id == peer_id) {
         return Err(format!("未知の参加者です: {peer_id}"));
     }
-    let action = action.trim().to_string();
+    // PASS (意図して何もしない) は engine 側の定型文へ寄せる — 提示層が語りの文言を
+    // 持たない (i18n で揺れた文字列が prompt に混ざらない)。未提出とは別物として扱い、
+    // **提出済みに数える**ので全員提出の自動締切が発火する。
+    let action = if pass.unwrap_or(false) {
+        harness::PASS_ACTION.to_string()
+    } else {
+        action.trim().to_string()
+    };
     if action.is_empty() {
-        return Err("行動が空です (様子を見るなら未提出のまま締切を待ってください)".into());
+        return Err("行動が空です (何もしないなら PASS を押してください)".into());
     }
     sess.pending_inputs.insert(peer_id, action);
     Ok(input_status_of(&sess.participants, &sess.pending_inputs))
