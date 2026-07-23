@@ -28,7 +28,7 @@ import {
   tableName,
 } from "../table";
 
-defineEmits<{ (e: "close"): void }>();
+const emit = defineEmits<{ (e: "close"): void }>();
 const game = useGameStore();
 
 const name = ref(tableName());
@@ -114,6 +114,13 @@ function toggleAutoClose() {
 
 function copyCode() {
   void navigator.clipboard?.writeText(multi.value.roomCode);
+}
+
+/** 締切 → ダイアログを閉じる。締めた直後に見たいのは語りであってこの画面ではない
+ *  (以後の運用は入力欄の上の卓バーで足りる)。 */
+function closeWindowAndDismiss() {
+  void hostCloseWindow();
+  emit("close");
 }
 
 /** 卓を畳む。ホストが抜けると全員のセッションが終わるので、ホストにだけ確認を挟む。 */
@@ -251,7 +258,7 @@ function leave() {
             <span v-if="multi.timerRemaining !== null" class="ml-2 text-ember">⏱ {{ multi.timerRemaining }}s</span>
           </p>
           <div class="mt-2 flex flex-wrap items-center gap-2">
-            <button class="rounded bg-ember/80 px-3 py-1 text-sm font-bold text-ink hover:bg-ember disabled:opacity-40" :disabled="game.loading" @click="hostCloseWindow()">
+            <button class="rounded bg-ember/80 px-3 py-1 text-sm font-bold text-ink hover:bg-ember disabled:opacity-40" :disabled="game.loading" @click="closeWindowAndDismiss">
               {{ t("table.closeNow") }}
             </button>
             <label class="flex items-center gap-1 text-xs text-parchment/70">

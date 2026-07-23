@@ -1,18 +1,20 @@
 <script setup lang="ts">
 /**
- * 卓バー (spec 23) — 入力窓の現況を**行動入力欄のすぐ上に常設**する。
+ * 卓バー (spec 23) — 卓の運用を**行動入力欄のすぐ上に常設**する。
  *
- * 卓ダイアログはモーダルなので、開いている間は行動入力に触れない。締切ボタンだけが
- * ダイアログの中にあると「提出する」と「締める」が同時に見えず、ホストは自分の行動を
- * 出せないまま締切を押すことになる (2026-07-23 ユーザー実測 — 提出 0/2 のまま
- * 「誰も行動を提出していません」で弾かれる)。運用の状態は常に見えている必要がある。
+ * 卓ダイアログはモーダルなので、開いている間は行動入力に触れない。運用の操作
+ * (締切・退出・マイク) がダイアログの中だけにあると、「提出する」と「締める」が
+ * 同時に見えず、ホストは自分の行動を出せないまま締切を押すことになる
+ * (2026-07-23 ユーザー実測 — 提出 0/2 のまま「誰も行動を提出していません」で弾かれる)。
  *
- * 卓が始まっている間だけ出る。単騎では何も描かない。
+ * **卓に居る間ずっと出る** (卓開始前も)。提出まわりの表示だけが開始後に現れる —
+ * ゲストが「ホストが席を整えています」の間もマイクと退出には手が届く必要がある。
+ * 単騎では何も描かない。
  */
 import { computed } from "vue";
 import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
-import { hostCloseWindow } from "../table";
+import { hostCloseWindow, leaveTable, toggleMic } from "../table";
 
 const game = useGameStore();
 const multi = computed(() => game.multi);
@@ -35,30 +37,93 @@ const iSubmitted = computed(
 const waitingNames = computed(() =>
   (multi.value.inputStatus?.waiting ?? []).map(nameOf).join("、"),
 );
+
+// --- マイク (spec 23 Phase D) ---
+// 自分が操作している entity のレベルでボタンが脈動する。キャラの席色リングを見に
+// 行かなくても、マイクが拾えているかがその場で分かる。OFF では必ず静止させて
+// OS のマイク使用インジケータと見た目を一致させる。
+const myEntity = computed(
+  () => multi.value.assignments.find((a) => a.peerId === multi.value.myPeerId)?.entityId ?? "",
+);
+const micLevel = computed(() =>
+  multi.value.micOn ? (multi.value.voiceLevels[myEntity.value] ?? 0) : 0,
+);
+const micPulse = computed(() => ({
+  boxShadow:
+    micLevel.value > 0.02
+      ? `0 0 0 ${Math.round(micLevel.value * 5)}px rgb(var(--ember) / 0.35)`
+      : "none",
+  transition: "box-shadow 80ms linear",
+}));
+
+async function toggle() {
+  await toggleMic(!multi.value.micOn);
+}
+
+/** ホストが抜けると全員のセッションが終わるので、ホストにだけ確認を挟む。 */
+async function leave() {
+  if (multi.value.role === "host") {
+    const ok = await game.askConfirm(t("table.closeTableConfirm"), t("table.closeTableReally"));
+    if (!ok) return;
+  }
+  leaveTable();
+}
 </script>
 
 <template>
   <div
-    v-if="multi.started"
+    v-if="multi.role !== 'solo'"
     class="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-ash/60 bg-ash/20 px-4 py-1.5 text-xs"
   >
-    <span class="text-parchment/80">
-      {{ t("table.submitted") }}: {{ submittedCount }} / {{ totalCount }}
-    </span>
-    <span v-if="iSubmitted" class="text-glow">{{ t("table.barSubmitted") }}</span>
-    <span v-if="waitingNames" class="text-parchment/50 truncate">
-      {{ t("table.barWaiting", { names: waitingNames }) }}
-    </span>
-    <span v-if="multi.timerRemaining !== null" class="text-ember">⏱ {{ multi.timerRemaining }}s</span>
-    <!-- 締切はホストの専権 (決定 4)。ゲストには出さない。 -->
+    <template v-if="multi.started">
+      <span class="text-parchment/80">
+        {{ t("table.submitted") }}: {{ submittedCount }} / {{ totalCount }}
+      </span>
+      <span v-if="iSubmitted" class="text-glow">{{ t("table.barSubmitted") }}</span>
+      <span v-if="waitingNames" class="text-parchment/50 truncate">
+        {{ t("table.barWaiting", { names: waitingNames }) }}
+      </span>
+      <span v-if="multi.timerRemaining !== null" class="text-ember">⏱ {{ multi.timerRemaining }}s</span>
+    </template>
+    <span v-else class="text-parchment/50">{{ t("table.waitingStart") }}</span>
+
+    <!-- 退出 → 締切 → マイク の順で右寄せ。退出は破壊的なので締切から一番遠い側に置き、
+         ホストには確認を挟む (卓を閉じると全員のセッションが終わる)。 -->
     <button
-      v-if="multi.role === 'host'"
-      class="ml-auto rounded bg-ember/80 px-2.5 py-0.5 font-bold text-ink hover:bg-ember disabled:opacity-40"
+      class="ml-auto rounded border border-ember/60 px-2 py-0.5 text-ember hover:bg-ember/10"
+      @click="leave"
+    >
+      {{ multi.role === "host" ? t("table.closeTable") : t("table.leaveTable") }}
+    </button>
+    <button
+      v-if="multi.role === 'host' && multi.started"
+      class="rounded bg-ember/80 px-2.5 py-0.5 font-bold text-ink hover:bg-ember disabled:opacity-40"
       :disabled="game.loading || submittedCount === 0"
       :title="submittedCount === 0 ? t('table.barCloseDisabled') : ''"
       @click="hostCloseWindow()"
     >
       {{ t("table.closeNow") }}
+    </button>
+    <button
+      type="button"
+      class="grid place-items-center h-7 w-7 rounded-full border transition-colors"
+      :class="
+        multi.micOn
+          ? 'bg-ember/85 border-ember text-ink hover:bg-ember'
+          : 'bg-ink/60 border-ash text-parchment/60 hover:text-parchment hover:border-ember'
+      "
+      :style="micPulse"
+      :title="multi.micOn ? t('table.micOn') : t('table.micOff')"
+      :aria-label="multi.micOn ? t('table.micOn') : t('table.micOff')"
+      :aria-pressed="multi.micOn"
+      @click="toggle"
+    >
+      <!-- マイク (ON) / 斜線つきマイク (OFF)。線画は UI 装飾なので currentColor で描く。 -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-4 h-4">
+        <rect x="9" y="3" width="6" height="11" rx="3" />
+        <path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke-linecap="round" />
+        <path v-if="!multi.micOn" d="M4 4l16 16" stroke-linecap="round" />
+      </svg>
     </button>
   </div>
 </template>
