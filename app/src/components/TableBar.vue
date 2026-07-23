@@ -74,7 +74,7 @@ const leave = confirmAndLeave;
 <template>
   <div
     v-if="multi.role !== 'solo'"
-    class="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-ash/60 bg-ash/20 px-4 py-1.5 text-xs"
+    class="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-ash bg-ink px-4 py-1.5 text-xs"
   >
     <template v-if="multi.started">
       <span class="text-parchment/80">

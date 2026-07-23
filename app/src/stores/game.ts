@@ -137,6 +137,22 @@ function loadBgBrightness(): number {
   const v = Number(localStorage.getItem(BG_BRIGHTNESS_KEY));
   return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 50;
 }
+/**
+ * 会話ペイン (物語の舞台) の配色。**アプリのテーマとは独立**に持つ。
+ *
+ * 動機: 舞台は語りが読まれる場所で、UI クローム (ヘッダ・卓バー・入力欄) とは
+ * 求めるものが違う。ライト/ダークを切り替えるたびに舞台の見え方まで変わると、
+ * 同じ盤面が別物に見えてしまう (ユーザーFB 2026-07-23「テーマが変わったときに
+ * 影響を受け易すぎる」)。**背景画像のある盤面では従来から dark に固定**していたので、
+ * 既定 `dark` はその一貫化でもある。`auto` を選べば従来どおりテーマに従う。
+ */
+export type PaneTheme = "dark" | "light" | "auto";
+const PANE_THEME_KEY = "kataribe.paneTheme";
+function loadPaneTheme(): PaneTheme {
+  const v = localStorage.getItem(PANE_THEME_KEY);
+  return v === "light" || v === "auto" ? v : "dark";
+}
+
 // 音量 0..100 (BGM ループと SE one-shot に共通でかかる)。既定は中間の 50。
 const AUDIO_VOLUME_KEY = "kataribe.audioVolume";
 const AUDIO_MUTED_KEY = "kataribe.audioMuted";
@@ -428,6 +444,8 @@ interface GameState {
   presentCharacters: CharacterView[];
   // 背景の明るさ 0..100 (大きいほど画像が明るく見える=暗幕が薄い)。グラフィック設定。
   bgBrightness: number;
+  /** 会話ペインの配色 (アプリのテーマと独立。既定 dark)。 */
+  paneTheme: PaneTheme;
   // 本文フォント (MESSAGE_FONTS の id)。表示設定。
   msgFont: string;
   // 本文の文字色 (hex)。空 = テーマ既定 (parchment)。表示設定。
@@ -551,6 +569,7 @@ export const useGameStore = defineStore("game", {
       bgm: null,
       presentCharacters: [],
       bgBrightness: loadBgBrightness(),
+      paneTheme: loadPaneTheme(),
       diceReveal: loadDiceReveal(),
       pendingTail: [],
       pendingSe: [],
@@ -644,6 +663,14 @@ export const useGameStore = defineStore("game", {
         backgroundSize: "cover",
         backgroundPosition: "center",
       };
+    },
+    /**
+     * 会話ペインに実際に敷く data-theme。背景画像がある盤面は**従来どおり dark 固定**
+     * (暗幕の上に濃色文字を置かない)。`auto` は null = 上位のテーマを継ぐ。
+     */
+    paneThemeAttr: (s): string | null => {
+      if (s.background) return "dark";
+      return s.paneTheme === "auto" ? null : s.paneTheme;
     },
     // 実効音量 0..1 (BGM/SE 共通)。ミュート時は 0。<audio>.volume と new Audio に渡す。
     audioGain: (s): number => (s.audioMuted ? 0 : Math.max(0, Math.min(1, s.audioVolume / 100))),
@@ -803,6 +830,12 @@ export const useGameStore = defineStore("game", {
     setBgBrightness(v: number) {
       this.bgBrightness = Math.max(0, Math.min(100, Math.round(v)));
       localStorage.setItem(BG_BRIGHTNESS_KEY, String(this.bgBrightness));
+    },
+
+    // 会話ペインの配色を設定 (即時反映 + localStorage 永続化)。
+    setPaneTheme(v: PaneTheme) {
+      this.paneTheme = v;
+      localStorage.setItem(PANE_THEME_KEY, v);
     },
 
     // 右ペインの幅を設定 (ドラッグ中に即時反映 + localStorage 永続化)。範囲でクランプ。

@@ -271,8 +271,16 @@ onUnmounted(() => {
              グローバルテーマに従う (ライトでは明るい入力欄)。 -->
         <!-- 会話ペイン。`group` + `relative` は読み上げ操作 (TtsControls) をホバーで
              右下に浮き出させるための土台 — 常設せず、寄せれば届く位置に置く。 -->
-        <div v-else class="relative flex-1 flex flex-col min-h-0 group">
-          <ConversationLog :data-theme="game.background ? 'dark' : null" />
+        <!-- 会話ペイン = 物語の舞台。**アプリのテーマから独立**した配色を持つ
+             (設定 → グラフィック)。背景画像が無いときだけ自前の地色を敷く —
+             敷くと画像が隠れるので、画像のある盤面では暗幕つきの main が地になる。 -->
+        <div
+          v-else
+          class="relative flex-1 flex flex-col min-h-0 group"
+          :class="game.background ? '' : 'bg-ink'"
+          :data-theme="game.paneThemeAttr"
+        >
+          <ConversationLog />
           <!-- 作者が use_tts を宣言した盤面にだけ出す (宣言のない配布物は無音のまま)。 -->
           <TtsControls v-if="game.useTts" />
         </div>

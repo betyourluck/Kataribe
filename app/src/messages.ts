@@ -132,6 +132,12 @@ export const messages = {
       },
       graphics: {
         heading: "グラフィック",
+        paneTheme: "会話ペインの配色",
+        paneDark: "暗い（既定・テーマに左右されない）",
+        paneLight: "明るい（テーマに左右されない）",
+        paneAuto: "アプリのテーマに従う",
+        paneNote:
+          "語りが読まれる「舞台」の配色です。UI（ヘッダ・入力欄・卓バー）はアプリのテーマに従いますが、舞台はここで固定できます — ライト/ダークを切り替えるたびに同じ盤面が別物に見えるのを防ぎます。背景画像のある盤面は暗幕を敷くため常に暗い配色です。",
         brightness: "背景の明るさ（{value}）",
         note:
           "背景画像にかける暗幕の濃さを調整します（右に動かすほど画像が明るく、左ほど暗く＝文字が読みやすく）。即時適用・localStorage に保存。",
@@ -672,6 +678,12 @@ export const messages = {
       },
       graphics: {
         heading: "Graphics",
+        paneTheme: "Conversation pane colours",
+        paneDark: "Dark (default — independent of theme)",
+        paneLight: "Light (independent of theme)",
+        paneAuto: "Follow the app theme",
+        paneNote:
+          "Colours for the “stage” where the narration is read. The UI (header, input row, table bar) follows the app theme, but the stage can be pinned here — so the same board doesn't look like a different game when you toggle light/dark. Boards with a background image always use the dark palette (the scrim needs it).",
         brightness: "Background brightness ({value})",
         note:
           "Adjusts the dark overlay on the background image (drag right for a brighter image, left for darker = more readable text). Applied instantly, saved to localStorage.",

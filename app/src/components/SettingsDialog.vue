@@ -21,6 +21,7 @@ import {
   newProfileId,
   profileMatchesConfig,
   type AiModelProfile,
+  type PaneTheme,
 } from "../stores/game";
 import * as tts from "../tts";
 // 卓の音声 (mesh)。この file の `voice` は TTS 設定の ref なので別名で取る。
@@ -472,6 +473,20 @@ onMounted(async () => {
           <!-- グラフィック -->
           <section v-else-if="tab === 'graphics'" class="space-y-3">
             <h3 class="text-parchment font-bold">{{ t("settings.graphics.heading") }}</h3>
+            <!-- 会話ペインの配色。舞台 (語りが読まれる場所) を UI テーマから切り離す。 -->
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.graphics.paneTheme") }}
+              <select
+                :value="game.paneTheme"
+                class="mt-1 block w-64 rounded border border-ash bg-ash/30 px-2 py-1 text-sm"
+                @change="game.setPaneTheme(($event.target as HTMLSelectElement).value as PaneTheme)"
+              >
+                <option value="dark">{{ t("settings.graphics.paneDark") }}</option>
+                <option value="light">{{ t("settings.graphics.paneLight") }}</option>
+                <option value="auto">{{ t("settings.graphics.paneAuto") }}</option>
+              </select>
+            </label>
+            <p class="text-parchment/40 text-xs">{{ t("settings.graphics.paneNote") }}</p>
             <label class="block text-sm text-parchment/70">
               {{ t("settings.graphics.brightness", { value: game.bgBrightness }) }}
               <input
