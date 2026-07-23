@@ -15,6 +15,7 @@ import { LocalTransport, tableHooks, transport } from "./transport";
 import { useGameStore, freshMultiState, SEAT_COLORS } from "./stores/game";
 import type { GameView, TurnView } from "./types/api";
 import { t } from "./i18n";
+import { voice, LOCAL_PEER } from "./voice";
 
 /** ノックサーバー URL (設定・localStorage 永続)。既定は公式 (契約 knock_hosting)。 */
 const KNOCK_URL_KEY = "kataribe.knockUrl";
@@ -153,6 +154,7 @@ export async function hostStartTable(): Promise<void> {
   await invoke("set_participants", { participants, hostPeerId: "host" });
   // 割り当ての可視化素材 (顔アイコンの席色リング + プロフィールの「プレイヤー: ○○」)。
   store.multi.assignments = participants.map((p, i) => ({
+    peerId: p.peer_id,
     entityId: p.entity_id,
     displayName: p.display_name,
     color: SEAT_COLORS[i % SEAT_COLORS.length],
@@ -348,6 +350,7 @@ async function onGuestTable(m: Record<string, unknown>, myHash: string | null) {
       const view = m.view as GameView;
       const parts = (m.participants as { peer_id: string; entity_id: string; display_name: string }[]) ?? [];
       store.multi.assignments = parts.map((p, i) => ({
+        peerId: p.peer_id,
         entityId: p.entity_id,
         displayName: p.display_name,
         color: SEAT_COLORS[i % SEAT_COLORS.length],
@@ -389,6 +392,49 @@ export function guestPeerId(): string {
   return guestLink?.peerId ?? "";
 }
 
+// ---------------------------------------------------------------------------
+// 音声 (spec 23 Phase D) — voice は peer_id しか知らないので、席への写像はここが持つ
+// ---------------------------------------------------------------------------
+
+/** シグナリングの peer_id を participants の peer_id へ寄せる。 */
+function participantPeer(signalPeer: string): string {
+  const store = useGameStore();
+  if (signalPeer === LOCAL_PEER) {
+    // 自分。ホストの participants 上の id は "host" 固定 (シグナリング id とは別)。
+    return store.multi.role === "host" ? "host" : guestPeerId();
+  }
+  // ゲストから見たホストは、シグナリング id で届くので "host" へ読み替える。
+  if (guestLink && signalPeer === guestLink.hostSignalId) return "host";
+  return signalPeer;
+}
+
+/** 発話レベルを entity へ写して store に載せる (席色リングの脈動の素材)。 */
+voice.onLevels = (levels) => {
+  const store = useGameStore();
+  if (store.multi.role === "solo") return;
+  const out: Record<string, number> = {};
+  for (const [peer, level] of Object.entries(levels)) {
+    const p = participantPeer(peer);
+    const seat = store.multi.assignments.find((a) => a.peerId === p);
+    if (seat) out[seat.entityId] = level;
+  }
+  store.multi.voiceLevels = out;
+};
+
+voice.onMicError = (message) => {
+  const store = useGameStore();
+  store.multi.micOn = false;
+  store.logToast = t("table.micDenied", { error: message });
+};
+
+/** マイクの ON/OFF。**OFF は完全解放** (OS のマイク使用インジケータが消える)。 */
+export async function toggleMic(on: boolean): Promise<void> {
+  const store = useGameStore();
+  await voice.setMic(on);
+  store.multi.micOn = voice.micOn;
+  if (!voice.micOn) store.multi.voiceLevels = {};
+}
+
 /** 卓を畳む (両ロール)。ゲストは単騎の配送路へ戻る。 */
 export function leaveTable() {
   const store = useGameStore();
@@ -403,5 +449,6 @@ export function leaveTable() {
   tableHooks.onLocalInputStatus = undefined;
   transport.reset();
   guestPackagePath = "";
+  voice.close(); // hostTable/guestLink が無い経路でもマイクは必ず手放す
   store.multi = freshMultiState();
 }

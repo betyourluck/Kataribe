@@ -470,6 +470,15 @@ export const messages = {
       noPackage: "パッケージがありません (アセットが表示されません)。手動選択で入り直してください",
       pkgAutoHint: "パッケージはホストから自動で受け取ります (改変版でもそのまま遊べます)",
       manualPkg: "手動でパッケージを選ぶ (中継を使わない卓)",
+      // --- 音声 (spec 23 Phase D) ---
+      micOn: "🎤 マイク: ON",
+      micOff: "マイク: OFF",
+      micOnHint: "話せます。OFF にするとマイクを完全に手放します",
+      micOffHint: "マイクを掴んでいません (OS の使用中表示も出ません)",
+      micDenied: "マイクを使えませんでした ({error})",
+      closeTableConfirm:
+        "卓を閉じると参加者全員のセッションが終わります (正本はあなたの環境にあります)。よろしいですか？",
+      closeTableReally: "本当に閉じる",
     },
     store: {
       brandFallback: "語り部",
@@ -970,6 +979,15 @@ export const messages = {
       noPackage: "No package (assets won't show). Rejoin with a manual selection",
       pkgAutoHint: "The package comes from the host automatically (even a modified one)",
       manualPkg: "Pick a package manually (table without the relay)",
+      // --- Voice (spec 23 Phase D) ---
+      micOn: "🎤 Mic: on",
+      micOff: "Mic: off",
+      micOnHint: "You can talk. Turning it off releases the microphone completely",
+      micOffHint: "The microphone is not held (no OS in-use indicator)",
+      micDenied: "Couldn't use the microphone ({error})",
+      closeTableConfirm:
+        "Closing the table ends the session for everyone (the source of truth lives on your machine). Are you sure?",
+      closeTableReally: "Close it",
     },
     store: {
       brandFallback: "Kataribe",

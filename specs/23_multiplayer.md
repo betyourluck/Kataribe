@@ -473,6 +473,33 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
     マイク完全解放中 (OFF) は自分のリングは静止（インジケータと OS 表示が一致）。
     喋っている参加者の操作キャラが presence に居ない場面は稀（パーティ一体移動）
     なので v1 は無処理（居なければ光らないだけ）。
+  - **✅実装 (2026-07-23、live 検証は Phase E)**: `app/src/voice.ts`（mesh の音だけを持つ層）
+    + `rtc.ts` の結線 + 卓 UI のマイクトグル + 席色リングの脈動 + ホスト終了確認。
+    - **中枢 = トランシーバを先に置く**。`newPeer` が offer/answer を作る**前**に
+      audio の `sendrecv` トランシーバを 1 本張るので、マイクの ON/OFF は
+      `replaceTrack` だけで済み**再ネゴシエーションが一度も起きない**。
+      「OFF = `track.stop()` の完全解放」を接続を張り直さずに実現できるのはこの構造ゆえ
+      （後から `addTrack` する素朴な作りだと OFF のたびに SDP をやり直すことになる）。
+    - **mesh**: `GuestLink` が他ゲストからの offer に応えるようになった（Phase C では
+      無視していた）。ゲーム配送は依然 guest→host だけで、guest↔guest の PC は
+      **音だけ**を運ぶ（DataChannel を張らない）。「入る側が offer」の規約は不変。
+    - **既定 OFF**。音声なし参加 = 一度も `getUserMedia` を呼ばない = 権限ダイアログも
+      出ない。これは契約どおりの挙動であると同時に**リスク低減でもある**（下記）。
+    - レベルは `AnalyserNode` の時間領域 RMS を 12Hz で配り、`voice` は peer_id しか
+      知らない（entity への写像は `table.ts` が持つ = ゲームの語彙を配送層に入れない）。
+      **仕様からの逸脱 1 点**: 「CSS 変数の直接更新」ではなく 12Hz の reactive 更新に
+      した。懸念は 60fps の churn であって 12Hz × 最大 5 要素は無視できるため、
+      テンプレートを素直に保つほうを採った。滑らかさは `transition` に任せる。
+    - **⚠ 未検証かつ実現しない可能性がある層**: Windows の WebView2 でマイク権限が
+      降りるかは Tauri の [#12547](https://github.com/tauri-apps/tauri/issues/12547) /
+      [#10898](https://github.com/tauri-apps/tauri/issues/10898) /
+      [#5042](https://github.com/tauri-apps/tauri/issues/5042) に未解決の報告があり、
+      **ダイアログすら出ずに失敗しうる**。既定 OFF なので**卓は壊れない**（音が出ない
+      だけ）し、失敗はトーストで理由が出る。Rust 側の権限ハンドラが要ると判明したら
+      その時点で足す。macOS は `src-tauri/Info.plist` に
+      `NSMicrophoneUsageDescription` を置いた（macOS 実機は未確認）。
+    - v1 で入れなかったもの: **相手別の受信音量**（`<audio>.volume` を per-peer で
+      持つだけだが、UI が要るので実測してから）。
 - **Phase E — 実測**: 3 人 live プレイ（モバイル回線 1 人を意図的に混ぜる）。
   direct/relay 比率 / 入力窓の体感時間 / **多人数 prompt で GM が行動を正しく各人に
   帰属させるか（核心的未知）** / 再接続の実効性。

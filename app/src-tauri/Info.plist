@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS でマイクを要求するには使用目的の宣言が要る (spec 23 Phase D)。
+  無いと getUserMedia がダイアログすら出さずに失敗する。Windows ビルドには影響しない。
+  ※ macOS 実機での確認は未実施 (開発機が Windows のため)。
+-->
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>卓の参加者と音声で会話するためにマイクを使います。</string>
+  </dict>
+</plist>

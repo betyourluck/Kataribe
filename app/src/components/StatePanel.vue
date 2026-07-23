@@ -28,9 +28,20 @@ const selectedId = ref<string | null>(null);
 // 多人数 (spec 23): この entity を操作するプレイヤー (卓開始後のみ)。席色リングと
 // 「プレイヤー: ○○」表示の素材。単騎では常に undefined = 何も出ない。
 const assignmentOf = (id: string) => game.multi.assignments.find((a) => a.entityId === id);
+// 席色リングは発話レベルで脈動する (spec 23 Phase D)。Discord の緑リングと同じ機構を
+// ユーザーリストでなく**キャラ側**に載せる = プレイヤーの声で自分の手駒が脈打つ。
+// 基底 2px + 音量で最大 +4px。レベルは ~12Hz 更新なので滑らかさは CSS の transition に任せる。
+// マイク完全解放中は自分のレベルが来ないのでリングは静止する (OS 表示と一致)。
 const seatRing = (id: string) => {
   const a = assignmentOf(id);
-  return a ? { borderColor: a.color, boxShadow: `0 0 0 2px ${a.color}` } : {};
+  if (!a) return {};
+  const level = game.multi.voiceLevels[id] ?? 0;
+  const spread = 2 + Math.round(level * 4);
+  return {
+    borderColor: a.color,
+    boxShadow: `0 0 0 ${spread}px ${a.color}`,
+    transition: "box-shadow 80ms linear",
+  };
 };
 const selectedEntity = computed(
   () => game.state?.entities.find((e) => e.id === selectedId.value) ?? null,

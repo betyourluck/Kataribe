@@ -170,14 +170,19 @@ export interface MultiState {
   revealApplied: number;
   /** タイマー残り秒 (timer_sync 受信 / ホストのカウントダウン)。null = タイマー無し。 */
   timerRemaining: number | null;
-  /** 確定した割り当て (卓開始後)。entity → 操作プレイヤー名 + 席色 (可視化用)。 */
-  assignments: { entityId: string; displayName: string; color: string }[];
+  /** 確定した割り当て (卓開始後)。entity → 操作プレイヤー名 + 席色 (可視化用)。
+   *  `peerId` は音声レベルを席へ写すための鍵 (ホストは "host" 固定)。 */
+  assignments: { peerId: string; entityId: string; displayName: string; color: string }[];
   /**
    * パッケージ中継の現況 (契約 `package_relay`)。ホストは預ける側、ゲストは受け取る側。
    * `off` = 中継を使わない卓 (未着手・手動選択の fallback) / `failed` = サーバ不達等で
    * 手動選択へ落ちた。プレイ自体は止めない。
    */
   relay: "off" | "uploading" | "downloading" | "ready" | "failed";
+  /** マイクが入っているか (spec 23 Phase D)。**OFF は完全解放** = デバイスを掴んでいない。 */
+  micOn: boolean;
+  /** 発話レベル (entityId → 0..1)。席色リングの脈動の素材。~12Hz で更新。 */
+  voiceLevels: Record<string, number>;
 }
 
 /** 席色 (participants 宣言順)。青=1人目 / 赤=2人目 / 黄=3人目… (ユーザーFB 2026-07-23)。 */
@@ -198,6 +203,8 @@ export function freshMultiState(): MultiState {
     timerRemaining: null,
     assignments: [],
     relay: "off",
+    micOn: false,
+    voiceLevels: {},
   };
 }
 

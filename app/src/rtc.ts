@@ -13,6 +13,7 @@
 
 import type { GameEventHandler, GameEventName, GameTransport } from "./transport";
 import { GAME_EVENTS } from "./transport";
+import { voice } from "./voice";
 
 /** join/create で交換するプロトコル版 (knock 側 msg.rs と一致。不一致は接続拒否)。 */
 export const KNOCK_PROTOCOL_VERSION = 1;
@@ -207,6 +208,9 @@ function newPeer(sig: Signaling, remote: string): RTCPeerConnection {
   pc.onicecandidate = (ev) => {
     if (ev.candidate) sig.signal(remote, "candidate", ev.candidate.toJSON());
   };
+  // 音声 (spec 23 Phase D): **offer/answer を作る前**に sendrecv トランシーバを張る。
+  // これでマイクの ON/OFF が replaceTrack だけで済み、再ネゴシエーションが要らない。
+  voice.attach(remote, pc);
   return pc;
 }
 
@@ -285,6 +289,7 @@ export class HostTable {
     if (kind === "offer") {
       // 再 knock の再 offer も同じ経路 — 古い接続は作り直す (張り直しの実体)。
       this.pcs.get(from)?.close();
+      voice.detach(from);
       const pc = newPeer(this.sig, from);
       this.pcs.set(from, pc);
       pc.ondatachannel = (ev) => this.wireChannel(from, ev.channel);
@@ -412,6 +417,7 @@ export class HostTable {
     for (const pc of this.pcs.values()) pc.close();
     this.pcs.clear();
     this.channels.clear();
+    voice.close(); // マイクは必ず手放す (卓を出たのにインジケータが残るのは最悪の裏切り)
     this.sig.close();
   }
 }
@@ -430,6 +436,9 @@ export class GuestLink implements GameTransport {
   private knockUrl = "";
   private helloSent = new Set<string>();
   hostHello: TableHello | null = null;
+  /** ホストのシグナリング peer_id。participants 側のホストは "host" 固定なので、
+   *  音声レベルを席へ写すにはこの対応が要る (voice は peer_id しか知らない)。 */
+  hostSignalId = "";
   /** 卓イベント (party_turn / input_status / reveal_order / timer_sync / hello)。store が購読。 */
   onTable?: (msg: Record<string, unknown>) => void;
   /** 全断した (再 knock は reconnect() で。部屋は TTL まで待受)。 */
@@ -501,7 +510,17 @@ export class GuestLink implements GameTransport {
     } else if (kind === "candidate") {
       await this.pcs.get(from)?.addIceCandidate(payload as RTCIceCandidateInit).catch(() => {});
     } else if (kind === "offer") {
-      // v1 のゲーム配送は guest→host の offer のみ。他ゲストからの offer は Phase D (音声 mesh)。
+      // **音声 mesh (Phase D)**: 他ゲストからの offer に応える。ゲーム配送は依然
+      // guest→host だけ (この PC に DataChannel は張らない) で、ここで繋ぐのは音だけ。
+      // 後から入ってきた人が offer を出す側 = 「入る側が offer」の規約は不変。
+      this.pcs.get(from)?.close();
+      voice.detach(from);
+      const pc = newPeer(this.sig, from);
+      this.pcs.set(from, pc);
+      await pc.setRemoteDescription(payload as RTCSessionDescriptionInit);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      this.sig.signal(from, "answer", pc.localDescription?.toJSON());
     }
   }
 
@@ -519,6 +538,7 @@ export class GuestLink implements GameTransport {
           // role=host の相手が配送先 (部屋の作成者)。他ゲストとの接続は音声 (Phase D) 用に残す。
           this.hostChannel = ch;
           this.hostHello = h;
+          this.hostSignalId = remote;
           this.onTable?.(m);
         }
         break;
@@ -545,7 +565,7 @@ export class GuestLink implements GameTransport {
         this.onTable?.(m);
         break;
       default:
-        void remote;
+        break;
     }
   }
 
@@ -573,6 +593,7 @@ export class GuestLink implements GameTransport {
     for (const pc of this.pcs.values()) pc.close();
     this.pcs.clear();
     this.hostChannel = null;
+    voice.close();
     this.sig.close();
   }
 }
