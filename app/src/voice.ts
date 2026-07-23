@@ -19,6 +19,26 @@ const LEVEL_HZ = 12;
 /** 自分のマイクを表す擬似 peer_id (レベル配布のキー)。 */
 export const LOCAL_PEER = "__local__";
 
+/** 使うマイク (localStorage 永続)。空 = OS の既定。複数マイクを挿した端末向け。 */
+const MIC_DEVICE_KEY = "kataribe.micDeviceId";
+export function micDeviceId(): string {
+  return localStorage.getItem(MIC_DEVICE_KEY) || "";
+}
+
+/**
+ * 入力デバイス一覧。**ラベルはマイク権限が降りるまで空**なので、名前を出すには
+ * 一度 getUserMedia を通す必要がある (ブラウザ共通の仕様)。呼び出し側はラベルが
+ * 空なら「マイクを一度オンにしてください」と案内する。
+ */
+export async function listMicDevices(): Promise<MediaDeviceInfo[]> {
+  try {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return all.filter((d) => d.kind === "audioinput");
+  } catch {
+    return [];
+  }
+}
+
 interface PeerAudio {
   /** 自分の音を送る口。`replaceTrack(null)` で黙る。 */
   sender: RTCRtpSender | null;
@@ -109,15 +129,8 @@ class VoiceMesh {
   async setMic(on: boolean): Promise<void> {
     if (on === this.micOn) return;
     if (on) {
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        });
-      } catch (e) {
-        this.onMicError?.(String(e));
-        return;
-      }
+      const stream = await this.acquire();
+      if (!stream) return;
       this.localStream = stream;
       this.micOn = true;
       const track = stream.getAudioTracks()[0] ?? null;
@@ -147,6 +160,48 @@ class VoiceMesh {
       this.localStream = null;
       this.emitLevels();
     }
+  }
+
+  /**
+   * マイクを掴む。選択済みデバイスがあれば `exact` で指名し、**それが消えていたら
+   * 既定へ落ちて掴み直す** — USB マイクを抜いた状態で「デバイスが見つからない」と
+   * 言われて卓の会話ができなくなるより、既定で繋がるほうがよい。
+   */
+  private async acquire(): Promise<MediaStream | null> {
+    const base: MediaTrackConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    };
+    const id = micDeviceId();
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: id ? { ...base, deviceId: { exact: id } } : base,
+      });
+    } catch (e) {
+      if (id) {
+        try {
+          return await navigator.mediaDevices.getUserMedia({ audio: base });
+        } catch (e2) {
+          this.onMicError?.(String(e2));
+          return null;
+        }
+      }
+      this.onMicError?.(String(e));
+      return null;
+    }
+  }
+
+  /**
+   * 使うマイクを切り替える。ON の最中なら**掴み直して差し替える** —
+   * 設定を変えたのに次に入れ直すまで効かない、という状態を作らない。
+   * トランシーバは張ったままなので再ネゴシエーションは起きない。
+   */
+  async setDevice(deviceId: string): Promise<void> {
+    localStorage.setItem(MIC_DEVICE_KEY, deviceId);
+    if (!this.micOn) return;
+    await this.setMic(false);
+    await this.setMic(true);
   }
 
   /** 卓を畳む。マイクは必ず手放す (卓を出たのにインジケータが残るのは最悪の裏切り)。 */

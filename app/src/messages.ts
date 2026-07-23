@@ -170,6 +170,14 @@ export const messages = {
         failed: "失敗: {msg}",
         ok: "成功",
       },
+      mic: {
+        heading: "卓のマイク",
+        device: "使うマイク",
+        deviceDefault: "既定のマイク (OS の設定に従う)",
+        unnamed: "(名前なし)",
+        note: "多人数プレイ (卓) で使う入力デバイスです。オンの最中に変えると、その場で切り替わります。選んだ機器が見つからないときは既定のマイクへ落ちます。",
+        needPermission: "機器名を出すには、一度マイクをオンにして許可してください (ブラウザ共通の仕様です)。",
+      },
       sound: {
         heading: "サウンド",
         mute: "ミュート（BGM・効果音を鳴らさない）",
@@ -694,6 +702,14 @@ export const messages = {
         pitchWarnAivis: "AivisSpeech degrades audio quality when pitch is moved off 0 (per its own spec). Keep it at 0 for best quality.",
         failed: "Failed: {msg}",
         ok: "OK",
+      },
+      mic: {
+        heading: "Table microphone",
+        device: "Microphone to use",
+        deviceDefault: "Default microphone (follow the OS)",
+        unnamed: "(unnamed)",
+        note: "The input device used for multiplayer tables. Changing it while the mic is on switches immediately. If the chosen device is missing, it falls back to the default.",
+        needPermission: "Turn the mic on once and grant permission to see device names (this is standard browser behaviour).",
       },
       sound: {
         heading: "Sound",

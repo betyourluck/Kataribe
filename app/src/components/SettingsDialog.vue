@@ -23,9 +23,26 @@ import {
   type AiModelProfile,
 } from "../stores/game";
 import * as tts from "../tts";
+// 卓の音声 (mesh)。この file の `voice` は TTS 設定の ref なので別名で取る。
+import { listMicDevices, micDeviceId, voice as voiceMesh } from "../voice";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const game = useGameStore();
+
+// --- 卓のマイク選択 (spec 23 Phase D)。複数マイクを挿した端末でどれを使うか ---
+// ラベルは**マイク権限が降りるまで空**なので、名前が出ないときはその旨を案内する
+// (ブラウザ共通の仕様であって、こちらの不具合ではない)。
+const micDevices = ref<MediaDeviceInfo[]>([]);
+const micDevice = ref(micDeviceId());
+const micLabelsHidden = computed(
+  () => micDevices.value.length > 0 && micDevices.value.every((d) => !d.label),
+);
+async function refreshMicDevices() {
+  micDevices.value = await listMicDevices();
+}
+async function applyMicDevice() {
+  await voiceMesh.setDevice(micDevice.value);
+}
 
 // --- 読み上げ (TTS) --------------------------------------------------------
 // 設定は localStorage に閉じる (backend も正本も関与しない = 提示層の設定)。
@@ -307,6 +324,7 @@ onMounted(async () => {
   syncSelectionToConfig();
   loadDefaultLogDir();
   game.refreshDevMode();
+  void refreshMicDevices(); // 開いた時点で候補を出す (権限前は名前が空 = 案内を出す)
 });
 </script>
 
@@ -518,6 +536,33 @@ onMounted(async () => {
             <p class="text-parchment/40 text-xs">
               {{ t("settings.sound.note") }}
             </p>
+
+            <!-- 卓の音声 (spec 23 Phase D)。複数マイクを挿した端末でどれを使うか。 -->
+            <hr class="border-ash/40" />
+            <h3 class="text-parchment font-bold pt-1">{{ t("settings.mic.heading") }}</h3>
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.mic.device") }}
+              <span class="mt-1 flex items-center gap-2">
+                <select
+                  v-model="micDevice"
+                  class="w-64 rounded border border-ash bg-ash/30 px-2 py-1 text-sm"
+                  @change="applyMicDevice"
+                >
+                  <option value="">{{ t("settings.mic.deviceDefault") }}</option>
+                  <option v-for="d in micDevices" :key="d.deviceId" :value="d.deviceId">
+                    {{ d.label || t("settings.mic.unnamed") }}
+                  </option>
+                </select>
+                <button
+                  class="rounded border border-ash px-2 py-1 text-xs hover:bg-ash/40"
+                  @click="refreshMicDevices"
+                >
+                  {{ t("settings.voice.loadVoices") }}
+                </button>
+              </span>
+            </label>
+            <p class="text-parchment/40 text-xs">{{ t("settings.mic.note") }}</p>
+            <p v-if="micLabelsHidden" class="text-ember text-xs">{{ t("settings.mic.needPermission") }}</p>
 
             <!-- 読み上げ (TTS)。作者が use_tts を宣言した盤面でだけ効く。 -->
             <hr class="border-ash/40" />

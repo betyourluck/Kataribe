@@ -490,14 +490,22 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
       **仕様からの逸脱 1 点**: 「CSS 変数の直接更新」ではなく 12Hz の reactive 更新に
       した。懸念は 60fps の churn であって 12Hz × 最大 5 要素は無視できるため、
       テンプレートを素直に保つほうを採った。滑らかさは `transition` に任せる。
-    - **⚠ 未検証かつ実現しない可能性がある層**: Windows の WebView2 でマイク権限が
-      降りるかは Tauri の [#12547](https://github.com/tauri-apps/tauri/issues/12547) /
+    - **✅マイク権限は降りた（2026-07-23 ユーザー実測・Windows 2 台）**。着手時は
+      Tauri の [#12547](https://github.com/tauri-apps/tauri/issues/12547) /
       [#10898](https://github.com/tauri-apps/tauri/issues/10898) /
-      [#5042](https://github.com/tauri-apps/tauri/issues/5042) に未解決の報告があり、
-      **ダイアログすら出ずに失敗しうる**。既定 OFF なので**卓は壊れない**（音が出ない
-      だけ）し、失敗はトーストで理由が出る。Rust 側の権限ハンドラが要ると判明したら
-      その時点で足す。macOS は `src-tauri/Info.plist` に
-      `NSMicrophoneUsageDescription` を置いた（macOS 実機は未確認）。
+      [#5042](https://github.com/tauri-apps/tauri/issues/5042) に未解決の報告があり
+      「ダイアログすら出ずに失敗しうる」と見積もっていたが、**リリースビルドの
+      WebView2 で問題なく取得できた**。Rust 側の権限ハンドラは要らない。
+      既定 OFF の設計は残す（音声なし参加という正当な使い方があるため）。
+      macOS は `src-tauri/Info.plist` に `NSMicrophoneUsageDescription` を置いた
+      （macOS 実機は未確認）。
+    - **入力デバイスの選択（2026-07-23 ユーザーFB）**: 複数マイクを挿した端末向けに
+      設定 → サウンド → 「卓のマイク」で選ぶ。`deviceId: { exact }` で指名し、
+      **その機器が消えていたら既定へ落ちて掴み直す**（USB マイクを抜いた状態で
+      「見つからない」と言われて会話できなくなるより、既定で繋がるほうがよい）。
+      ON の最中に変えるとその場で掴み直す（トランシーバは張ったままなので
+      再ネゴシエーションは起きない）。**機器名は権限が降りるまで空**というブラウザ
+      共通の仕様があるので、名前が出ないときはその旨を案内する。
     - v1 で入れなかったもの: **相手別の受信音量**（`<audio>.volume` を per-peer で
       持つだけだが、UI が要るので実測してから）。
 - **Phase E — 実測**: 3 人 live プレイ（モバイル回線 1 人を意図的に混ぜる）。
