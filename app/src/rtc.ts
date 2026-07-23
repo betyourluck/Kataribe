@@ -558,13 +558,15 @@ export class GuestLink implements GameTransport {
         }
         break;
       }
-      case "party_turn":
-      case "input_status":
-      case "reveal_order":
-      case "timer_sync":
-        this.onTable?.(m);
-        break;
       default:
+        // **卓メッセージは既定で転送する** (table_start / party_turn / input_status /
+        // reveal_order / timer_sync …)。ここを allowlist で列挙していたせいで
+        // `table_start` が黙って捨てられ、ゲストの盤面が一度も始まらなかった
+        // (failures #75)。転送側 (HostTable) に新しい種別が増えたとき、受け側の
+        // 列挙を足し忘れても**落ちない**ようにする — 上で明示的に処理しているのは
+        // 配送層のもの (hello / game_response / game_event) だけで、それ以外は
+        // すべて卓の語彙として store が解釈する (知らない型は store 側で無視される)。
+        this.onTable?.(m);
         break;
     }
   }
