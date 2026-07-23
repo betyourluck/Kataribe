@@ -282,9 +282,14 @@ function loadLogDir(): string {
   return localStorage.getItem(LOG_DIR_KEY) || "";
 }
 
-// 同梱パッケージ (初回起動時の既定一覧。repo root 相対)。escape のみ
-// (houkago は harness fixture へ移設、他サンプルは 2026-07-10 に配布から削除)。
-const BUILTIN_PACKAGES = ["packages/escape"];
+// 初回起動時のパッケージ一覧は **空**。
+//
+// かつて `packages/escape` を「同梱パッケージ」の既定として置いていたが、**同梱していない**
+// (`bundle.resources` は未設定でインストーラーは packages/ を含まない)。repo 直下で
+// 開発している間だけ相対パスが解決していたので気づけず、まっさらな環境にインストーラーで
+// 入れると**存在しないシナリオが一覧に居座る**状態になっていた (2026-07-23 ユーザー報告)。
+// 開発環境が「配布物には無いもの」を暗黙に持っている、という #73 (dev では CSP が効かない)
+// と同じ形の非対称。一覧は書庫から取るか手で追加するものなので、既定は空が正しい。
 
 // 起動時のコンボリスト初期選択: 前回プレイしたパッケージ > 表示の一番上。
 // コンボリストは「新しい順」(追加順の逆) で表示するので、一番上 = packagePaths の末尾要素
@@ -292,7 +297,7 @@ const BUILTIN_PACKAGES = ["packages/escape"];
 function initialPackagePath(paths: string[]): string {
   const last = loadLastPlayed();
   if (last && paths.includes(last)) return last;
-  return paths[paths.length - 1] ?? BUILTIN_PACKAGES[0];
+  return paths[paths.length - 1] ?? "";
 }
 
 // --- AI モデルプロファイル (複数の LLM 設定を登録・切替。localStorage 永続) ---
@@ -388,7 +393,7 @@ export interface PackageEntry {
   source_id: string | null;
 }
 
-// localStorage からパス一覧を読む (壊れていれば同梱既定にフォールバック)。
+// localStorage からパス一覧を読む (未設定・壊れていれば空 = まっさらな状態)。
 function loadPaths(): string[] {
   try {
     const raw = localStorage.getItem(PACKAGES_KEY);
@@ -399,7 +404,7 @@ function loadPaths(): string[] {
   } catch {
     /* 壊れた localStorage は無視して既定へ */
   }
-  return [...BUILTIN_PACKAGES];
+  return [];
 }
 function savePaths(paths: string[]) {
   localStorage.setItem(PACKAGES_KEY, JSON.stringify(paths));
@@ -1168,14 +1173,6 @@ export const useGameStore = defineStore("game", {
       } catch (e) {
         this.logToast = t("store.openFolderFailed", { error: String(e) });
       }
-    },
-
-    // パッケージ一覧を同梱既定に戻す (設定ダイアログから)。
-    resetPackages() {
-      this.packagePaths = [...BUILTIN_PACKAGES];
-      savePaths(this.packagePaths);
-      this.packagePath = this.packagePaths[0];
-      this.refreshPackages();
     },
 
     // --- 既成事実 (spec 20) のユーザー専権編集。成功後は backend が即時 autosave 済み ---
