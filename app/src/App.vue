@@ -79,6 +79,12 @@ const saveMismatch = computed(
   () => game.started && game.packagePath !== game.activePackagePath,
 );
 
+// ゲストとして卓に居る間、盤面はホストの正本が唯一の真実 (spec 23 決定 1)。
+// ローカルの開始/再開/ロード/パッケージ切替はその真実を黙って踏み潰すので、
+// 卓に居る間は締める。セーブも同様 — ゲストの backend は GameSession を持たない。
+// 抜ける導線は卓バーの「卓を出る」なので、ここを塞いでも詰まらない。
+const guestLocked = computed(() => game.multi.role === "guest");
+
 // コンボリストは「最後に追加(ダウンロード)したものを上」に並べる (ダウンロードしたばかりを
 // すぐ選べる方が使いやすい、ユーザーFB)。packagePaths は追加順ゆえ逆順が新しい順。
 // reverse は元配列を壊すのでコピーに対して行う。
@@ -179,7 +185,8 @@ onUnmounted(() => {
       <div class="ml-auto flex items-center gap-2">
         <select
           v-model="game.packagePath"
-          :disabled="game.loading"
+          :disabled="game.loading || guestLocked"
+          :title="guestLocked ? t('app.guestLocked') : ''"
           class="w-[28rem] max-w-[50vw] truncate rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
         >
           <option
@@ -192,7 +199,7 @@ onUnmounted(() => {
           </option>
         </select>
         <button
-          :disabled="game.loading || selectedAutosaveTurn == null"
+          :disabled="game.loading || guestLocked || selectedAutosaveTurn == null"
           :class="[
             'grid h-8 w-8 place-items-center rounded bg-ember/80 hover:bg-ember text-ink disabled:opacity-40',
             selectedAutosaveTurn == null ? 'invisible' : '',
@@ -206,9 +213,9 @@ onUnmounted(() => {
         <!-- セーブ: プレイ中の状態を手動スロットへ (spec 07 Phase D)。プレイ前 or 一覧の選択が
              プレイ中のゲームと食い違うときは無効 (保存先の取り違え防止)。 -->
         <button
-          :disabled="game.loading || !game.started || saveMismatch"
+          :disabled="game.loading || guestLocked || !game.started || saveMismatch"
           class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
-          :title="saveMismatch ? t('app.saveSlotsMismatch') : t('app.saveSlots')"
+          :title="guestLocked ? t('app.guestLocked') : saveMismatch ? t('app.saveSlotsMismatch') : t('app.saveSlots')"
           :aria-label="t('app.saveSlots')"
           @click="slotDialog = 'save'"
         >
@@ -216,9 +223,9 @@ onUnmounted(() => {
         </button>
         <!-- ロード: 選択中パッケージのスロットから再開 (プレイ中でも前のプレイを置き換える)。 -->
         <button
-          :disabled="game.loading"
+          :disabled="game.loading || guestLocked"
           class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
-          :title="t('app.loadSlots')"
+          :title="guestLocked ? t('app.guestLocked') : t('app.loadSlots')"
           :aria-label="t('app.loadSlots')"
           @click="slotDialog = 'load'"
         >
@@ -226,9 +233,9 @@ onUnmounted(() => {
         </button>
         <!-- 新しいゲーム: 通常は枠なし (アイコンのみ)、hover で従来の箱が浮かぶ。 -->
         <button
-          :disabled="game.loading"
+          :disabled="game.loading || guestLocked"
           class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
-          :title="t('app.newGame')"
+          :title="guestLocked ? t('app.guestLocked') : t('app.newGame')"
           :aria-label="t('app.newGame')"
           @click="game.newGame()"
         >

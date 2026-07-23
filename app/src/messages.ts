@@ -40,6 +40,7 @@ export const messages = {
       resizePanel: "ドラッグで右ペインの幅を調整（ダブルクリックで既定に戻す）",
       emptyHint:
         "パッケージを選んで「新しいゲーム」を押すと、忘れない・矛盾しない GM が物語を始めます。",
+      guestLocked: "卓に参加中は使えません（盤面はホストの正本が唯一の真実です）",
     },
     slots: {
       saveTitle: "セーブ — スロットを選択",
@@ -558,6 +559,7 @@ export const messages = {
       resizePanel: "Drag to resize the right panel (double-click to reset)",
       emptyHint:
         "Pick a package and press “New game” — a GM that never forgets or contradicts will begin the story.",
+      guestLocked: "Unavailable while you're at a table (the host's board is the only truth)",
     },
     slots: {
       saveTitle: "Save — choose a slot",
