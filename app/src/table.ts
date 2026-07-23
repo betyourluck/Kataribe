@@ -11,7 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { GuestLink, HostTable, judgePackageMatch } from "./rtc";
 import type { TableHello } from "./rtc";
 import { LocalTransport, tableHooks, transport } from "./transport";
-import { useGameStore, freshMultiState } from "./stores/game";
+import { useGameStore, freshMultiState, SEAT_COLORS } from "./stores/game";
 import type { GameView, TurnView } from "./types/api";
 import { t } from "./i18n";
 
@@ -114,6 +114,12 @@ export async function hostStartTable(): Promise<void> {
     display_name: s.displayName,
   }));
   await invoke("set_participants", { participants, hostPeerId: "host" });
+  // 割り当ての可視化素材 (顔アイコンの席色リング + プロフィールの「プレイヤー: ○○」)。
+  store.multi.assignments = participants.map((p, i) => ({
+    entityId: p.entity_id,
+    displayName: p.display_name,
+    color: SEAT_COLORS[i % SEAT_COLORS.length],
+  }));
   // 各ゲストへ「いまの盤面」を宛先別 view で配る (途中の卓開きでも情景が繋がる)。
   for (const s of seats) {
     if (s.peerId === "host") continue;
@@ -248,6 +254,12 @@ async function onGuestTable(
     }
     case "table_start": {
       const view = m.view as GameView;
+      const parts = (m.participants as { peer_id: string; entity_id: string; display_name: string }[]) ?? [];
+      store.multi.assignments = parts.map((p, i) => ({
+        entityId: p.entity_id,
+        displayName: p.display_name,
+        color: SEAT_COLORS[i % SEAT_COLORS.length],
+      }));
       await store.applyGameView(view, packagePath);
       store.multi.started = true;
       store.log.push({ kind: "system", text: t("table.joinedStarted", { host: store.multi.hostName }) });

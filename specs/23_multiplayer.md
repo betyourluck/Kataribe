@@ -397,7 +397,12 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
     初期同期・resumed に直前の語り) + `begin_guest_session` (GuestAssetRoot =
     ゲスト backend 唯一の状態) + resolve_asset_path の guest root フォールバック。
     v1 制限: 決断/対決パネルの操作はホストのみ (ゲストは whitelist 拒否)・ゲストの
-    提出文面は他人のログに出ない (narration が映す)。app backend 26 green・
+    提出文面は他人のログに出ない (narration が映す)。
+    **割り当ての可視化 (2026-07-23 ユーザーFB)**: presence 顔アイコンに操作プレイヤーの
+    **席色リング** (participants 宣言順: 青=1人目/赤=2人目/黄=3人目/緑/紫)、プロフィール
+    カードに **「プレイヤー: ○○」chip** (席色ドット付き・属性と同列)。素材は
+    `MultiState.assignments` (卓開始時にホストが確定、ゲストは table_start の
+    participants から同順で導出 = 全員同じ色を見る)。単騎では何も出ない。app backend 26 green・
     clippy clean・vue-tsc/vite build green。**Phase E (live) まで未検証**: 実 WebRTC
     接続・TURN 経由・再接続の実効性 (ネット無しの単体では通せない層)。
 - **Phase D — 音声**: audio mesh（macOS `Info.plist` と Tauri capability のマイク権限）/

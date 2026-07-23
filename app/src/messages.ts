@@ -315,6 +315,7 @@ export const messages = {
       writingEpilogue: "エピローグを紡いでいます……",
     },
     state: {
+      playedBy: "プレイヤー: {name}",
       tabProgress: "進行",
       tabWorld: "状態",
       tabSynopsis: "あらすじ",
@@ -803,6 +804,7 @@ export const messages = {
       writingEpilogue: "Writing the epilogue…",
     },
     state: {
+      playedBy: "Player: {name}",
       tabProgress: "Progress",
       tabWorld: "State",
       tabSynopsis: "Synopsis",

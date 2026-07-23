@@ -25,6 +25,13 @@ watch(factsVisible, (v) => {
 
 // 顔アイコンをクリックして詳細を見るキャラ (presence → クリックでプロフィール)。
 const selectedId = ref<string | null>(null);
+// 多人数 (spec 23): この entity を操作するプレイヤー (卓開始後のみ)。席色リングと
+// 「プレイヤー: ○○」表示の素材。単騎では常に undefined = 何も出ない。
+const assignmentOf = (id: string) => game.multi.assignments.find((a) => a.entityId === id);
+const seatRing = (id: string) => {
+  const a = assignmentOf(id);
+  return a ? { borderColor: a.color, boxShadow: `0 0 0 2px ${a.color}` } : {};
+};
 const selectedEntity = computed(
   () => game.state?.entities.find((e) => e.id === selectedId.value) ?? null,
 );
@@ -212,13 +219,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                 v-for="c in game.presentCharacters"
                 :key="c.id"
                 class="flex flex-col items-center gap-1 group focus:outline-none"
-                :title="c.name"
+                :title="assignmentOf(c.id) ? `${c.name} — ${t('state.playedBy', { name: assignmentOf(c.id)!.displayName })}` : c.name"
                 @click="selectedId = c.id"
               >
                 <!-- アイコンは CSS background で描画 (asset protocol の MIME に寛容)。無ければ initials。 -->
+                <!-- 多人数: 操作プレイヤーの席色リング (青=1人目/赤=2人目/黄=3人目…) で誰の手駒かを可視化。 -->
                 <span
                   class="w-12 h-12 rounded-full overflow-hidden border border-ash bg-ash/40 bg-cover bg-center flex items-center justify-center text-parchment/70 group-hover:border-ember transition-colors"
-                  :style="c.icon ? { backgroundImage: `url(${c.icon})` } : {}"
+                  :style="[c.icon ? { backgroundImage: `url(${c.icon})` } : {}, seatRing(c.id)]"
                 >
                   <span v-if="!c.icon" class="text-xs">{{ initials(c.name) }}</span>
                 </span>
@@ -370,7 +378,16 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             </button>
             <div class="min-w-0">
               <h3 class="text-glow font-bold text-lg leading-tight truncate">{{ selectedName }}</h3>
-              <div v-if="selectedEntity.attributes.length" class="mt-1.5 flex flex-wrap gap-1">
+              <div v-if="selectedEntity.attributes.length || assignmentOf(selectedEntity.id)" class="mt-1.5 flex flex-wrap gap-1">
+                <!-- 多人数: 操作プレイヤーの chip (席色ドット + 名前)。属性と同列 = 「この場の事実」として見せる。 -->
+                <span
+                  v-if="assignmentOf(selectedEntity.id)"
+                  class="px-2 py-0.5 rounded-full border text-[11px] leading-4 flex items-center gap-1"
+                  :style="{ borderColor: assignmentOf(selectedEntity.id)!.color, backgroundColor: `${assignmentOf(selectedEntity.id)!.color}22` }"
+                >
+                  <span class="inline-block w-2 h-2 rounded-full" :style="{ backgroundColor: assignmentOf(selectedEntity.id)!.color }" />
+                  <span class="text-glow">{{ t("state.playedBy", { name: assignmentOf(selectedEntity.id)!.displayName }) }}</span>
+                </span>
                 <span
                   v-for="a in selectedEntity.attributes"
                   :key="a.key"

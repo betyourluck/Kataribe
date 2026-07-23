@@ -170,7 +170,12 @@ export interface MultiState {
   revealApplied: number;
   /** タイマー残り秒 (timer_sync 受信 / ホストのカウントダウン)。null = タイマー無し。 */
   timerRemaining: number | null;
+  /** 確定した割り当て (卓開始後)。entity → 操作プレイヤー名 + 席色 (可視化用)。 */
+  assignments: { entityId: string; displayName: string; color: string }[];
 }
+
+/** 席色 (participants 宣言順)。青=1人目 / 赤=2人目 / 黄=3人目… (ユーザーFB 2026-07-23)。 */
+export const SEAT_COLORS = ["#3b82f6", "#ef4444", "#eab308", "#22c55e", "#a855f7"];
 
 export function freshMultiState(): MultiState {
   return {
@@ -185,6 +190,7 @@ export function freshMultiState(): MultiState {
     connected: false,
     revealApplied: 0,
     timerRemaining: null,
+    assignments: [],
   };
 }
 
