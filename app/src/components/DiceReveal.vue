@@ -56,9 +56,10 @@ onBeforeUnmount(() => window.clearTimeout(timer));
 </script>
 
 <template>
+  <!-- 会話ログ (.selectable) の中に居るが、これは読む文でなく押す的なので選択させない。 -->
   <button
     type="button"
-    class="dice-card flex items-center gap-3 rounded-lg border px-4 py-2 text-left w-full transition"
+    class="dice-card select-none flex items-center gap-3 rounded-lg border px-4 py-2 text-left w-full transition"
     :class="
       state === 'idle'
         ? 'border-ember/60 bg-ash/30 hover:bg-ash/50 cursor-pointer idle-glow'

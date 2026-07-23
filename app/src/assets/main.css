@@ -37,6 +37,22 @@
   body {
     @apply bg-ink text-parchment font-serif antialiased;
   }
+
+  /* 配布アプリの手触り: **UI のラベルはドラッグで選択されない** (ネイティブアプリと同じ)。
+     ボタンやタブの文字が反転すると「掴んだ」ように見えて操作の邪魔になる。
+     選択できるべきは「読む・写す」ためのテキストだけ = 入力欄と会話ログ (`.selectable`)。
+     右クリックメニューは選択中テキストと入力欄の上でだけ残してある (main.ts) ので、
+     コピーの導線はこの二箇所と一致する。 */
+  body {
+    @apply select-none;
+  }
+  input,
+  textarea,
+  [contenteditable],
+  .selectable,
+  .selectable * {
+    @apply select-text;
+  }
 }
 
 /* 控えめなスクロールバー (暖炉テーマ) */

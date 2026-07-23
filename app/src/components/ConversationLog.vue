@@ -31,7 +31,12 @@ function statRollFinal(sr: StatRollView): number {
 
 <template>
   <!-- 本文フォントは container で inherit (空なら UI 既定のまま)。色+影は語り系要素にだけ当てる。 -->
-  <div class="flex-1 overflow-y-auto px-6 py-5 space-y-4" :style="{ fontFamily: game.messageFontFamily }">
+  <!-- `selectable`: 語りは読んで写すためのテキストなので選択を許す (UI ラベルは main.css で
+       一律 select-none)。 -->
+  <div
+    class="selectable flex-1 overflow-y-auto px-6 py-5 space-y-4"
+    :style="{ fontFamily: game.messageFontFamily }"
+  >
     <template v-for="(entry, i) in game.log" :key="i">
       <!-- 開幕描写 -->
       <p
