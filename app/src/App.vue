@@ -18,6 +18,7 @@ import TitleBar from "./components/TitleBar.vue";
 import PackageDialog from "./components/PackageDialog.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import SaveSlotDialog from "./components/SaveSlotDialog.vue";
+import TableDialog from "./components/TableDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import ConversationLog from "./components/ConversationLog.vue";
 import StatePanel from "./components/StatePanel.vue";
@@ -28,6 +29,7 @@ import Icon from "./components/Icon.vue";
 const game = useGameStore();
 const showSettings = ref(false);
 const showPackages = ref(false);
+const showTable = ref(false);
 // transport.onEvent の購読解除 (onMounted で購読・onUnmounted で解除 = 多重購読を防ぐ)。
 let unlistenGameEvents: (() => void) | null = null;
 // 手動セーブスロットのダイアログ (spec 07 Phase D)。null = 非表示。
@@ -161,6 +163,7 @@ onUnmounted(() => {
       :latest-version="game.latestVersion"
       @open-settings="showSettings = true"
       @open-packages="showPackages = true"
+      @open-table="showTable = true"
       @open-update="game.openUpdateSite()"
       @save-log="game.saveLog()"
     />
@@ -278,6 +281,7 @@ onUnmounted(() => {
 
     <!-- ダイアログ (TitleBar のボタンから開く) -->
     <PackageDialog v-if="showPackages" @close="showPackages = false" />
+    <TableDialog v-if="showTable" @close="showTable = false" />
     <SettingsDialog v-if="showSettings" @close="showSettings = false" />
     <!-- 手動セーブスロット (ヘッダーのセーブ/ロードボタンから開く。spec 07 Phase D) -->
     <SaveSlotDialog v-if="slotDialog" :mode="slotDialog" @close="slotDialog = null" />

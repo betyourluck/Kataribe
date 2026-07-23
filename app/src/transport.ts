@@ -31,7 +31,7 @@ export interface GameTransport {
 }
 
 /** 単騎/ホスト用 — Tauri IPC の薄い包み。挙動は従来の invoke/listen と同一。 */
-class LocalTransport implements GameTransport {
+export class LocalTransport implements GameTransport {
   request<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     return invoke<T>(cmd, args);
   }
@@ -55,5 +55,58 @@ class LocalTransport implements GameTransport {
   }
 }
 
-/** 現在の配送路。Phase C で join 時に RemoteTransport へ差し替える。 */
-export const transport: GameTransport = new LocalTransport();
+/**
+ * 差し替え可能な配送路 (spec 23 Phase C)。単騎/ホスト = LocalTransport、ゲスト = join 時に
+ * GuestLink (RemoteTransport) へ swap する。onEvent の購読はこの façade が保持するので、
+ * App.vue 等の購読者は swap を意識しない (裏の配送路だけが替わる)。
+ */
+class SwitchableTransport implements GameTransport {
+  private inner: GameTransport = new LocalTransport();
+  private handlers = new Set<GameEventHandler>();
+  private innerUnlisten: () => void;
+
+  constructor() {
+    this.innerUnlisten = this.attach();
+  }
+
+  private attach(): () => void {
+    return this.inner.onEvent((name, payload) => {
+      for (const h of this.handlers) h(name, payload);
+    });
+  }
+
+  /** 配送路を差し替える (ゲスト join / 卓を出て単騎へ戻る)。購読は生き続ける。 */
+  swap(t: GameTransport) {
+    this.innerUnlisten();
+    this.inner = t;
+    this.innerUnlisten = this.attach();
+  }
+
+  /** 単騎/ホストの既定へ戻す。 */
+  reset() {
+    this.swap(new LocalTransport());
+  }
+
+  request<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    return this.inner.request<T>(cmd, args);
+  }
+
+  onEvent(handler: GameEventHandler): () => void {
+    this.handlers.add(handler);
+    return () => this.handlers.delete(handler);
+  }
+}
+
+/**
+ * 多人数 glue (table.ts) が差すフック (spec 23 Phase C)。store → table の逆呼び出しを
+ * import 循環なしで通す (store は transport だけを知る)。単騎では全て undefined = 無音。
+ */
+export const tableHooks: {
+  /** ホスト自身の開帳が確定した (ゲストへ reveal_order を配る)。 */
+  onLocalReveal?: (rv: { revealed: number; total: number }) => void;
+  /** ホスト自身の提出で入力窓が動いた (ゲストへ input_status を配る + 自動締切の判断)。 */
+  onLocalInputStatus?: (st: unknown) => void;
+} = {};
+
+/** 現在の配送路 (façade)。ゲストは join 時に swap される。 */
+export const transport = new SwitchableTransport();

@@ -380,10 +380,26 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
   - ✅ backend: `resume_from_file` (セーブ引き継ぎ = 契約 resume_handoff の
     path_override 実装) + `package_content_hash` (spec 17 SourceMeta 読み =
     package_match の材料)。
-  - **残 (C 後半)**: 卓 UI — ホスト「卓を開く」(部屋コード表示・席と entity 割り当て →
-    set_participants・入力窓 + 三系統締切 + timer_sync 送出)・ゲスト「卓に参加」
-    (knock URL 設定・コード入力・hash 警告・view 受信描画・提出/開帳を RemoteTransport
-    経由)・store の guest モード (applyGameView/applyTurn を party_turn push から駆動)。
+  - ✅ **卓 UI + store 統合 (同日実装 = Phase C 実装完了。live 検証は Phase E)**:
+    `TableDialog.vue` (TitleBar の Users アイコン、参加中は ember 点灯) — ホスト =
+    卓を開く (部屋コード表示/コピー)・席一覧に entity 割り当て (player + 盤面 entity)・
+    卓を開始 (set_participants → current_game_view を宛先別に table_start 配布)・
+    入力窓運用 (提出数表示・今すぐ締める = host_forced・全員提出で自動締切 =
+    all_submitted・タイマー = timer_sync 送出、三系統完備)／ゲスト = 表示名 +
+    部屋コード + 手持ちパッケージで join (begin_guest_session でアセット root 登録・
+    hash 照合の警告表示・table_start で盤面受信・再接続ボタン)。store: `MultiState` +
+    `ingestTurn` 抽出 (単騎 play_turn とゲスト party_turn 受信が同じ描画実体) +
+    `submitPartyInput` (playTurn が卓中は提出へ委譲 = ActionInput 無改修) +
+    `applyRevealOrder` (revealApplied 追従 = 自分発エコーの二重開帳なし)。
+    transport は SwitchableTransport (façade — ゲスト join で GuestLink へ swap、
+    onEvent 購読は生存)。glue は `app/src/table.ts` (tableHooks で store→table の
+    逆呼び出し = import 循環なし)。backend: `current_game_view(peer_id?)` (途中 join の
+    初期同期・resumed に直前の語り) + `begin_guest_session` (GuestAssetRoot =
+    ゲスト backend 唯一の状態) + resolve_asset_path の guest root フォールバック。
+    v1 制限: 決断/対決パネルの操作はホストのみ (ゲストは whitelist 拒否)・ゲストの
+    提出文面は他人のログに出ない (narration が映す)。app backend 26 green・
+    clippy clean・vue-tsc/vite build green。**Phase E (live) まで未検証**: 実 WebRTC
+    接続・TURN 経由・再接続の実効性 (ネット無しの単体では通せない層)。
 - **Phase D — 音声 + 開帳配信**: audio mesh（ミュート UI・macOS `Info.plist` と
   Tauri capability のマイク権限）/ `RevealState` の DataChannel 配信 / ホスト終了時の
   「卓が閉じます」確認。

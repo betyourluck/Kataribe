@@ -414,6 +414,11 @@ export class GuestLink implements GameTransport {
     private hello: { displayName: string; packageId: string | null; contentHash: string | null },
   ) {}
 
+  /** 自分の peer_id (join 後に確定。submit_turn_input / state_view_for の鍵)。 */
+  get peerId(): string {
+    return this.sig.peerId;
+  }
+
   /** 部屋へ入り、先住ピア全員へ offer を出す (入る側が offer の規約)。 */
   async join(knockUrl: string, roomCode: string): Promise<void> {
     this.knockUrl = knockUrl;

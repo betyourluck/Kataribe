@@ -10,9 +10,13 @@
  */
 import { theme, toggleTheme } from "../theme";
 import { t } from "../i18n";
+import { useGameStore } from "../stores/game";
 
 // git の最新タグ (ビルド時に vite.config が注入)。例 "v0.3.2"。タグ無しは空 = 非表示。
 const version = __APP_VERSION__;
+
+// 卓ボタンの点灯 (spec 23 — 参加中を一目で分かるように)。
+const game = useGameStore();
 
 defineProps<{
   title?: string;
@@ -49,6 +53,7 @@ const emit = defineEmits<{
   (e: "open-packages"): void;
   (e: "open-update"): void;
   (e: "save-log"): void;
+  (e: "open-table"): void;
 }>();
 
 async function win(method: "minimize" | "toggleMaximize" | "close") {
@@ -116,6 +121,23 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
       @click="emit('open-update')"
     >
       {{ t('titlebar.updateAvailable') }}
+    </button>
+
+    <!-- 卓 (多人数プレイ, spec 23)。参加中は ember で灯る -->
+    <button
+      class="tb-btn"
+      :class="game.multi.role !== 'solo' ? 'text-ember' : ''"
+      :title="t('titlebar.table')"
+      :aria-label="t('titlebar.table')"
+      @click="emit('open-table')"
+    >
+      <!-- Users -->
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+        <circle cx="9" cy="8" r="3.2" />
+        <path d="M3.5 19c0.8-3 3-4.5 5.5-4.5s4.7 1.5 5.5 4.5" />
+        <circle cx="17" cy="9" r="2.4" />
+        <path d="M15.5 14.8c2.2 0.2 4 1.6 4.8 4.2" />
+      </svg>
     </button>
 
     <button class="tb-btn" :title="t('titlebar.packages')" :aria-label="t('titlebar.packages')" @click="emit('open-packages')">

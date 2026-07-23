@@ -701,6 +701,10 @@ struct GameSession {
 /// new_game 前は None。
 type SharedSession = Mutex<Option<GameSession>>;
 
+/// ゲスト参加時のアセット解決 root (spec 23)。正本はホスト側 — ゲストの backend は
+/// これだけを持つ (session と別に manage する = 遊休 backend の唯一の状態)。
+type GuestAssetRoot = Mutex<Option<PathBuf>>;
+
 // =============================================================================
 // 多人数プレイ (spec 23 Phase B) — participants / 入力窓 / 開帳カウンタ
 // =============================================================================
@@ -2508,15 +2512,45 @@ async fn resolve_asset_path(
     kind: String,
     id: String,
     session: tauri::State<'_, SharedSession>,
+    guest_root: tauri::State<'_, GuestAssetRoot>,
 ) -> Result<Option<String>, String> {
-    let guard = session.lock().await;
-    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
     let k = match kind.as_str() {
         "images" => AssetKind::Images,
         "audios" => AssetKind::Audios,
         _ => return Err(format!("未知のアセット種別: {kind}")),
     };
-    Ok(resolve_asset(&sess.package_root, k, &id).map(|p| p.to_string_lossy().into_owned()))
+    let guard = session.lock().await;
+    // 正本 session が無ければゲスト root (spec 23 — ゲストの backend は遊休で session を
+    // 持たないが、アセットは自分のローカルコピーで解決する = 契約 asset_wire)。
+    let root = match guard.as_ref() {
+        Some(sess) => sess.package_root.clone(),
+        None => guest_root
+            .lock()
+            .await
+            .clone()
+            .ok_or("ゲームが開始されていません (ゲストは先に join_as_guest)")?,
+    };
+    Ok(resolve_asset(&root, k, &id).map(|p| p.to_string_lossy().into_owned()))
+}
+
+/// ゲスト参加の開始 (spec 23 Phase C)。正本 (GameSession) はホストにしか無いが、
+/// アセットは自分のローカルパッケージで解決する — その root 登録と asset protocol の
+/// 動的 scope 許可 (new_game と同じ流儀) だけを行う。
+#[tauri::command]
+async fn begin_guest_session(
+    app: tauri::AppHandle,
+    package_path: String,
+    guest_root: tauri::State<'_, GuestAssetRoot>,
+) -> Result<(), String> {
+    let dir = normalize_path(&resolve_pkg_dir(&package_path));
+    if !dir.join("package.yaml").is_file() {
+        return Err(format!("パッケージが見つかりません: {}", dir.display()));
+    }
+    app.asset_protocol_scope()
+        .allow_directory(&dir, true)
+        .map_err(|e| e.to_string())?;
+    *guest_root.lock().await = Some(dir);
+    Ok(())
 }
 
 /// **ダイスの seed を振り直す** (プレイヤーの meta 操作)。
@@ -3428,6 +3462,63 @@ async fn state_view_for(
     Ok(state_view(&sess.state, &sess.scenario, &sess.history, &viewer))
 }
 
+/// 進行中セッションの GameView を組み直す (spec 23 Phase C — ゲストの初期同期)。
+/// 卓に join したゲストへホスト frontend が配る「いまの盤面」— `viewer` (peer_id) の
+/// 宛先別 state で組み、`resumed` に直前の語りを載せる (途中から入っても情景が繋がる)。
+#[tauri::command]
+async fn current_game_view(
+    peer_id: Option<String>,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<GameView, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let viewer = match peer_id {
+        Some(p) => sess
+            .participants
+            .iter()
+            .find(|q| q.peer_id == p)
+            .map(|q| q.entity_id.clone())
+            .ok_or_else(|| format!("未知の参加者です: {p}"))?,
+        None => sess.viewer_entity(),
+    };
+    let title = if sess.manifest.title.is_empty() {
+        sess.scenario.title.clone()
+    } else {
+        sess.manifest.title.clone()
+    };
+    Ok(GameView {
+        title,
+        location: sess.state.location.clone(),
+        description: sess
+            .scenario
+            .location(&sess.state.location)
+            .map(|l| normalize(&l.description))
+            .unwrap_or_default(),
+        state: state_view(&sess.state, &sess.scenario, &sess.history, &viewer),
+        background: background_for(&sess.scenario, &sess.state),
+        bgm: bgm_for(&sess.scenario, &sess.state),
+        present_characters: present_characters(&sess.scenario, &sess.state),
+        // 途中参加のゲストにも「前回までの語り」を出す (再開と同じ器 = 情景の接続)。
+        resumed: Some(ResumeView {
+            turn: sess.state.turn,
+            last_narration: normalize(&sess.last_narration),
+            warnings: Vec::new(),
+        }),
+        warnings: Vec::new(),
+        synopsis: sess.synopsis.entries.iter().map(synopsis_view).collect(),
+        recent_log: {
+            let upto = sess.synopsis.compressed_upto();
+            sess.history.iter().filter(|l| l.turn > upto).map(log_line_view).collect()
+        },
+        map: map_view(&sess.scenario, &sess.state, &sess.history),
+        decision: decision_view(&sess.state, &sess.scenario),
+        contest: contest_view(&sess.state, &sess.scenario),
+        facts: fact_views(&sess.facts),
+        facts_policy: facts_policy_str(sess.scenario.facts_policy),
+        use_tts: sess.scenario.use_tts,
+    })
+}
+
 /// 次の 1 枚を開帳する (spec 18 の開帳クリックの正本側)。先着勝ち = lock の獲得順。
 /// 上限で飽和するので二重クリック・競合は無害 (冪等寄り)。
 #[tauri::command]
@@ -3450,6 +3541,7 @@ async fn reveal_all(session: tauri::State<'_, SharedSession>) -> Result<RevealVi
 pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
+        .manage(GuestAssetRoot::new(None))
         .setup(|app| {
             // 前回 set_llm_config が保存した app_data_dir/.env を読み込む (無ければ何もしない)。
             // **override で読む**: dev では main.rs の dotenvy が repo .env を先に読んでおり、
@@ -3502,7 +3594,9 @@ pub fn run() {
             reveal_next,
             reveal_all,
             resume_from_file,
-            package_content_hash
+            package_content_hash,
+            current_game_view,
+            begin_guest_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

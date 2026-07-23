@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { transport } from "../transport";
+import { tableHooks, transport } from "../transport";
 import { t } from "../i18n";
 import * as tts from "../tts";
 import type {
@@ -148,6 +148,46 @@ function loadAudioMuted(): boolean {
   return localStorage.getItem(AUDIO_MUTED_KEY) === "true";
 }
 // ダイスの開帳演出 (spec 18 Phase A)。既定 on。off = 従来の即時開示 (作者テスト向け)。
+/** 多人数プレイの卓状態 (spec 23 Phase C)。solo = 従来どおり。 */
+export interface MultiState {
+  role: "solo" | "host" | "guest";
+  roomCode: string;
+  /** set_participants 済み = 入力窓運用に入った。 */
+  started: boolean;
+  /** 自分の peer_id (提出・宛先別 view の鍵)。 */
+  myPeerId: string;
+  /** ホストの表示名 (ゲスト画面用)。 */
+  hostName: string;
+  /** 席一覧 (ホスト画面用。hello 済みのゲスト + 自分)。 */
+  seats: { peerId: string; displayName: string; packageMatch: string; connected: boolean; entityId: string }[];
+  /** 入力窓の現況 (「入力待ち: ○○」)。 */
+  inputStatus: { submitted: string[]; waiting: string[] } | null;
+  /** パッケージ照合の警告 (mismatch/unknown。プレイは止めない)。 */
+  packageWarning: string | null;
+  /** 接続状態 (ゲスト: ホストへの DataChannel)。 */
+  connected: boolean;
+  /** reveal_order の追従位置 (この卓で既にローカル適用した開帳数)。 */
+  revealApplied: number;
+  /** タイマー残り秒 (timer_sync 受信 / ホストのカウントダウン)。null = タイマー無し。 */
+  timerRemaining: number | null;
+}
+
+export function freshMultiState(): MultiState {
+  return {
+    role: "solo",
+    roomCode: "",
+    started: false,
+    myPeerId: "",
+    hostName: "",
+    seats: [],
+    inputStatus: null,
+    packageWarning: null,
+    connected: false,
+    revealApplied: 0,
+    timerRemaining: null,
+  };
+}
+
 const DICE_REVEAL_KEY = "kataribe.diceReveal";
 function loadDiceReveal(): boolean {
   return localStorage.getItem(DICE_REVEAL_KEY) !== "false";
@@ -392,6 +432,8 @@ interface GameState {
   contest: ContestView | null;
   // ラウンド送信中 (⚔ ボタンの二重押し防止)。
   fighting: boolean;
+  // --- 多人数プレイ (spec 23 Phase C) ---
+  multi: MultiState;
   // 右ペイン (状態パネル) の幅 px。ドラッグハンドルで可変。
   panelWidth: number;
   // 音量 0..100 (BGM/SE 共通)。サウンド設定。
@@ -490,6 +532,7 @@ export const useGameStore = defineStore("game", {
       deciding: false,
       contest: null,
       fighting: false,
+      multi: freshMultiState(),
       msgFont: loadMsgFont(),
       msgColor: loadMsgColor(),
       authoredColor: localStorage.getItem(AUTHORED_COLOR_KEY) ?? "",
@@ -1310,8 +1353,12 @@ export const useGameStore = defineStore("game", {
       }
       // spec 23 Phase B: 開帳の正はホスト session の RevealState — 単騎でも同じ経路を通す。
       // 演出はローカルで即時 (スクランブルの同期性を保つ)、カウンタは transport 越しに進める。
-      // Phase D はこの通知が reveal_order 配信になり、全員が同じ瞬間に出目を見る。
-      void transport.request("reveal_next").catch(() => {});
+      // ローカル適用済みを計上 = reveal_order のエコーが二重に開かない (applyRevealOrder)。
+      this.multi.revealApplied++;
+      void transport
+        .request<{ revealed: number; total: number }>("reveal_next")
+        .then((rv) => tableHooks.onLocalReveal?.(rv))
+        .catch(() => {});
       if (!this.hasUnrevealedDice) this.flushPendingDice();
     },
 
@@ -1323,7 +1370,10 @@ export const useGameStore = defineStore("game", {
         else if (e.kind === "statrolls") e.revealed = e.stat_rolls.length;
       }
       // spec 23 Phase B: session 側カウンタも全開帳へ (ゲーム未開始・保留無しでも無害)。
-      void transport.request("reveal_all").catch(() => {});
+      void transport
+        .request<{ revealed: number; total: number }>("reveal_all")
+        .then((rv) => tableHooks.onLocalReveal?.(rv))
+        .catch(() => {});
       this.flushPendingDice();
     },
 
@@ -1339,6 +1389,7 @@ export const useGameStore = defineStore("game", {
           choice,
           degree: degree ?? null,
         });
+        this.multi.revealApplied = 0; // 新しい伏せ束 (プッシュ 1 or 0)
         await prefetchAssets([
           ...collectTurnAssets(r.beats, [r.check]),
           ...collectViewAssets({ map: r.map }),
@@ -1404,6 +1455,7 @@ export const useGameStore = defineStore("game", {
       this.fighting = true;
       try {
         const r = await transport.request<ContestRoundView>("play_contest_round", {});
+        this.multi.revealApplied = 0; // 新しい伏せ束 (player の 1 枚)
         await prefetchAssets([
           ...collectTurnAssets(r.beats, [r.player, r.opponent]),
           ...collectViewAssets({ map: r.map }),
@@ -1470,6 +1522,11 @@ export const useGameStore = defineStore("game", {
     },
 
     async playTurn(action: string) {
+      // 多人数の卓が動いている間、入力は「提出」になる (締切で束ねて 1 ターン = 決定 4)。
+      if (this.multi.role !== "solo" && this.multi.started) {
+        await this.submitPartyInput(action);
+        return;
+      }
       const trimmed = action.trim();
       if (!trimmed || this.loading || !this.started) return;
       this.log.push({ kind: "player", text: trimmed });
@@ -1477,6 +1534,68 @@ export const useGameStore = defineStore("game", {
       this.error = null;
       try {
         const turn = await transport.request<TurnView>("play_turn", { action: trimmed });
+        await this.ingestTurn(turn);
+      } catch (e) {
+        this.error = String(e);
+      } finally {
+        this.loading = false;
+        this.compacting = false; // 圧縮インジケータはターン完了で必ず解除
+        this.writingEpilogue = false; // エピローグも同様
+      }
+    },
+
+    // --- 多人数プレイ (spec 23 Phase C) ---
+
+    // 入力窓へ自分の行動を提出する (再提出は上書き)。締切はホストが握る (決定 4)。
+    async submitPartyInput(action: string) {
+      const text = action.trim();
+      if (!text || !this.multi.myPeerId) return;
+      try {
+        const st = await transport.request<{ submitted: string[]; waiting: string[] }>(
+          "submit_turn_input",
+          { peerId: this.multi.myPeerId, action: text },
+        );
+        // 自分の提出だけログに出す (他人の文面は narration が映す)。再提出は上書き表示しない。
+        if (!this.multi.inputStatus?.submitted.includes(this.multi.myPeerId)) {
+          this.log.push({ kind: "player", text });
+        }
+        this.multi.inputStatus = st;
+        tableHooks.onLocalInputStatus?.(st);
+      } catch (e) {
+        this.error = String(e);
+      }
+    },
+
+    // reveal_order の追従 (ホスト/他ゲスト発の開帳を自分の画面でも開く)。
+    // 自分発のエコーは revealApplied が既に進んでいるので no-op (二重開帳しない)。
+    applyRevealOrder(rv: { revealed: number; total: number }) {
+      while (this.multi.revealApplied < rv.revealed) {
+        const i = this.revealTargetIndex;
+        if (i < 0) break;
+        const e = this.log[i];
+        if (e.kind === "rolls" && e.revealed < e.rolls.length) {
+          e.revealed++;
+        } else if (e.kind === "checks" && e.revealed < e.checks.length) {
+          const c = e.checks[e.revealed];
+          e.revealed++;
+          this.playSe(assetUrl("audios", c.sound));
+        } else if (e.kind === "statrolls" && e.revealed < e.stat_rolls.length) {
+          e.revealed++;
+        } else {
+          break;
+        }
+        this.multi.revealApplied++;
+      }
+      if (!this.hasUnrevealedDice) this.flushPendingDice();
+    },
+
+    // 受け取った TurnView を会話ログ・状態パネル・演出へ描き込む共通部 (spec 23 Phase C:
+    // 単騎の play_turn / 多人数の party_turn — ホストの締切実行もゲストの push 受信も
+    // 同じ実体を通る。ゲストは state を宛先別に差し替えてから渡す)。
+    async ingestTurn(turn: TurnView) {
+        // 新しいダイス束 = 開帳追従位置をリセット (spec 23 reveal_order)。
+        this.multi.revealApplied = 0;
+        this.multi.timerRemaining = null;
         // このターンに載っているアセット ID を先に解決する (以後は同期で引ける)。
         await prefetchAssets([
           ...collectViewAssets(turn),
@@ -1632,13 +1751,6 @@ export const useGameStore = defineStore("game", {
             if (nextBgm !== this.bgm) this.bgm = nextBgm;
           }
         }
-      } catch (e) {
-        this.error = String(e);
-      } finally {
-        this.loading = false;
-        this.compacting = false; // 圧縮インジケータはターン完了で必ず解除
-        this.writingEpilogue = false; // エピローグも同様
-      }
     },
   },
 });
