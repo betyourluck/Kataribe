@@ -400,9 +400,18 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
     提出文面は他人のログに出ない (narration が映す)。app backend 26 green・
     clippy clean・vue-tsc/vite build green。**Phase E (live) まで未検証**: 実 WebRTC
     接続・TURN 経由・再接続の実効性 (ネット無しの単体では通せない層)。
-- **Phase D — 音声 + 開帳配信**: audio mesh（ミュート UI・macOS `Info.plist` と
-  Tauri capability のマイク権限）/ `RevealState` の DataChannel 配信 / ホスト終了時の
-  「卓が閉じます」確認。
+- **Phase D — 音声**: audio mesh（macOS `Info.plist` と Tauri capability のマイク権限）/
+  ホスト終了時の「卓が閉じます」確認。~~`RevealState` の DataChannel 配信~~ は
+  **Phase C で実装済み**（reveal_order のブロードキャスト）。
+  - **マイク OFF = 完全解放（2026-07-23 ユーザー決定）**: ミュートは
+    `track.enabled = false`（デバイスを掴んだまま無音）ではなく **`track.stop()` +
+    `getUserMedia` の取り直し**で実装する — **OS のマイク使用インジケータが消える**
+    ことがユーザーの安心の実体（「無音のはず」より「OS が使っていないと言っている」が強い）。
+    再 ON はデバイス再取得 + `RTCRtpSender.replaceTrack` で数百 ms の遅延を許容
+    （卓の会話でこの遅延は実害なし）。中間状態の「掴んだままミュート」は**作らない**
+    （状態が二段あると UI とインジケータの対応が曖昧になる — OFF は常に完全解放の一値）。
+    付随: 音声なし参加（マイク不使用 = 権限要求もしない）と相手別の受信音量は従来どおり
+    Phase D のスコープ。
 - **Phase E — 実測**: 3 人 live プレイ（モバイル回線 1 人を意図的に混ぜる）。
   direct/relay 比率 / 入力窓の体感時間 / **多人数 prompt で GM が行動を正しく各人に
   帰属させるか（核心的未知）** / 再接続の実効性。
