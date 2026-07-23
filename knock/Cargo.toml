@@ -1,0 +1,21 @@
+[package]
+name = "kataribe-knock"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+description = "Kataribe 複数同時プレイのノックサーバー — WebSocket シグナリング + TURN 一時クレデンシャル発行 (spec 23 Phase C)"
+
+# gm_core 非依存の独立小物 (契約 knock_hosting)。workspace 外 = app/src-tauri と同じ隔離
+# (重い axum 依存を engine 側のビルドに混ぜない。テストは knock/ で cargo test)。
+[workspace]
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.9"
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"

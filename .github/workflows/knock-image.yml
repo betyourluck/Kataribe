@@ -1,0 +1,45 @@
+# ノックサーバーのコンテナイメージを GHCR へ push する (spec 23 / 契約 knock_hosting)。
+# outcast の docker-compose.prod.yml が ghcr.io/betyourluck/kataribe-knock:latest を pull する
+# (既存の outcast / kataribe イメージと同型のデプロイ経路)。
+#
+# 注意: 初回 push 後、GHCR のパッケージ設定で visibility を public にする (リポジトリは
+# public だがパッケージの既定は private — public にすれば VPS 側の docker login が不要)。
+name: knock-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "knock/**"
+      - ".github/workflows/knock-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # イメージを焼く前にテストを回す (Red のまま latest を上書きしない)。
+      - name: Run knock tests
+        run: cargo test --manifest-path knock/Cargo.toml
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: knock
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/kataribe-knock:latest
+            ghcr.io/${{ github.repository_owner }}/kataribe-knock:${{ github.sha }}

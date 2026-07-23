@@ -1,5 +1,7 @@
 # Rust
 /target/
+# knock (workspace 外の独立クレート) のビルド出力
+/knock/target/
 **/*.rs.bk
 Cargo.lock.orig
 
