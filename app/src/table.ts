@@ -26,6 +26,20 @@ export function setKnockUrl(url: string) {
   localStorage.setItem(KNOCK_URL_KEY, url.trim());
 }
 
+/**
+ * 締切タイマーの秒数 (localStorage 永続)。**設定はダイアログ・起動は卓バー**なので、
+ * 値を ref で持たず永続キーに置いて両方から読む (卓バーの開始ボタンが
+ * ダイアログを開かなくても同じ秒数を使う)。
+ */
+const TIMER_SECS_KEY = "kataribe.tableTimerSecs";
+export function timerSeconds(): number {
+  const n = Number(localStorage.getItem(TIMER_SECS_KEY));
+  return Number.isFinite(n) && n >= 10 ? Math.min(n, 600) : 90;
+}
+export function setTimerSeconds(secs: number) {
+  localStorage.setItem(TIMER_SECS_KEY, String(secs));
+}
+
 /** 卓での表示名 (localStorage 永続)。 */
 const TABLE_NAME_KEY = "kataribe.tableName";
 export function tableName(): string {

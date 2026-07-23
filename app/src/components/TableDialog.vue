@@ -18,10 +18,10 @@ import {
   hostCloseWindow,
   hostOpenTable,
   hostStartTable,
-  hostStartTimer,
-  hostStopTimer,
   knockUrl,
   confirmAndLeave,
+  setTimerSeconds,
+  timerSeconds,
   setAutoClose,
   setKnockUrl,
   setTableName,
@@ -40,7 +40,8 @@ const joinPackage = ref(game.packagePath || game.packagePaths[0] || "");
 const busy = ref(false);
 const error = ref<string | null>(null);
 const autoCloseOn = ref(true);
-const timerSecs = ref(90);
+// 秒数はダイアログで決め、起動は卓バーのボタンが行う (値は localStorage 共有)。
+const timerSecs = ref(timerSeconds());
 // 部屋コードは既定で伏せる — 配信・画面共有に映ると誰でも入れる (22 桁の強度は
 // 「推測」への守りであって「映り込み」には無力)。コピーは伏せたままワンクリックで可能。
 const showCode = ref(false);
@@ -254,9 +255,15 @@ const leave = confirmAndLeave;
               {{ t("table.autoClose") }}
             </label>
             <span class="flex items-center gap-1 text-xs">
-              <input v-model.number="timerSecs" type="number" min="10" max="600" class="w-16 rounded border border-ash bg-ash/30 px-1 py-0.5" />
-              <button class="rounded border border-ash px-2 py-0.5 hover:bg-ash/40" @click="hostStartTimer(timerSecs)">{{ t("table.startTimer") }}</button>
-              <button v-if="multi.timerRemaining !== null" class="rounded border border-ash px-2 py-0.5 hover:bg-ash/40" @click="hostStopTimer()">{{ t("table.stopTimer") }}</button>
+              {{ t("table.timerSecs") }}
+              <input
+                v-model.number="timerSecs"
+                type="number"
+                min="10"
+                max="600"
+                class="w-16 rounded border border-ash bg-ash/30 px-1 py-0.5"
+                @change="setTimerSeconds(timerSecs)"
+              />
             </span>
           </div>
         </template>

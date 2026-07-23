@@ -14,7 +14,14 @@
 import { computed } from "vue";
 import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
-import { confirmAndLeave, hostCloseWindow, toggleMic } from "../table";
+import {
+  confirmAndLeave,
+  hostCloseWindow,
+  hostStartTimer,
+  hostStopTimer,
+  timerSeconds,
+  toggleMic,
+} from "../table";
 
 const game = useGameStore();
 const multi = computed(() => game.multi);
@@ -77,7 +84,23 @@ const leave = confirmAndLeave;
       <span v-if="waitingNames" class="text-parchment/50 truncate">
         {{ t("table.barWaiting", { names: waitingNames }) }}
       </span>
-      <span v-if="multi.timerRemaining !== null" class="text-ember">⏱ {{ multi.timerRemaining }}s</span>
+      <!-- タイマーは**同じ場所が開始ボタンにも表示にもなる**。止まっている間は押せる
+           ボタン、走り出したらそのまま残り秒の表示に化ける (秒数の設定はダイアログ側)。
+           走行中のクリックは停止 — 運用の操作をダイアログに取りに行かせない。 -->
+      <button
+        v-if="multi.role === 'host'"
+        class="rounded border px-2 py-0.5"
+        :class="
+          multi.timerRemaining !== null
+            ? 'border-ember/60 text-ember hover:bg-ember/10'
+            : 'border-ash text-parchment/70 hover:border-ember hover:text-parchment'
+        "
+        :title="multi.timerRemaining !== null ? t('table.stopTimer') : t('table.startTimerHint', { secs: timerSeconds() })"
+        @click="multi.timerRemaining !== null ? hostStopTimer() : hostStartTimer(timerSeconds())"
+      >
+        ⏱ {{ multi.timerRemaining !== null ? `${multi.timerRemaining}s` : t("table.startTimer") }}
+      </button>
+      <span v-else-if="multi.timerRemaining !== null" class="text-ember">⏱ {{ multi.timerRemaining }}s</span>
     </template>
     <span v-else class="text-parchment/50">{{ t("table.waitingStart") }}</span>
     <!-- 切断は WebRTC の日常。黙って止まらず、取りに行っていることを見せる。 -->
