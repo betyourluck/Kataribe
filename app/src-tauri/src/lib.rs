@@ -684,10 +684,150 @@ struct GameSession {
     summarizer: Option<LlmClient>,
     /// 既成事実 (spec 20)。正本の外の覚え書き。セーブ対象、campaign 遷移でも持ち越す。
     facts: Vec<harness::FactEntry>,
+    /// 卓の参加者 (spec 23 Phase B)。空 = 単騎 (従来どおり)。**セッション中は不変・
+    /// セーブ非対象** (卓は揮発 — 再開時はホストが join フローで張り直す。契約 participants)。
+    participants: Vec<Participant>,
+    /// ホスト自身の peer_id (participants の 1 行)。ホストの画面に出す view の viewer 解決に
+    /// 使う — 主人公スロットはホストとは限らない (決定 3)。None = 単騎 (viewer は主人公)。
+    host_peer: Option<String>,
+    /// 入力窓 (spec 23 決定 4)。peer_id → 提出済みの行動文。締切 (三系統ともホスト frontend が
+    /// 判断) で play_party_turn が束ねて消費する。未提出者は「黙っている」で合成される。
+    pending_inputs: std::collections::BTreeMap<String, String>,
+    /// ダイス開帳の順序カウンタ (spec 23 Phase B で spec 18 の frontend ローカル状態から昇格)。
+    /// ホストが順序づけの正 — 単騎でも同じ経路 (reveal_next command) を通す。
+    reveal: RevealView,
 }
 
 /// new_game 前は None。
 type SharedSession = Mutex<Option<GameSession>>;
+
+// =============================================================================
+// 多人数プレイ (spec 23 Phase B) — participants / 入力窓 / 開帳カウンタ
+// =============================================================================
+
+/// 卓の参加者 1 人 (契約 `Multiplayer.participants` の実装)。
+/// 「誰がどの entity を操作するか」の正 — 合成 prompt の発話者名 = display_name /
+/// ops の帰属 = entity_id / 宛先別 view の viewer 解決もこれ。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct Participant {
+    peer_id: String,
+    entity_id: String,
+    display_name: String,
+}
+
+/// 入力窓の現況 (participants 宣言順)。ホスト frontend が「入力待ち: ○○」表示と
+/// 締切判断 (all_submitted) に使い、Phase D では timer_sync と併せてゲストにも配る。
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+struct InputStatusView {
+    /// 提出済みの peer_id 列。
+    submitted: Vec<String>,
+    /// 未提出の peer_id 列 (締切で「黙っている」になる)。
+    waiting: Vec<String>,
+}
+
+/// ダイス開帳の順序カウンタ (契約 `messages.reveal_order` の中身)。
+/// total = このターンに伏せられたダイス行数 (rolls + checks + stat_rolls)、
+/// revealed = 開帳済みの数。先着勝ち = ホストの受信順 (session lock の獲得順) で単調に進む。
+#[derive(Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RevealView {
+    revealed: u32,
+    total: u32,
+}
+
+impl RevealView {
+    /// 新しいダイス束で伏せ直す (受理ターン / プッシュ振り直し / 対決ラウンドの開始点)。
+    fn conceal(total: usize) -> Self {
+        Self { revealed: 0, total: total as u32 }
+    }
+    /// 次の 1 枚を開帳する (上限で飽和 = 二重クリック・競合は自然に無害)。
+    fn advance(&mut self) {
+        if self.revealed < self.total {
+            self.revealed += 1;
+        }
+    }
+    /// 全開帳 (演出オフ・脱出口)。
+    fn complete(&mut self) {
+        self.revealed = self.total;
+    }
+}
+
+/// participants の宣言を検証する (set_participants の門番)。
+/// - 空でない / peer_id・entity_id とも重複なし
+/// - **主人公スロット (entity_id = player) がちょうど 1 行** (契約: 主人公はホストとは限らない)
+/// - 仲間の entity は scenario.characters に宣言済み (幻 entity の遮断 = 閉世界)
+/// - host_peer_id は participants の 1 行
+fn validate_participants(
+    parts: &[Participant],
+    host_peer_id: &str,
+    scenario: &Scenario,
+) -> Result<(), String> {
+    if parts.is_empty() {
+        return Err("参加者が空です".into());
+    }
+    let mut peers = std::collections::BTreeSet::new();
+    let mut entities = std::collections::BTreeSet::new();
+    for p in parts {
+        if !peers.insert(p.peer_id.as_str()) {
+            return Err(format!("peer_id が重複しています: {}", p.peer_id));
+        }
+        if !entities.insert(p.entity_id.as_str()) {
+            return Err(format!("同じ entity を複数人が操作しています: {}", p.entity_id));
+        }
+        if p.entity_id != PLAYER && !scenario.characters.contains_key(&p.entity_id) {
+            return Err(format!(
+                "未知の entity です: {} (シナリオに宣言されたキャラクターだけが操作できます)",
+                p.entity_id
+            ));
+        }
+    }
+    let players = parts.iter().filter(|p| p.entity_id == PLAYER).count();
+    if players != 1 {
+        return Err(format!(
+            "主人公 (entity_id=player) の枠はちょうど 1 人が必要です (現在 {players} 人)"
+        ));
+    }
+    if !parts.iter().any(|p| p.peer_id == host_peer_id) {
+        return Err(format!("ホスト ({host_peer_id}) が参加者に居ません"));
+    }
+    Ok(())
+}
+
+/// 入力窓の現況を organize する (participants 宣言順で安定)。
+fn input_status_of(
+    parts: &[Participant],
+    inputs: &std::collections::BTreeMap<String, String>,
+) -> InputStatusView {
+    let (submitted, waiting) = parts
+        .iter()
+        .map(|p| p.peer_id.clone())
+        .partition(|id| inputs.contains_key(id));
+    InputStatusView { submitted, waiting }
+}
+
+impl GameSession {
+    /// ホスト画面の viewer entity。participants 未設定 (単騎) は主人公。
+    /// 主人公スロットはホストとは限らない (決定 3) — ホストが仲間を操作する卓では
+    /// ホストの画面も本人の秘密だけを見る (ホストは正本とセーブでは全知だが、
+    /// 画面はプレイヤーとしての視界に揃える)。
+    fn viewer_entity(&self) -> String {
+        self.host_peer
+            .as_deref()
+            .and_then(|hp| self.participants.iter().find(|p| p.peer_id == hp))
+            .map(|p| p.entity_id.clone())
+            .unwrap_or_else(|| PLAYER.to_string())
+    }
+
+    /// harness prompt 層へ渡す party (2 人以上で多人数接地が入る)。
+    fn party_members(&self) -> Vec<harness::PartyMember> {
+        self.participants
+            .iter()
+            .map(|p| harness::PartyMember {
+                entity: p.entity_id.clone(),
+                name: p.display_name.clone(),
+            })
+            .collect()
+    }
+}
 
 // =============================================================================
 // helpers
@@ -948,7 +1088,16 @@ fn normalize(s: &str) -> String {
     s.replace("\\n", "\n")
 }
 
-fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> StateView {
+/// `viewer` = この view を見るプレイヤーの操作 entity (spec 23 Phase B で宛先別化)。
+/// 単騎は常に主人公。多人数では participants の peer_id→entity_id で解決し、
+/// **secret 属性は viewer 本人の分だけ通す** (spec 06 の「本人」を引数化しただけ —
+/// フィルタは DTO 段階 = ネットに乗る前に落とす。frontend で隠すのは秘匿ではない)。
+fn state_view(
+    state: &GameState,
+    scenario: &Scenario,
+    history: &[TurnLog],
+    viewer: &str,
+) -> StateView {
     // stat / skill / 所持物 のいずれかを持つ entity の和集合。
     let ids: std::collections::BTreeSet<&String> = state
         .entities
@@ -1001,14 +1150,15 @@ fn state_view(state: &GameState, scenario: &Scenario, history: &[TurnLog]) -> St
                 .unwrap_or_default(),
             attributes: {
                 // stats と同じく authored 宣言順 (Scenario::attribute_order)。
-                // secret 属性 (役職等, spec 06) はプレイヤー UI では本人分のみ (NPC 分は DTO 段階で
-                // 落とす)。hidden 属性 (本人未知) は本人分も含め全員分落とす (当人すら知らない正体・
+                // secret 属性 (役職等, spec 06) はプレイヤー UI では **viewer 本人分のみ**
+                // (他 entity 分は DTO 段階で落とす。spec 23 Phase B で「本人」を viewer 引数化)。
+                // hidden 属性 (本人未知) は本人分も含め全員分落とす (当人すら知らない正体・
                 // 呪いを UI が漏らさない — GM prompt だけが見る)。
                 let m = state.attributes.get(id);
                 let order = scenario.attribute_order(id);
                 let visible = |k: &String| {
                     !scenario.hidden_attributes.contains(k)
-                        && (id == PLAYER || !scenario.secret_attributes.contains(k))
+                        && (*id == viewer || !scenario.secret_attributes.contains(k))
                 };
                 let mut out: Vec<StatStrView> = Vec::new();
                 for k in &order {
@@ -2039,7 +2189,7 @@ async fn new_game(
             .location(&state.location)
             .map(|l| l.description.clone())
             .unwrap_or_default(),
-        state: state_view(&state, &scenario, &[]),
+        state: state_view(&state, &scenario, &[], PLAYER),
         background: background_for(&scenario, &state),
         bgm: bgm_for(&scenario, &state),
         present_characters: present_characters(&scenario, &state),
@@ -2079,6 +2229,10 @@ async fn new_game(
         synopsis: Synopsis::default(),
         summarizer,
         facts: Vec::new(),
+        participants: Vec::new(),
+        host_peer: None,
+        pending_inputs: std::collections::BTreeMap::new(),
+        reveal: RevealView::default(),
         // 言語設定タブ由来の lang を優先、無ければ env 既定。
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
@@ -2156,7 +2310,7 @@ async fn restore_session(
             .location(&state.location)
             .map(|l| l.description.clone())
             .unwrap_or_default(),
-        state: state_view(&state, &scenario, &save.history),
+        state: state_view(&state, &scenario, &save.history, PLAYER),
         background: background_for(&scenario, &state),
         bgm: bgm_for(&scenario, &state),
         present_characters: present_characters(&scenario, &state),
@@ -2207,6 +2361,12 @@ async fn restore_session(
         synopsis: save.synopsis,
         summarizer,
         facts: save.facts,
+        // 卓は揮発 (契約 participants) — セーブから復元しない。再開時はホストが張り直す。
+        // 開帳の保留もロードで破棄 (spec 18: リロード = 自動開帳は許容)。
+        participants: Vec::new(),
+        host_peer: None,
+        pending_inputs: std::collections::BTreeMap::new(),
+        reveal: RevealView::default(),
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
             Some("ja") | Some("Ja") | Some("JA") => Lang::Ja,
@@ -2456,11 +2616,66 @@ async fn play_turn(
     action: String,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<TurnView, String> {
-    use tauri::Emitter;
     let mut guard = session.lock().await;
     let sess = guard
         .as_mut()
         .ok_or("ゲームが開始されていません (先に new_game を呼んでください)")?;
+    // 単騎 (従来経路)。party 空 = prompt は多人数機構の導入前と 1 バイトも変わらない。
+    do_play_turn(&app, sess, action, &[]).await
+}
+
+/// 多人数: 入力窓を締めて全員分を束ね、**1 回のターン**として回す (spec 23 決定 4 =
+/// 3 人が個別にターンを回すと 3 倍のフルプロンプト再課金、束ねれば 1 往復のまま)。
+///
+/// 締切の判断 (全員提出 / タイマー満了 / ホスト強制) は**ホスト frontend の責務** —
+/// backend は「いま締める」と言われた時点の提出物で合成する (タイマーはホスト時刻基準、
+/// 契約 input_window)。未提出者は「（黙って様子を見ている）」で必ず prompt に載る。
+#[tauri::command]
+async fn play_party_turn(
+    app: tauri::AppHandle,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<TurnView, String> {
+    let mut guard = session.lock().await;
+    let sess = guard
+        .as_mut()
+        .ok_or("ゲームが開始されていません (先に new_game を呼んでください)")?;
+    if sess.participants.len() < 2 {
+        return Err("多人数の卓が開かれていません (先に set_participants で参加者を宣言してください)".into());
+    }
+    if sess.pending_inputs.is_empty() {
+        return Err("誰も行動を提出していません (全員未提出のまま締め切ることはできません)".into());
+    }
+    let inputs: Vec<harness::PartyInput> = sess
+        .participants
+        .iter()
+        .map(|p| harness::PartyInput {
+            member: harness::PartyMember {
+                entity: p.entity_id.clone(),
+                name: p.display_name.clone(),
+            },
+            action: sess.pending_inputs.get(&p.peer_id).cloned(),
+        })
+        .collect();
+    let action = harness::compose_party_action(&inputs);
+    let party = sess.party_members();
+    let view = do_play_turn(&app, sess, action, &party).await?;
+    // 受理で入力窓を空にする。却下は state 無傷 — 提出物を残し、書き直すか
+    // そのまま締め直すかをホストが選べる (窓の中身を勝手に捨てない)。
+    if view.accepted {
+        sess.pending_inputs.clear();
+    }
+    Ok(view)
+}
+
+/// 1 ターンの共通実体 (単騎 play_turn / 多人数 play_party_turn の合流点)。
+/// `action` は単騎なら生の行動文、多人数なら発話者名つきの合成文。
+async fn do_play_turn(
+    app: &tauri::AppHandle,
+    sess: &mut GameSession,
+    action: String,
+    party: &[harness::PartyMember],
+) -> Result<TurnView, String> {
+    use tauri::Emitter;
 
     // spec 18 Phase B: 決断待ちの間はターンを回さない (frontend の入力ロックと二層)。
     // 凍結された帰結が未確定のまま GM に語らせると、確定前の世界を既成事実化してしまう。
@@ -2494,6 +2709,7 @@ async fn play_turn(
         &sess.history,
         &sess.synopsis.entries,
         &sess.facts,
+        party,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -2615,7 +2831,7 @@ async fn play_turn(
                         }
                     })
                     .collect(),
-                state: state_view(&sess.state, &sess.scenario, &sess.history),
+                state: state_view(&sess.state, &sess.scenario, &sess.history, &sess.viewer_entity()),
                 goal_reached: is_goal(&sess.state, &sess.scenario),
                 goal_id,
                 goal_title,
@@ -2649,7 +2865,7 @@ async fn play_turn(
             reasons: last_reasons.iter().map(|r| r.localize(sess.lang)).collect(),
             retries: Vec::new(),
             // 却下では state 無傷。現状スナップショットを返す。
-            state: state_view(&sess.state, &sess.scenario, &sess.history),
+            state: state_view(&sess.state, &sess.scenario, &sess.history, &sess.viewer_entity()),
             goal_reached: is_goal(&sess.state, &sess.scenario),
             // 却下では state 不変ゆえ goal も変わらない。スナップショットとして同様に返す。
             goal_id: goal_view(&sess.state, &sess.scenario).0,
@@ -2674,6 +2890,11 @@ async fn play_turn(
             contest: contest_view(&sess.state, &sess.scenario),
         },
     };
+
+    // spec 23 Phase B: 開帳カウンタを伏せ直す (このターンのダイス行数 = rolls+checks+stat_rolls。
+    // 却下は配列が空なので 0/0)。開帳の順序づけはホスト session が正 — 単騎でも同じ経路を通る。
+    sess.reveal =
+        RevealView::conceal(view.rolls.len() + view.checks.len() + view.stat_rolls.len());
 
     // --- campaign 前進 (reached → transition の結線、CLI play と同型) ---
     // goal 到達 + campaign パッケージなら、発火 GoalId で次モジュールへ state を糸通しして遷移する。
@@ -2702,7 +2923,7 @@ async fn play_turn(
                 let from_title = sess.scenario.title.clone();
                 if let Some(job) = sess.synopsis.on_transition(&sess.history, &from_title) {
                     let _ = app.emit("synopsis-compacting", ());
-                    run_synopsis_job(&app, sess, &job).await;
+                    run_synopsis_job(app, sess, &job).await;
                     ran_transition_job = true;
                 }
                 sess.current_module = adv.module_id;
@@ -2734,7 +2955,7 @@ async fn play_turn(
                     description,
                 });
                 // パネル類は遷移先を指す (goal_* は遷移元の結末のまま残す)。
-                view.state = state_view(&sess.state, &sess.scenario, &sess.history);
+                view.state = state_view(&sess.state, &sess.scenario, &sess.history, &sess.viewer_entity());
                 view.background = background_for(&sess.scenario, &sess.state);
                 view.bgm = bgm_for(&sess.scenario, &sess.state);
                 view.present_characters =
@@ -2752,7 +2973,7 @@ async fn play_turn(
     if view.accepted && !ran_transition_job {
         if let Some(job) = sess.synopsis.next_job(&sess.history) {
             let _ = app.emit("synopsis-compacting", ());
-            run_synopsis_job(&app, sess, &job).await;
+            run_synopsis_job(app, sess, &job).await;
         }
     }
     // spec 10: このターンの差分を view に載せる (あらすじは append-only ゆえ frontend は push のみ)。
@@ -2857,6 +3078,9 @@ async fn resolve_dice_decision(
         }
     })?;
 
+    // spec 23 Phase B: プッシュは新しい出目 1 枚を伏せ直す (受け入れ/買いは新しいダイス無し)。
+    sess.reveal = RevealView::conceal(if r.check.pushed { 1 } else { 0 });
+
     // 発火ビートの解決 (play_turn と同経路) と、次ターンへの語り素材の持ち越し。
     let resolved = resolve_recall(&sess.lore, &r.fired);
     let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
@@ -2947,7 +3171,7 @@ async fn resolve_dice_decision(
         spent_amount: r.spent.as_ref().map(|(_, a)| *a),
         push_paid_from: r.push_paid.as_ref().map(|(f, _)| f.clone()),
         push_paid_amount: r.push_paid.as_ref().map(|(_, a)| *a),
-        state: state_view(&sess.state, &sess.scenario, &sess.history),
+        state: state_view(&sess.state, &sess.scenario, &sess.history, &sess.viewer_entity()),
         goal_reached: is_goal(&sess.state, &sess.scenario),
         goal_id,
         goal_title,
@@ -3005,6 +3229,9 @@ async fn play_contest_round(
             "この対決の定義が見つかりません (パッケージが更新された可能性)".to_string()
         }
     })?;
+
+    // spec 23 Phase B: player の振り 1 枚が伏せカード (相手の行は開帳後に即開示 = 数えない)。
+    sess.reveal = RevealView::conceal(1);
 
     // 発火ビート (帰結からの連鎖)。lore 解決は play_turn と同経路。
     let resolved = resolve_recall(&sess.lore, &r.fired);
@@ -3096,7 +3323,7 @@ async fn play_contest_round(
         stat_rolls: stat_roll_views,
         beats,
         ended,
-        state: state_view(&sess.state, &sess.scenario, &sess.history),
+        state: state_view(&sess.state, &sess.scenario, &sess.history, &sess.viewer_entity()),
         goal_reached: is_goal(&sess.state, &sess.scenario),
         goal_id,
         goal_title,
@@ -3104,6 +3331,96 @@ async fn play_contest_round(
         contest: contest_view(&sess.state, &sess.scenario),
         map: map_view(&sess.scenario, &sess.state, &sess.history),
     })
+}
+
+// =============================================================================
+// 多人数プレイの commands (spec 23 Phase B)。Phase C で RemoteTransport がこの同じ
+// command 群を DataChannel 越しに叩く — B の時点では配送先が 1 人 (ホスト自身) なだけ。
+// =============================================================================
+
+/// 卓の参加者を宣言する (join フロー完了時にホスト frontend が呼ぶ)。
+/// participants はセッション中不変 (契約) — 呼び直しは卓の張り直し (再接続) を意味し、
+/// 入力窓はクリアされる。
+#[tauri::command]
+async fn set_participants(
+    participants: Vec<Participant>,
+    host_peer_id: String,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<(), String> {
+    let mut guard = session.lock().await;
+    let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+    validate_participants(&participants, &host_peer_id, &sess.scenario)?;
+    sess.participants = participants;
+    sess.host_peer = Some(host_peer_id);
+    sess.pending_inputs.clear();
+    Ok(())
+}
+
+/// 入力窓へ 1 人分の行動を提出する (再提出は上書き)。締切までは何度でも書き直せる。
+#[tauri::command]
+async fn submit_turn_input(
+    peer_id: String,
+    action: String,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<InputStatusView, String> {
+    let mut guard = session.lock().await;
+    let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+    if !sess.participants.iter().any(|p| p.peer_id == peer_id) {
+        return Err(format!("未知の参加者です: {peer_id}"));
+    }
+    let action = action.trim().to_string();
+    if action.is_empty() {
+        return Err("行動が空です (様子を見るなら未提出のまま締切を待ってください)".into());
+    }
+    sess.pending_inputs.insert(peer_id, action);
+    Ok(input_status_of(&sess.participants, &sess.pending_inputs))
+}
+
+/// 入力窓の現況 (「入力待ち: ○○」表示と all_submitted 締切の判断材料)。
+#[tauri::command]
+async fn turn_input_status(
+    session: tauri::State<'_, SharedSession>,
+) -> Result<InputStatusView, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    Ok(input_status_of(&sess.participants, &sess.pending_inputs))
+}
+
+/// 指定参加者向けの宛先別 state view (Phase C/D でホスト frontend がゲストへ配る
+/// fan-out の原料。TurnView の他フィールドは共有でよく、差があるのは state だけ)。
+#[tauri::command]
+async fn state_view_for(
+    peer_id: String,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<StateView, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let viewer = sess
+        .participants
+        .iter()
+        .find(|p| p.peer_id == peer_id)
+        .map(|p| p.entity_id.clone())
+        .ok_or_else(|| format!("未知の参加者です: {peer_id}"))?;
+    Ok(state_view(&sess.state, &sess.scenario, &sess.history, &viewer))
+}
+
+/// 次の 1 枚を開帳する (spec 18 の開帳クリックの正本側)。先着勝ち = lock の獲得順。
+/// 上限で飽和するので二重クリック・競合は無害 (冪等寄り)。
+#[tauri::command]
+async fn reveal_next(session: tauri::State<'_, SharedSession>) -> Result<RevealView, String> {
+    let mut guard = session.lock().await;
+    let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+    sess.reveal.advance();
+    Ok(sess.reveal)
+}
+
+/// 全開帳 (演出オフ・設定切替の脱出口)。
+#[tauri::command]
+async fn reveal_all(session: tauri::State<'_, SharedSession>) -> Result<RevealView, String> {
+    let mut guard = session.lock().await;
+    let sess = guard.as_mut().ok_or("ゲームが開始されていません")?;
+    sess.reveal.complete();
+    Ok(sess.reveal)
 }
 
 pub fn run() {
@@ -3152,7 +3469,14 @@ pub fn run() {
             delete_autosave,
             facts_add,
             facts_edit,
-            facts_delete
+            facts_delete,
+            set_participants,
+            submit_turn_input,
+            turn_input_status,
+            play_party_turn,
+            state_view_for,
+            reveal_next,
+            reveal_all
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -3208,7 +3532,7 @@ mod tests {
         .unwrap();
         assert!(sc.validate().is_empty(), "{:?}", sc.validate());
         let s = sc.initial_state(1);
-        let view = super::state_view(&s, &sc, &[]);
+        let view = super::state_view(&s, &sc, &[], gm_core::PLAYER);
 
         let player = view.entities.iter().find(|e| e.id == "player").expect("player が居る");
         assert!(
@@ -3221,6 +3545,133 @@ mod tests {
         );
         assert_eq!(view.location, "v", "id は機械用のまま");
         assert_eq!(view.location_title, "宿屋の広間", "表示名が DTO に出る");
+    }
+
+    /// 【spec 23 Phase B 宛先別 view】secret 属性は **viewer 本人の分だけ**通る —
+    /// 仲間を操作するゲストには自分の秘密だけが載り、主人公や他の仲間の秘密は
+    /// DTO 段階で落ちる (ネットに乗る前に落とす。frontend で隠すのは秘匿ではない)。
+    /// hidden 属性 (本人未知) は viewer が誰でも全員分落ちたまま。
+    #[test]
+    fn state_view_filters_secret_attributes_per_viewer() {
+        let sc = gm_core::Scenario::from_yaml(concat!(
+            "title: t\nstart: v\n",
+            "initial_attributes: { 役職: 人狼, 呪い: 有 }\n",
+            "characters:\n",
+            "  alice: { name: アリス, attributes: { 役職: 占い師, 呪い: 無 } }\n",
+            "secret_attributes: [役職]\n",
+            "hidden_attributes: [呪い]\n",
+            "locations: { v: { description: d, present: [alice], items: {}, exits: [] } }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let s = sc.initial_state(1);
+
+        let role_of = |view: &super::StateView, id: &str| {
+            view.entities
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.attributes.iter().any(|a| a.key == "役職"))
+                .unwrap_or(false)
+        };
+
+        // viewer = alice を操作するゲスト: alice の秘密は見え、player の秘密は落ちる。
+        let for_alice = super::state_view(&s, &sc, &[], "alice");
+        assert!(role_of(&for_alice, "alice"), "viewer 本人 (alice) の secret は見える");
+        assert!(!role_of(&for_alice, "player"), "他人 (player) の secret は DTO 段階で落ちる");
+
+        // viewer = 主人公 (従来挙動の回帰): 自分の分だけ。
+        let for_player = super::state_view(&s, &sc, &[], gm_core::PLAYER);
+        assert!(role_of(&for_player, "player"));
+        assert!(!role_of(&for_player, "alice"));
+
+        // hidden (本人未知) は viewer が誰でも全員分落ちる。
+        for view in [&for_alice, &for_player] {
+            assert!(
+                view.entities.iter().all(|e| e.attributes.iter().all(|a| a.key != "呪い")),
+                "hidden 属性はどの宛先にも出ない"
+            );
+        }
+    }
+
+    /// 【spec 23 Phase B participants の門番】宣言の検証: 重複 peer/entity・幻 entity・
+    /// 主人公スロットちょうど 1 行・ホスト在籍、を弾く (閉世界の宣言检査と同じ向き)。
+    #[test]
+    fn validate_participants_enforces_shape() {
+        let sc = gm_core::Scenario::from_yaml(concat!(
+            "title: t\nstart: v\n",
+            "characters: { alice: { name: アリス } }\n",
+            "locations: { v: { description: d, items: {}, exits: [] } }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let p = |peer: &str, ent: &str| super::Participant {
+            peer_id: peer.into(),
+            entity_id: ent.into(),
+            display_name: peer.to_uppercase(),
+        };
+
+        // 正常形: 主人公 1 + 仲間 1、ホストは在籍。
+        let ok = vec![p("h", "player"), p("g", "alice")];
+        assert!(super::validate_participants(&ok, "h", &sc).is_ok());
+        // ホストが仲間を操作する卓も合法 (主人公スロット ≠ ホスト)。
+        assert!(super::validate_participants(&ok, "g", &sc).is_ok());
+
+        // 空 / peer 重複 / entity 重複 / 幻 entity / 主人公 0 or 2 / ホスト不在。
+        assert!(super::validate_participants(&[], "h", &sc).is_err(), "空は拒否");
+        assert!(
+            super::validate_participants(&[p("h", "player"), p("h", "alice")], "h", &sc).is_err(),
+            "peer_id 重複は拒否"
+        );
+        assert!(
+            super::validate_participants(&[p("h", "player"), p("g", "player")], "h", &sc).is_err(),
+            "同じ entity の二重操作は拒否 (主人公 2 行もこれで落ちる)"
+        );
+        assert!(
+            super::validate_participants(&[p("h", "player"), p("g", "bob")], "h", &sc).is_err(),
+            "シナリオに宣言の無い幻 entity は拒否 (閉世界)"
+        );
+        assert!(
+            super::validate_participants(&[p("g", "alice")], "g", &sc).is_err(),
+            "主人公スロット 0 は拒否"
+        );
+        assert!(
+            super::validate_participants(&ok, "x", &sc).is_err(),
+            "ホストが参加者に居なければ拒否"
+        );
+    }
+
+    /// 【spec 23 Phase B 開帳カウンタ】単調に進み、上限で飽和する (二重クリック・競合は無害)。
+    /// 先着勝ちの順序づけは session lock の獲得順 — カウンタ自体は増えるだけで巻き戻らない。
+    #[test]
+    fn reveal_counter_advances_monotonically_and_saturates() {
+        let mut r = super::RevealView::conceal(2);
+        assert_eq!((r.revealed, r.total), (0, 2), "伏せ直しは 0/total");
+        r.advance();
+        assert_eq!(r.revealed, 1);
+        r.advance();
+        assert_eq!(r.revealed, 2);
+        r.advance();
+        assert_eq!(r.revealed, 2, "上限で飽和 (過剰クリックは何もしない)");
+        let mut all = super::RevealView::conceal(3);
+        all.complete();
+        assert_eq!(all.revealed, 3, "全開帳 (演出オフの脱出口)");
+    }
+
+    /// 【spec 23 Phase B 入力窓】提出済み/未提出の区分けは participants の宣言順で安定
+    /// (「入力待ち: ○○」表示と all_submitted 締切の判断材料)。
+    #[test]
+    fn input_status_partitions_by_submission_in_declaration_order() {
+        let parts = vec![
+            super::Participant { peer_id: "h".into(), entity_id: "player".into(), display_name: "A".into() },
+            super::Participant { peer_id: "g1".into(), entity_id: "alice".into(), display_name: "B".into() },
+            super::Participant { peer_id: "g2".into(), entity_id: "bob".into(), display_name: "C".into() },
+        ];
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert("g1".to_string(), "見張る".to_string());
+        let st = super::input_status_of(&parts, &inputs);
+        assert_eq!(st.submitted, vec!["g1"], "提出済みだけが submitted");
+        assert_eq!(st.waiting, vec!["h", "g2"], "未提出は宣言順で waiting");
     }
 
     /// 【更新判定 PoC (2026-07-15)】`/api/app` の version と現在版 (git タグ) の比較。

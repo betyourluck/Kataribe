@@ -166,6 +166,91 @@ pub(crate) fn is_truthy(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
+// =============================================================================
+// 多人数プレイ (spec 23 Phase B) — 発話者名つき合成 + GM_SYSTEM の多人数接地
+// =============================================================================
+
+/// 卓の参加者 1 人 (prompt 層に見える最小形)。
+///
+/// wire 契約の `participants` (peer_id/entity_id/display_name) から prompt に要る
+/// 2 つだけを写した型 — peer_id は配送の語彙であって語りの語彙ではないので持たない。
+/// `entity` は操作する entity (主人公 = `player`、仲間 = `CharacterDef` の id)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartyMember {
+    pub entity: gm_core::EntityId,
+    /// 発話者名 (プレイヤーが名乗る表示名。合成行の話者名になる)。
+    pub name: String,
+}
+
+/// 合成前の 1 人分の入力。`action: None` = 締切までに未提出 (「黙っている」で載せる)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartyInput {
+    pub member: PartyMember,
+    pub action: Option<String>,
+}
+
+/// 未提出者の行動として prompt に載せる定型文 (契約 `input_window` の凍結文言)。
+/// 省くと GM が不在と誤認して語りから消す (#37 系 = presence は明示接地が要る)。
+pub const SILENT_ACTION: &str = "（黙って様子を見ている）";
+
+/// 全員の入力を発話者名つきで 1 つの行動文に束ねる (spec 23 決定 4)。
+///
+/// 各行は「名前 (entity): 行動」— state_brief の presence が「名前 (id)」形式で
+/// 語りと ops の両方に接地するのと同じ流儀で、帰属 (どの行が誰の entity か) を
+/// 行そのものに埋め込む。未提出者は [`SILENT_ACTION`] で必ず載せる。
+pub fn compose_party_action(inputs: &[PartyInput]) -> String {
+    inputs
+        .iter()
+        .map(|i| {
+            let act = i
+                .action
+                .as_deref()
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .unwrap_or(SILENT_ACTION);
+            format!("{} ({}): {}", i.member.name, i.member.entity, act)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 多人数プレイの接地ブロック (GM_SYSTEM の末尾に足す)。2 人未満なら空 = 単騎の
+/// prompt は 1 バイトも変わらない (安定プレフィックス不変 = キャッシュ無風)。
+///
+/// 中身は契約の 3 点: ①帰属 (各行動を書いた本人の entity に ops を帰属させる。
+/// #31 の「省略 = 主人公で却下」を多人数へ拡張) ②未提出者の扱い (「黙っている」は
+/// 不在ではない — 語りから消すな・行動を捏造するな) ③item idiom (拾得・譲渡・消費は
+/// 主人公経由の 2 手。spec 09 逐次射影が同一ターンの束ねを受理する)。
+pub fn party_note(party: &[PartyMember]) -> String {
+    if party.len() < 2 {
+        return String::new();
+    }
+    let mut s = String::from(
+        "# 多人数プレイ\n\
+         この卓は複数のプレイヤーによる協力プレイである。「プレイヤーの行動」は全員の合作で、\
+         各行は「名前 (entity): 行動」の形式で並ぶ。\n参加者:\n",
+    );
+    for m in party {
+        let role = if m.entity == gm_core::PLAYER { "主人公" } else { "仲間" };
+        s.push_str(&format!("- {} ({}) — {}を操作\n", m.name, m.entity, role));
+    }
+    s.push_str(
+        "規律:\n\
+         - **各人の行動をそれぞれ解決し、状態変化の ops はその行動を書いた本人の操作 entity に\
+         帰属させよ。** 仲間の数値・状態・判定を動かす op は entity にその仲間の id を必ず明示する\
+         こと (省略すると主人公に適用され、却下や取り違えになる)。他人の行を主人公の行動に\
+         読み替えるな。\n\
+         - **「（黙って様子を見ている）」は不在ではない** — その場に居るが、このターンは行動\
+         しなかっただけである。語りから消すな。本人が書いていない行動・台詞を捏造するな\
+         (居ることは描いてよい)。\n\
+         - **アイテムの拾得・譲渡・消費は、必ず主人公を経由する 2 手で表現せよ**: \
+         拾得 = add_item で主人公が拾い give_item で仲間へ渡す / 消費 = give_item で仲間から\
+         主人公へ渡し remove_item で使う。仲間だけで完結する所持の増減は書けない (ops は\
+         書いた順に適用されるので、この 2 手は 1 ターンに束ねてよい)。",
+    );
+    s
+}
+
 /// 条件 (Gate) を平易な日本語にする。LLM に前提条件を理解させるため。
 fn gate_brief(gate: &Gate) -> String {
     match gate {

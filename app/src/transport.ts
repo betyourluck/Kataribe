@@ -7,6 +7,9 @@
 //
 // **seam に入れるのはセッション系だけ** — 設定・パッケージ管理・ログ保存などの
 // ホストローカル command は従来どおり invoke 直呼び (ゲストは自分のローカル設定を使う)。
+// Phase B でセッション系に加わった command: submit_turn_input / turn_input_status /
+// play_party_turn / state_view_for / reveal_next / reveal_all (開帳の正はホスト session)。
+// set_participants はホスト専用 (join フローの完了時に一度だけ) なので seam の外。
 // アセット解決 (resolve_asset_path) も seam の外 — 各クライアントが**自分の**
 // ローカルパッケージで解決する (Multiplayer 契約 asset_wire)。
 //

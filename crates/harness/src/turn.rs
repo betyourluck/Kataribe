@@ -312,6 +312,9 @@ pub enum RetryCause {
 /// 注入し、chronicle の予算からあふれた古い物語の連続性を保持する (長期記憶)。spec 14 で
 /// 可変 user から**独立した 2 本目の leading system** へ分離 (append-only = 章追加の間
 /// byte 安定 → 第二のキャッシュ段。提示位置は「history の前」から「state の前」へ)。
+/// `party` は多人数プレイの参加者 (spec 23 Phase B)。2 人以上なら GM_SYSTEM の末尾に
+/// 多人数接地 ([`prompt::party_note`]) を足す — 単騎 (空/1 人) では 1 バイトも変わらない
+/// (安定プレフィックス不変)。party はセッション中不変なのでキャッシュも保たれる。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn<P: DeltaProposer>(
     proposer: &P,
@@ -326,13 +329,22 @@ pub async fn run_turn<P: DeltaProposer>(
     history: &[TurnLog],
     synopsis: &[crate::SynopsisEntry],
     facts: &[crate::FactEntry],
+    party: &[prompt::PartyMember],
 ) -> Result<TurnOutcome, HarnessError> {
     // 盤面と現在状態を毎ターン新規に提示する (state は正本の唯一の真実)。
     // history=過去ターンの経緯、recalled_lore=思い出された伏線、recent_checks=直前判定の結果、
     // recent_narration=直前の語り (継続文脈、繰り返し禁止) を語りに還流する。
+    let mut system = prompt::gm_system_prompt(scenario, prompt::dev_mode_enabled());
+    // 多人数接地は最初の system ブロックの**末尾**に足す (前方の安定プレフィックスを
+    // 動かさない。party はセッション不変なのでこのブロック自体もセッション内で安定)。
+    let party_block = prompt::party_note(party);
+    if !party_block.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&party_block);
+    }
     let mut messages = vec![
         // dev モード (KATARIBE_DEV_MODE) なら DEV_META を先頭に足す (env 直読み、signature 不変)。
-        ChatMessage::system(prompt::gm_system_prompt(scenario, prompt::dev_mode_enabled())),
+        ChatMessage::system(system),
     ];
     // spec 14 Phase B: append-only あらすじ (spec 10) は可変 user に混ぜず、独立した
     // **2 本目の leading system** として出す — user は state_brief が毎ターン変わるので

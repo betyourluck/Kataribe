@@ -1308,6 +1308,10 @@ export const useGameStore = defineStore("game", {
       } else {
         return;
       }
+      // spec 23 Phase B: 開帳の正はホスト session の RevealState — 単騎でも同じ経路を通す。
+      // 演出はローカルで即時 (スクランブルの同期性を保つ)、カウンタは transport 越しに進める。
+      // Phase D はこの通知が reveal_order 配信になり、全員が同じ瞬間に出目を見る。
+      void transport.request("reveal_next").catch(() => {});
       if (!this.hasUnrevealedDice) this.flushPendingDice();
     },
 
@@ -1318,6 +1322,8 @@ export const useGameStore = defineStore("game", {
         else if (e.kind === "checks") e.revealed = e.checks.length;
         else if (e.kind === "statrolls") e.revealed = e.stat_rolls.length;
       }
+      // spec 23 Phase B: session 側カウンタも全開帳へ (ゲーム未開始・保留無しでも無害)。
+      void transport.request("reveal_all").catch(() => {});
       this.flushPendingDice();
     },
 
@@ -1342,6 +1348,8 @@ export const useGameStore = defineStore("game", {
           (e) => e.kind === "checks" && e.checks.some((c) => c.pending),
         );
         const isPush = choice === "push" && this.diceReveal;
+        // 演出オフのプッシュ: backend は新出目 1 枚を伏せ直すが UI は即開示 → 追認 (spec 23 Phase B)。
+        if (choice === "push" && !this.diceReveal) void transport.request("reveal_all").catch(() => {});
         if (entryIdx >= 0) {
           const entry = this.log[entryIdx];
           if (entry.kind === "checks") {
@@ -1401,6 +1409,8 @@ export const useGameStore = defineStore("game", {
           ...collectViewAssets({ map: r.map }),
         ]);
         const reveal = this.diceReveal;
+        // 演出オフ: backend は player の振り 1 枚を伏せ直すが UI は即開示 → 追認 (spec 23 Phase B)。
+        if (!reveal) void transport.request("reveal_all").catch(() => {});
         // player の振り: 伏せカード (開帳)。演出オフなら即開示。
         this.log.push({ kind: "checks", checks: [r.player], revealed: reveal ? 0 : 1 });
         // 相手の振り + ラウンド帰結文/SE は開帳後に (漏洩防止は Phase A の機構を使い回す)。
@@ -1494,6 +1504,9 @@ export const useGameStore = defineStore("game", {
             if (this.useTts && this.ttsEnabled) void tts.speak(turn.narration);
           }
           // ダイス系 3 行は伏せて積む (revealed=0)。演出オフなら全開 (= 従来動作)。
+          // 演出オフのときは session 側の開帳カウンタ (spec 23 Phase B) も即・全開へ寄せる
+          // (backend はターン確定時に必ず伏せ直すので、UI が開いて見せた事実を追認させる)。
+          if (hasDice && !revealing) void transport.request("reveal_all").catch(() => {});
           if (turn.rolls.length) {
             this.log.push({ kind: "rolls", rolls: turn.rolls, revealed: revealing ? 0 : turn.rolls.length });
           }

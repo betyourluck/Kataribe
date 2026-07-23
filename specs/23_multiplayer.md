@@ -1,8 +1,9 @@
 # spec 23: 複数同時プレイ — ホスト権威 + WebRTC (P2P)
 
-**Status**: Draft rev2 + **Phase 0 凍結済み**（2026-07-23 ユーザー発案・同日設計対話で
-骨格確定 → 同日査読 12 件（矛盾 1〜12）+ 接地情報 4 件を反映 → 同日 data_contract
-`Multiplayer` 節を凍結。実装（Phase A〜）未着手）
+**Status**: Draft rev2 + **Phase 0 凍結済み + Phase A Done + Phase B Done**
+（2026-07-23 ユーザー発案・同日設計対話で骨格確定 → 同日査読 12 件（矛盾 1〜12）+
+接地情報 4 件を反映 → 同日 data_contract `Multiplayer` 節を凍結 → Phase A 実装 +
+目視回帰 Green → Phase B 実装 = 多人数ターンループをネット無しで固定。C〜E 残）
 
 > 番号の注: spec 22 は「あらすじ圧縮時の意味記憶抽出」に予約済み（ユーザー判断で保留中・
 > ファイル未作成）。本 spec は 23 を取る。outcast リポジトリの Spec 23（書庫サーバ）とは
@@ -292,10 +293,53 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
   旧セーブは無傷（アセットはセーブに入らず毎回 scenario から導出）。
   検証: app backend 22 green + clippy clean + vue-tsc/vite build green +
   単騎プレイの全アセット目視回帰 Green (2026-07-23 ユーザー確認)。
-- **Phase B — 多人数ターンループ（ネット無しで検証）**: `state_view(viewer)` の宛先別化 /
-  `participants` 導入 / 入力窓・三系統の締切・「黙っている」合成 / GM_SYSTEM の多人数接地
-  （帰属 + 拾得→譲渡の定石）/ **`RevealState` のセッション状態昇格**。
-  fake transport 2 クライアントで Red→Green（ネットに触れず全ロジックを固定）。
+- **Phase B — 多人数ターンループ（ネット無しで検証）(✅2026-07-23 実装 = Done)**:
+  - **`state_view(..., viewer)` の宛先別化**: spec 06 の「本人」を引数化。secret 属性は
+    viewer 本人の分だけ DTO に通す（フィルタはホスト側 DTO 段階 = ネットに乗る前）。
+    hidden（本人未知）は viewer が誰でも全員分落ちたまま。ホスト画面の viewer は
+    `GameSession::viewer_entity()`（host_peer→entity。**ホストが仲間を操作する卓では
+    ホスト画面も本人の秘密だけ** — 正本とセーブでは全知だが画面はプレイヤー視界に揃える）。
+  - **`participants` 導入**: `GameSession.participants` + `set_participants(participants,
+    host_peer_id)`（門番 `validate_participants` = 空/peer 重複/entity 二重操作/幻 entity/
+    主人公スロット≠1/ホスト不在を拒否）。**セーブ非対象**（卓は揮発 — 再開時は join フローで
+    張り直す）。ゲスト向け fan-out の原料は `state_view_for(peer_id)`（TurnView の他欄は共有、
+    差があるのは state だけ）。
+  - **入力窓**: `submit_turn_input(peer_id, action)`（再提出は上書き・空は拒否）+
+    `turn_input_status`（submitted/waiting を宣言順で返す = all_submitted 締切と
+    「入力待ち: ○○」の材料）。締切三系統の**判断はホスト frontend の責務** — backend は
+    `play_party_turn` で「いま締める」と言われた時点の提出物を合成する。
+    **受理で窓クリア・却下は提出物を残す**（書き直すか締め直すかをホストが選ぶ）。
+    全員未提出のままの締切は拒否。
+  - **合成**: `harness::compose_party_action`（`PartyInput` 列 → 「名前 (entity): 行動」行、
+    未提出者は `SILENT_ACTION`「（黙って様子を見ている）」で必ず載せる）。play_turn は
+    `do_play_turn` に切り出し、単騎 (party 空) と多人数が同じ実体を通る。
+  - **GM_SYSTEM の多人数接地**: `prompt::party_note(party)`（party ≥2 のみ）を run_turn が
+    最初の system ブロック**末尾**に足す — 単騎の prompt は **1 バイトも変わらない**
+    （安定プレフィックス不変 = キャッシュ無風。PoC で byte 一致を固定）。中身 = 参加者列挙
+    （名前 (entity) — 主人公/仲間）+ 帰属規律（ops は書いた本人の操作 entity へ・省略は
+    主人公扱いで却下）+ 「黙っている ≠ 不在」（語りから消すな・行動を捏造するな）+
+    item idiom（拾得・譲渡・消費は主人公経由 2 手、spec 09 射影で同一ターン束ね可）。
+    `run_turn` に `party: &[PartyMember]` 引数追加（CLI は常に `&[]` = 単騎）。
+  - **`RevealState` のセッション状態昇格**: `GameSession.reveal: RevealView{revealed,total}`。
+    伏せ直しは 3 点 — 受理ターン（rolls+checks+stat_rolls 数）/ プッシュ振り直し（1）/
+    対決ラウンド（player の 1 枚）。`reveal_next`（飽和インクリメント = 二重クリック・競合
+    無害、先着勝ち = session lock の獲得順）/ `reveal_all`（演出オフ・脱出口）。frontend は
+    演出をローカル即時のまま、カウンタ進行を transport 越しに通知（単騎でも同じ経路。
+    演出オフ経路は 3 箇所とも reveal_all で追認）。Phase D はこの通知を reveal_order 配信に
+    するだけ。
+  - **検証 (ネット無しで全ロジック固定)**: harness PoC 3 本 Red→Green
+    （compose の黙っている合成 / party_note の接地 3 点 + 単騎 byte 不変 /
+    **2 クライアント統合** = 2 人の入力 (1 人未提出) → 合成 → run_turn 1 回 → 仲間 entity へ
+    帰属した op が一発受理・正本は仲間側だけ動く・prompt に両者の行）+ app PoC 4 本
+    Red→Green（宛先別 secret フィルタ / participants 門番 / 開帳カウンタの単調・飽和 /
+    入力窓の宣言順区分け）。workspace 312 green（+3）・app backend 26 green（+4）・
+    clippy clean・vue-tsc/vite build green。
+  - **Phase C への注記**: RemoteTransport はこの同じ command 群（submit_turn_input /
+    turn_input_status / play_party_turn / state_view_for / reveal_next / reveal_all）を
+    DataChannel 越しに叩く — B の時点では配送先が 1 人 (ホスト自身) なだけ。
+    `set_participants` はホスト専用 (join 完了時に一度) なので seam の外。
+    多人数の卓 UI（参加者設定・入力待ち表示・タイマー）は C の join フローと同時に作る
+    （B は logic-only、GUI からはまだ届かない）。
 - **Phase C — WebRTC 結線**: ノックサーバー（VPS・再 join 待受つき）+ **coturn**（一時
   クレデンシャル）/ DataChannel で RemoteTransport / 部屋コード join フロー /
   パッケージ hash 照合 / `path_override` 付き resume。

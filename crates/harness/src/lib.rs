@@ -48,6 +48,7 @@ pub use synopsis::{
     SynopsisRequest, SynopsisTrigger, SYNOPSIS_KEEP_RECENT, SYNOPSIS_MIN_LLM_TURNS,
     SYNOPSIS_OVERFLOW_THRESHOLD, SYNOPSIS_TEXT_MAX, SYNOPSIS_TIMEOUT_SECS,
 };
+pub use prompt::{compose_party_action, party_note, PartyInput, PartyMember, SILENT_ACTION};
 pub use turn::{
     carryover_narration, chronicle_entry, contest_digest, excluded_check_ops, run_turn,
     ChronicleTags, RetryCause, TurnLog,
@@ -147,7 +148,7 @@ mod tests {
         let mut s = fresh(&sc);
         let p = FlakyProposer { calls: Mutex::new(0) };
 
-        let outcome = run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
+        let outcome = run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
             .await
             .unwrap();
         match outcome {
@@ -175,7 +176,7 @@ mod tests {
             value: true,
         }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 1),
             other => panic!("受理されるべき: {other:?}"),
@@ -196,7 +197,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 2, "2回目で受理"),
             other => panic!("最終的に受理されるべき: {other:?}"),
@@ -216,7 +217,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
 
         let second = p.seen_text(2);
         assert!(second.contains("却下"), "再生成プロンプトに却下の文脈があるはず");
@@ -237,7 +238,7 @@ mod tests {
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]), // 引き出し前で却下
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Rejected { attempts, last_reasons } => {
                 assert_eq!(attempts, 3);
@@ -257,7 +258,7 @@ mod tests {
         let mut s = fresh(&sc); // seed=42, cursor=0
         let p = ScriptedProposer::new(vec![delta(vec![StateOp::RequestRoll { sides: 20, dc: 10 }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { rolls, .. } => {
                 assert_eq!(rolls.len(), 1);
@@ -329,7 +330,7 @@ mod tests {
             text: "丘の上の古い樫の木の下で、二人は小指を絡めて誓った。".into(),
         }];
 
-        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "", &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "", &[], &[], &[], &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("思い出された記憶"), "想起の見出しが prompt に載る");
@@ -349,7 +350,7 @@ mod tests {
         }])]);
         let prev = "夕日が差し込む教室。モカが振り向いて微笑んだ。";
 
-        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev, &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev, &[], &[], &[], &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前までの語り"), "継続の見出しが prompt に載る");
@@ -373,7 +374,7 @@ mod tests {
             score: 4,
         }];
 
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &facts)
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &facts, &[])
             .await
             .unwrap();
 
@@ -388,10 +389,127 @@ mod tests {
         // 空なら節を出さない (トークンを使わない)。
         let p2 = ScriptedProposer::new(vec![delta(vec![])]);
         let mut s2 = fresh(&sc);
-        run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
+        run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
             .await
             .unwrap();
         assert!(!p2.seen_text(1).contains("# 既成事実"));
+    }
+
+    /// 【spec 23 Phase B 合成】全員の入力を「名前 (entity): 行動」の行に束ね、未提出者は
+    /// 「（黙って様子を見ている）」で**必ず載せる** — 省くと GM が不在と誤認して語りから
+    /// 消す (#37 系 = presence は明示接地が要る) + 他プレイヤーに AFK が透明になる (契約
+    /// `input_window`)。帰属は行そのものに entity を埋め込む (state_brief の「名前 (id)」と同流儀)。
+    #[test]
+    fn compose_party_action_bundles_names_and_marks_silent_members() {
+        use prompt::{compose_party_action, PartyInput, PartyMember};
+        let inputs = vec![
+            PartyInput {
+                member: PartyMember { entity: "player".into(), name: "アキラ".into() },
+                action: Some("扉を調べる".into()),
+            },
+            PartyInput {
+                member: PartyMember { entity: "alice".into(), name: "ユイ".into() },
+                action: None, // 締切までに未提出
+            },
+        ];
+        let composed = compose_party_action(&inputs);
+        let lines: Vec<&str> = composed.lines().collect();
+        assert_eq!(lines.len(), 2, "参加者の数だけ行が出る (未提出者も省かない)");
+        assert_eq!(lines[0], "アキラ (player): 扉を調べる");
+        assert_eq!(lines[1], "ユイ (alice): （黙って様子を見ている）");
+
+        // 空白だけの提出は未提出と同じ扱い (「黙っている」へ倒す)。
+        let blank = vec![PartyInput {
+            member: PartyMember { entity: "player".into(), name: "アキラ".into() },
+            action: Some("   ".into()),
+        }];
+        assert!(compose_party_action(&blank).contains("黙って様子を見ている"));
+    }
+
+    /// 【spec 23 Phase B 多人数接地】party ≥2 なら GM_SYSTEM の system ブロック末尾に
+    /// 「# 多人数プレイ」が載り、①帰属 (ops は書いた本人の操作 entity へ) ②黙っている ≠ 不在
+    /// ③item idiom (拾得・譲渡・消費は主人公経由 2 手) を接地する。**単騎 (空) では
+    /// 1 バイトも変わらない** (安定プレフィックス不変 = キャッシュ無風)。
+    #[tokio::test]
+    async fn party_note_grounds_attribution_and_item_idiom_only_for_parties() {
+        use prompt::PartyMember;
+        let sc = scenario();
+        let party = vec![
+            PartyMember { entity: "player".into(), name: "アキラ".into() },
+            PartyMember { entity: "alice".into(), name: "ユイ".into() },
+        ];
+
+        // 多人数: system に接地ブロックが載る。
+        let p = ScriptedProposer::new(vec![delta(vec![])]);
+        let mut s = fresh(&sc);
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &party)
+            .await
+            .unwrap();
+        let system = p.seen_messages(1)[0].content.clone();
+        assert!(system.contains("# 多人数プレイ"), "多人数接地の見出し: {system}");
+        assert!(system.contains("アキラ (player)") && system.contains("ユイ (alice)"), "参加者を名前 (entity) で列挙");
+        assert!(system.contains("本人の操作 entity"), "帰属規律 (ops を書いた本人の entity へ)");
+        assert!(system.contains("黙って様子を見ている"), "未提出 ≠ 不在の接地");
+        assert!(system.contains("主人公を経由する 2 手"), "item idiom (拾得・譲渡・消費は主人公経由)");
+
+        // 単騎: 従来の system と byte 一致 (party が空なら何も足さない)。
+        let p2 = ScriptedProposer::new(vec![delta(vec![])]);
+        let mut s2 = fresh(&sc);
+        run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            p2.seen_messages(1)[0].content,
+            prompt::gm_system_prompt(&sc, false),
+            "単騎の system は多人数機構の導入前と 1 バイトも変わらない"
+        );
+    }
+
+    /// 【spec 23 Phase B 2クライアント統合】ネットに触れず多人数ターンの全ロジックを固定する:
+    /// 2 人の入力 (1 人は未提出=黙っている) を合成 → run_turn 1 回 → GM が仲間の行動を
+    /// **仲間の entity に帰属させた op** を出し、正本が仲間側だけ動く。fake transport の
+    /// 実体 = ScriptedProposer + 合成関数 (Phase C はこの外側に配送を足すだけ)。
+    #[tokio::test]
+    async fn two_client_party_turn_attributes_ops_to_the_acting_member() {
+        use prompt::{compose_party_action, PartyInput, PartyMember};
+        let yaml = concat!(
+            "title: 卓\n",
+            "start: room\n",
+            "goal: { kind: flag_is, key: done, value: true }\n",
+            "allowed_flags: [done]\n",
+            "characters:\n",
+            "  alice: { name: アリス, stats: { 好感度: { initial: 0 } } }\n",
+            "locations: { room: { description: 静かな部屋, present: [alice], exits: [] } }\n",
+        );
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(42);
+        let members = [
+            PartyMember { entity: "player".into(), name: "アキラ".into() },
+            PartyMember { entity: "alice".into(), name: "ユイ".into() },
+        ];
+        // ユイ (alice 操作) だけが提出、ホストのアキラは黙っている。
+        let inputs = vec![
+            PartyInput { member: members[0].clone(), action: None },
+            PartyInput { member: members[1].clone(), action: Some("アリスとして花を愛でる".into()) },
+        ];
+        let action = compose_party_action(&inputs);
+
+        // GM はユイの行動を alice に帰属させる (entity 明示の adjust_stat)。
+        let p = ScriptedProposer::new(vec![delta(vec![StateOp::AdjustStat {
+            entity: "alice".into(),
+            key: "好感度".into(),
+            delta: 2,
+        }])]);
+        let outcome = run_turn(&p, &mut s, &sc, &action, 3, Lang::Ja, &[], &[], "", &[], &[], &[], &members)
+            .await
+            .unwrap();
+        assert!(outcome.is_accepted(), "帰属の正しい束は一発受理");
+        assert_eq!(s.stat_of("alice", "好感度"), 2, "動くのは行動を書いた本人の entity 側だけ");
+
+        // prompt には両者の行が載っている (黙っている人も消えない)。
+        let prompt_text = p.seen_text(1);
+        assert!(prompt_text.contains("アキラ (player): （黙って様子を見ている）"));
+        assert!(prompt_text.contains("ユイ (alice): アリスとして花を愛でる"));
     }
 
     /// 【経緯ログ / chronicle】過去ターンの要約列が「これまでの経緯」として prompt に載り、
@@ -420,7 +538,7 @@ mod tests {
             },
         ];
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &history, &[], &[])
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &history, &[], &[], &[])
             .await
             .unwrap();
 
@@ -461,7 +579,7 @@ mod tests {
             ..Default::default()
         }];
 
-        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &history, &synopsis, &[])
+        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &history, &synopsis, &[], &[])
             .await
             .unwrap();
 
@@ -485,7 +603,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("# これまでのあらすじ"), "あらすじ無しなら注入しない");
         let system_count = p
             .seen_messages(1)
@@ -513,7 +631,7 @@ mod tests {
             title: "村の章".into(),
             text: "旅人は村に着き、長老から祠の封印の話を聞いた。".into(),
         }];
-        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &[], &synopsis, &[])
+        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &[], &synopsis, &[], &[])
             .await
             .unwrap();
 
@@ -542,7 +660,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
         // GM_SYSTEM は summary の説明で『これまでの経緯』に言及するので、注入見出し (#) で判定する。
         assert!(!p.seen_text(1).contains("# これまでの経緯"), "経緯なしなら注入しない");
     }
@@ -687,7 +805,7 @@ mod tests {
         let sc = scenario();
         let mut state = fresh(&sc);
         let p = FlakyProposer { calls: Mutex::new(0) };
-        let out = run_turn(&p, &mut state, &sc, "調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
+        let out = run_turn(&p, &mut state, &sc, "調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
             .await
             .expect("パース失敗はエラーでなく再生成で回復する");
         match out {
@@ -1082,7 +1200,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]),
         ]);
-        let o1 = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
+        let o1 = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
             .await
             .unwrap();
         match o1 {
@@ -1093,7 +1211,7 @@ mod tests {
             }
             _ => panic!("受理されるはず"),
         }
-        let o2 = run_turn(&p, &mut s, &sc, "鍵を取る", 3, Lang::Ja, &[], &[], "", &[], &[], &[])
+        let o2 = run_turn(&p, &mut s, &sc, "鍵を取る", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
             .await
             .unwrap();
         match o2 {
@@ -1167,7 +1285,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("直前までの語り"), "直前の語り無しなら注入しない");
     }
 
@@ -1181,7 +1299,7 @@ mod tests {
             value: true,
         }])]);
 
-        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("思い出された記憶"), "伏線無しなら注入しない");
     }
 
@@ -1211,7 +1329,7 @@ mod tests {
             degree: None, count: 1, times: 1, pushed: false, spent: 0, pending: false,
         }];
 
-        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[], &[], &[], &[]).await.unwrap();
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前の判定結果"), "判定結果の見出しが載る");
         assert!(prompt_text.contains("成功"), "成否が載る");

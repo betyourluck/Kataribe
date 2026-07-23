@@ -419,6 +419,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &history,         // 経緯ログ (中期記憶)。過去ターンの要約を還流
             &synopsis.entries, // あらすじ (長期の物語記憶、spec 10)
             &facts_list,           // 既成事実 (ピン留めの覚え書き、spec 20)
+            &[],              // 多人数プレイは GUI 専用 (spec 23)。CLI は常に単騎
         )
         .await;
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
