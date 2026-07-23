@@ -41,6 +41,8 @@ let autoClose = true;
 let timerHandle: number | undefined;
 /** ゲストが実際に使うパッケージのパス (中継で受け取ったもの、または手動選択)。 */
 let guestPackagePath = "";
+/** ホストが意図して卓を閉じた (= 回線不調ではない)。再接続を回さないための門。 */
+let hostClosedTable = false;
 
 /** ホスト: 卓を開く (ゲーム開始済みが前提 — 正本はもう在る)。戻り = 部屋コード。 */
 export async function hostOpenTable(): Promise<string> {
@@ -192,6 +194,7 @@ export function hostStartTimer(seconds: number) {
   const store = useGameStore();
   hostStopTimer();
   store.multi.timerRemaining = seconds;
+  hostTable?.broadcastTimerSync(seconds); // 開始を即座に配る (1 秒待たせない)
   timerHandle = window.setInterval(() => {
     const remaining = (store.multi.timerRemaining ?? 0) - 1;
     store.multi.timerRemaining = remaining;
@@ -208,6 +211,8 @@ export function hostStopTimer() {
   timerHandle = undefined;
   const store = useGameStore();
   store.multi.timerRemaining = null;
+  // 止めたことを配らないと、ゲストの画面に最後の数字が残り続ける。
+  hostTable?.broadcastTimerSync(null);
 }
 
 /** ホスト: 入力窓を締めて 1 ターン回す (契約 input_window ③ = host_forced も同じ経路)。 */
@@ -251,6 +256,7 @@ export async function guestJoin(roomCode: string, manualPackagePath?: string): P
   const store = useGameStore();
   let hash: string | null = null;
   guestPackagePath = "";
+  hostClosedTable = false;
   if (manualPackagePath) {
     // アセット解決 root の登録 (ゲストの backend は session を持たない — これだけを持つ)。
     await invoke("begin_guest_session", { packagePath: manualPackagePath });
@@ -267,6 +273,8 @@ export async function guestJoin(roomCode: string, manualPackagePath?: string): P
   });
   link.onTable = (m) => enqueueGuestTable(m, hash);
   link.onDisconnected = () => {
+    // ホストが閉じた場合は table_closed で既に畳んである — 回線不調と混同しない。
+    if (hostClosedTable) return;
     store.multi.connected = false;
     store.logToast = t("table.disconnected");
     scheduleReconnect(); // 手動ボタンを待たずに取りに行く
@@ -438,7 +446,18 @@ async function onGuestTable(m: Record<string, unknown>, myHash: string | null) {
       store.applyRevealOrder(m as unknown as { revealed: number; total: number });
       break;
     case "timer_sync":
-      store.multi.timerRemaining = Number(m.remaining_secs);
+      // null = 停止。Number(null) は 0 なので、素直に変換すると「0s」が残り続ける。
+      store.multi.timerRemaining =
+        m.remaining_secs === null || m.remaining_secs === undefined
+          ? null
+          : Number(m.remaining_secs);
+      break;
+    case "table_closed":
+      // ホストが意図して閉じた = 回線の不調ではない。再接続を回さず、そう伝える。
+      hostClosedTable = true;
+      store.log.push({ kind: "system", text: t("table.hostClosed") });
+      store.logToast = t("table.hostClosed");
+      leaveTable();
       break;
   }
 }
@@ -498,7 +517,8 @@ export function leaveTable() {
   cancelReconnect();
   // 卓を開いたまま閉じた場合の中継の後始末 (開始時に消していれば冪等な二度目)。
   void relayDelete();
-  hostTable?.close();
+  // 解散を伝えてから畳む — ゲスト側で「閉じられた」と「切れた」を区別させる。
+  hostTable?.closeAnnounced();
   hostTable = null;
   guestLink?.close();
   guestLink = null;

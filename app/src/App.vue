@@ -153,6 +153,16 @@ onMounted(() => {
   });
 });
 
+// 卓が始まったらダイアログを閉じる (ホスト・ゲスト共通)。開いたままだと「始まった」ことが
+// 語りに隠れて分からない — 始まった瞬間に見たいのは盤面であって設定画面ではない。
+// 以後の運用は入力欄の上の卓バーで足りる。
+watch(
+  () => game.multi.started,
+  (started) => {
+    if (started) showTable.value = false;
+  },
+);
+
 onUnmounted(() => {
   // HMR/破棄で多重購読を残さない (transport.onEvent は購読解除関数を返す)。
   unlistenGameEvents?.();

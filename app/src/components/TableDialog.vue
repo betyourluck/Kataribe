@@ -251,13 +251,9 @@ function leave() {
         </button>
 
         <template v-else>
-          <h3 class="mb-1 mt-3 font-bold">{{ t("table.inputWindow") }}</h3>
-          <p class="text-sm text-parchment/70">
-            {{ t("table.submitted") }}: {{ multi.inputStatus?.submitted.length ?? 0 }} /
-            {{ (multi.inputStatus?.submitted.length ?? 0) + (multi.inputStatus?.waiting.length ?? 0) }}
-            <span v-if="multi.timerRemaining !== null" class="ml-2 text-ember">⏱ {{ multi.timerRemaining }}s</span>
-          </p>
-          <div class="mt-2 flex flex-wrap items-center gap-2">
+          <!-- 提出数・残り秒は卓バー (入力欄の上) が常時出すので、ここでは繰り返さない。
+               残すのは「設定」に当たるもの (自動締切のオン/オフ・タイマーの秒数) だけ。 -->
+          <div class="mt-3 flex flex-wrap items-center gap-2">
             <button class="rounded bg-ember/80 px-3 py-1 text-sm font-bold text-ink hover:bg-ember disabled:opacity-40" :disabled="game.loading" @click="closeWindowAndDismiss">
               {{ t("table.closeNow") }}
             </button>

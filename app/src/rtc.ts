@@ -396,8 +396,20 @@ export class HostTable {
   broadcastInputStatus(status: unknown) {
     this.broadcast({ type: "input_status", status });
   }
-  broadcastTimerSync(remainingSecs: number) {
+  /** 残り秒の配布。**null = タイマー停止**（止めたことを伝えないと数字が残り続ける）。 */
+  broadcastTimerSync(remainingSecs: number | null) {
     this.broadcast({ type: "timer_sync", remaining_secs: remainingSecs });
+  }
+
+  /**
+   * **解散を伝えてから**畳む。ゲスト側で「ホストが卓を閉じた」と「回線が切れた」を
+   * 区別できないと、意図的な解散のあとも再接続を回し続けることになる。
+   *
+   * DataChannel は `close()` で未送信分を捨てうるので、送出後にわずかに待ってから畳む。
+   */
+  closeAnnounced() {
+    this.broadcast({ type: "table_closed" });
+    setTimeout(() => this.close(), 200);
   }
   /** 締切→ターン確定の配布。turn は共有部、state は宛先別 (state_view_for で引いて渡す)。 */
   async distributeTurn(turn: unknown) {

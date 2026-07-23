@@ -485,6 +485,7 @@ export const messages = {
       barSubmitted: "提出済み (打ち直せば上書き)",
       barWaiting: "待ち: {names}",
       barCloseDisabled: "まだ誰も提出していません",
+      hostClosed: "―― ホストが卓を閉じました ――",
       reconnecting: "再接続中… ({n} 回目)",
       barDisconnected: "接続が切れています",
       reconnectGaveUp:
@@ -1007,6 +1008,7 @@ export const messages = {
       barSubmitted: "submitted (retype to overwrite)",
       barWaiting: "waiting on: {names}",
       barCloseDisabled: "Nobody has submitted yet",
+      hostClosed: "―― The host closed the table ――",
       reconnecting: "reconnecting… (attempt {n})",
       barDisconnected: "disconnected",
       reconnectGaveUp:
