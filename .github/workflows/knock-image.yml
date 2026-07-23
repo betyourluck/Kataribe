@@ -2,8 +2,14 @@
 # outcast の docker-compose.prod.yml が ghcr.io/betyourluck/kataribe-knock:latest を pull する
 # (既存の outcast / kataribe イメージと同型のデプロイ経路)。
 #
-# 注意: 初回 push 後、GHCR のパッケージ設定で visibility を public にする (リポジトリは
-# public だがパッケージの既定は private — public にすれば VPS 側の docker login が不要)。
+# visibility: **手動の設定変更は要らなかった** (2026-07-23 実測)。GITHUB_TOKEN で
+# public リポジトリから push したパッケージはリポジトリの可視性を継承する — 匿名トークンで
+# manifest を引いて 200 を確認済み (存在しない名前は 403 なので判別は効いている)。
+# ゆえに VPS 側の docker login も不要。
+#
+# パス絞りの注意: `paths` は push に含まれる**全コミット**を見るので、knock/ を触った
+# コミットが範囲内にあれば他のコミットで発火する。逆に knock/ を触らない push では
+# 焼き直されない (= latest はその時点の knock/ の内容と一致する、が正しい挙動)。
 name: knock-image
 
 on:
