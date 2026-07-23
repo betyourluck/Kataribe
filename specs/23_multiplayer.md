@@ -357,9 +357,33 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
     `set_participants` はホスト専用 (join 完了時に一度) なので seam の外。
     多人数の卓 UI（参加者設定・入力待ち表示・タイマー）は C の join フローと同時に作る
     （B は logic-only、GUI からはまだ届かない）。
-- **Phase C — WebRTC 結線**: ノックサーバー（VPS・再 join 待受つき）+ **coturn**（一時
-  クレデンシャル）/ DataChannel で RemoteTransport / 部屋コード join フロー /
-  パッケージ hash 照合 / `path_override` 付き resume。
+- **Phase C — WebRTC 結線 (🟡 前半 2026-07-23 実装済・後半 = 卓 UI 残)**:
+  - ✅ ノックサーバー `knock/`（workspace 外の独立クレート）: WS シグナリング
+    (create/join/signal/leave)・部屋 base62 22 桁・TTL 10 分 + 全接続イベント延長・
+    再 knock (identity 維持で送信口差し替え + peer_rejoined)・protocol_version 門番・
+    TURN REST クレデンシャル (HMAC-SHA1、RFC 2202 ベクタで接地)・部屋作成 IP rate
+    limit・XFF 右端。PoC 9 本 green・clippy clean。
+  - ✅ 配備素材: knock/Dockerfile + `.github/workflows/knock-image.yml`
+    (ghcr.io/betyourluck/kataribe-knock、テスト green が焼く門番) / outcast 側
+    docker-compose.prod.yml (knock + coturn = host network・quota) + Caddyfile
+    (knock.{DOMAIN}) + .env.prod.example (TURN_SECRET) — **outcast リポは編集のみ・
+    コミットと VPS デプロイはユーザー管理**。DNS: turn.{DOMAIN} の A レコード追加 +
+    さくらパケットフィルタで 3478/udp・tcp + 49160-49200/udp を開ける。
+  - ✅ 配送層 `app/src/rtc.ts`: `Signaling` (knock との WS) / `HostTable` (ゲスト
+    DataChannel を受け、game_request を **whitelist + peer 束縛**で backend へ —
+    submit_turn_input / turn_input_status / reveal_next / reveal_all / state_view_for
+    のみ許可、peer_id は送信者に強制上書き = 他人の秘密 view を引けない。push 中継 +
+    reveal_order / input_status / timer_sync / party_turn (宛先別 state 添付) の配布) /
+    `GuestLink` (GameTransport 実装 = RemoteTransport。hello 交換で role=host を配送先に
+    確定、package_match は content_hash 照合、再 knock reconnect)。offer は入る側が
+    出す規約。64KB 超過は警告 (未決2 の計測点)。
+  - ✅ backend: `resume_from_file` (セーブ引き継ぎ = 契約 resume_handoff の
+    path_override 実装) + `package_content_hash` (spec 17 SourceMeta 読み =
+    package_match の材料)。
+  - **残 (C 後半)**: 卓 UI — ホスト「卓を開く」(部屋コード表示・席と entity 割り当て →
+    set_participants・入力窓 + 三系統締切 + timer_sync 送出)・ゲスト「卓に参加」
+    (knock URL 設定・コード入力・hash 警告・view 受信描画・提出/開帳を RemoteTransport
+    経由)・store の guest モード (applyGameView/applyTurn を party_turn push から駆動)。
 - **Phase D — 音声 + 開帳配信**: audio mesh（ミュート UI・macOS `Info.plist` と
   Tauri capability のマイク権限）/ `RevealState` の DataChannel 配信 / ホスト終了時の
   「卓が閉じます」確認。

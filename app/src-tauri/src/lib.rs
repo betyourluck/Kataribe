@@ -2243,6 +2243,30 @@ async fn new_game(
     Ok(view)
 }
 
+/// 任意のセーブファイルから、**自分のパッケージ置き場**を指して再開する
+/// (spec 23 契約 resume_handoff = ホスト引き継ぎ)。SessionSave.content.path は
+/// 前ホストのローカル絶対パスで他の PC では解決できない — セーブ形式は変えず、
+/// 開く側が package_path を上書き指定する。パッケージの同一性は spec 17 content hash で
+/// 照合し、不一致は警告のみ (authored content が違うと再開後の整合は保証できない旨)。
+#[tauri::command]
+async fn resume_from_file(
+    app: tauri::AppHandle,
+    save_file: String,
+    package_path: String,
+    lang: Option<String>,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<GameView, String> {
+    restore_session(&app, package_path, Path::new(&save_file), lang, session.inner()).await
+}
+
+/// パッケージの出所 content hash (spec 17 SourceMeta)。多人数 join 時の package_match
+/// 照合に使う (契約: hash はパッケージ zip 全体の sha256)。手動配置 (メタ無し) は None =
+/// 「照合できません」表示 (プレイは止めない — 絵が違うだけで正本はホスト)。
+#[tauri::command]
+fn package_content_hash(package_path: String) -> Option<String> {
+    update::read_source_meta(&resolve_pkg_dir(&package_path)).map(|m| m.content_hash)
+}
+
 /// オートセーブから再開する (spec 07 Phase C)。実体は [`restore_session`]。
 #[tauri::command]
 async fn resume_game(
@@ -3476,7 +3500,9 @@ pub fn run() {
             play_party_turn,
             state_view_for,
             reveal_next,
-            reveal_all
+            reveal_all,
+            resume_from_file,
+            package_content_hash
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
