@@ -38,6 +38,9 @@ const busy = ref(false);
 const error = ref<string | null>(null);
 const autoCloseOn = ref(true);
 const timerSecs = ref(90);
+// 部屋コードは既定で伏せる — 配信・画面共有に映ると誰でも入れる (22 桁の強度は
+// 「推測」への守りであって「映り込み」には無力)。コピーは伏せたままワンクリックで可能。
+const showCode = ref(false);
 
 const multi = computed(() => game.multi);
 /** 割り当て候補 entity (主人公 + 現在の盤面に居る entity 群)。 */
@@ -167,7 +170,14 @@ function leave() {
       <template v-else-if="multi.role === 'host'">
         <div class="mb-3 flex items-center gap-2">
           <span class="text-sm text-parchment/70">{{ t("table.roomCode") }}:</span>
-          <code class="rounded bg-ash/40 px-2 py-0.5 font-mono text-sm">{{ multi.roomCode }}</code>
+          <!-- 既定は伏せ字 (配信の映り込み対策)。クリックで表示切替、コピーは伏せたまま可能。 -->
+          <code
+            class="cursor-pointer select-none rounded bg-ash/40 px-2 py-0.5 font-mono text-sm"
+            :title="t('table.codeToggle')"
+            @click="showCode = !showCode"
+          >
+            {{ showCode ? multi.roomCode : "••••••••••••" }}
+          </code>
           <button class="rounded border border-ash px-2 py-0.5 text-xs hover:bg-ash/40" @click="copyCode">
             {{ t("table.copy") }}
           </button>
