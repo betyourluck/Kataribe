@@ -10,8 +10,8 @@
  * 状態の真実は backend (GameState) が握る。ここは command が返す view を描画するだけ。
  * パッケージパスの追加/削除は PackageDialog、その他設定は SettingsDialog に分離。
  */
-import { computed, ref, watch, onMounted } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import { computed, ref, watch, onMounted, onUnmounted } from "vue";
+import { transport } from "./transport";
 import { useGameStore } from "./stores/game";
 import { t } from "./i18n";
 import TitleBar from "./components/TitleBar.vue";
@@ -28,6 +28,8 @@ import Icon from "./components/Icon.vue";
 const game = useGameStore();
 const showSettings = ref(false);
 const showPackages = ref(false);
+// transport.onEvent の購読解除 (onMounted で購読・onUnmounted で解除 = 多重購読を防ぐ)。
+let unlistenGameEvents: (() => void) | null = null;
 // 手動セーブスロットのダイアログ (spec 07 Phase D)。null = 非表示。
 const slotDialog = ref<"save" | "load" | null>(null);
 
@@ -128,21 +130,24 @@ onMounted(() => {
   document.documentElement.style.fontSize = `${px}px`;
   window.addEventListener("pointerdown", ensureBgmPlaying);
   window.addEventListener("keydown", ensureBgmPlaying);
-  // あらすじ圧縮の開始合図 (spec 10)。play_turn は同期で回すので、この間ローディング文言を
-  // 「あらすじをまとめています……」へ切り替える (解除は playTurn の finally)。
-  listen("synopsis-compacting", () => {
-    game.compacting = true;
+  // backend の push イベント (spec 23 Phase A: transport seam の onEvent 面。
+  // ゲスト参加時はホスト frontend が同じ名前で DataChannel から中継してくる)。
+  // - synopsis-compacting (spec 10): 圧縮中はローディング文言を切り替え (解除は playTurn の finally)。
+  // - epilogue-writing (spec 11): 同じ仕組みで文言切り替え。
+  // - synopsis-failed (spec 10): リリースビルドはコンソールが無いのでトーストで可視化。
+  unlistenGameEvents = transport.onEvent((name, payload) => {
+    if (name === "synopsis-compacting") game.compacting = true;
+    else if (name === "epilogue-writing") game.writingEpilogue = true;
+    else if (name === "synopsis-failed") {
+      game.logToast = t("store.synopsisFailed", { error: String(payload) });
+    }
   });
-  // エピローグ生成の開始合図 (spec 11)。同じ仕組みで文言を切り替える。
-  listen("epilogue-writing", () => {
-    game.writingEpilogue = true;
-  });
-  // あらすじ生成の失敗通知 (spec 10)。リリースビルドはコンソールが無いので、
-  // トーストで可視化する (恒久失敗 = 規約違反等で永遠にあらすじが無いまま、を防ぐ)。
-  // プレイは続行され次の受理ターンで自動再試行される。
-  listen<string>("synopsis-failed", (ev) => {
-    game.logToast = t("store.synopsisFailed", { error: ev.payload });
-  });
+});
+
+onUnmounted(() => {
+  // HMR/破棄で多重購読を残さない (transport.onEvent は購読解除関数を返す)。
+  unlistenGameEvents?.();
+  unlistenGameEvents = null;
 });
 </script>
 

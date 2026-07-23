@@ -10,7 +10,8 @@
  * engine 無改修の派生表示 — 状態の真実は backend。ここは game.map を描くだけ。
  */
 import { computed, ref, onBeforeUnmount } from "vue";
-import { convertFileSrc } from "@tauri-apps/api/core";
+// spec 23 Phase A: MapNode.image はアセット ID — store の prefetch 済みキャッシュから引く。
+import { assetUrl } from "../stores/game";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
 
@@ -129,7 +130,7 @@ const layout = computed(() => {
 const selectedId = ref<string | null>(null);
 const selected = computed(() => game.map.nodes.find((n) => n.id === selectedId.value) ?? null);
 const selectedImg = computed(() =>
-  selected.value?.image ? convertFileSrc(selected.value.image) : null,
+  selected.value?.image ? assetUrl("images", selected.value.image) : null,
 );
 
 // --- 掴んでドラッグでパン (スクロールバーより直感的、ユーザーFB) ---

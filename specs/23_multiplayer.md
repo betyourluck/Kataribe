@@ -276,11 +276,22 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
   - タイマー則（ホスト時刻基準・残り秒ブロードキャスト）/ 未提出者の扱い（「黙っている」）
   - 部屋コード生成則（base62 22 桁）/ coturn 一時クレデンシャル形式 / `sig?` 予約
   - content hash 照合の粒度（パッケージ zip 全体）/ ノックサーバーの部屋 TTL と再 join
-- **Phase A — transport seam + DTO のアセット ID 化**: `GameTransport`
-  （request + onEvent の双方向）を入れ `LocalTransport` で従来挙動を維持。
-  **同時に全 DTO のアセット欄を絶対パス→ID へ置換**（Local にも波及する破壊的変更を
-  ここで畳む — 後の Phase でやると Remote/Local の DTO が分裂する）。
-  PoC = build green + 単騎プレイで全アセット表示（背景/アイコン/CG/BGM/SE）の回帰目視。
+- **Phase A — transport seam + DTO のアセット ID 化 (✅2026-07-23 実装。単騎の
+  全アセット目視回帰が残)**: `GameTransport`（request + onEvent の双方向、
+  `app/src/transport.ts`。onEvent は購読解除関数を返す = HMR 多重購読の防止）を入れ
+  `LocalTransport`（invoke + listen の薄い包み）で従来挙動を維持。seam を通るのは
+  play_turn / resolve_dice_decision / play_contest_round / facts_add・edit・delete +
+  push 3 イベント（App.vue の listen 直呼びを onEvent へ移設）。
+  **同時に全 DTO のアセット欄を絶対パス→ID へ置換**（背景/BGM/顔アイコン/ビート CG・SE/
+  結末 SE/マップ CG。Local にも波及する破壊的変更をここで畳んだ — 後の Phase でやると
+  Remote/Local の DTO が分裂する）。解決は新 command `resolve_asset_path`（kind+id →
+  絶対パス、session の package_root 起点、**seam の外** = 各クライアントが自分のコピーで
+  解決する asset_wire の実装）→ frontend の `prefetchAssets`（view/turn 到着時に ID 群を
+  一括解決してキャッシュ、以後は同期 `assetUrl(kind, id)` — revealNext 等の同期経路を
+  async 化しないための設計。キャッシュはパッケージ替わり = applyGameView でクリア）。
+  旧セーブは無傷（アセットはセーブに入らず毎回 scenario から導出）。
+  検証: app backend 22 green + clippy clean + vue-tsc/vite build green。
+  目視回帰（背景/アイコン/CG/BGM/SE/マップ、旧オートセーブからの再開含む）は GUI で。
 - **Phase B — 多人数ターンループ（ネット無しで検証）**: `state_view(viewer)` の宛先別化 /
   `participants` 導入 / 入力窓・三系統の締切・「黙っている」合成 / GM_SYSTEM の多人数接地
   （帰属 + 拾得→譲渡の定石）/ **`RevealState` のセッション状態昇格**。

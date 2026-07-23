@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { transport } from "../transport";
 import { t } from "../i18n";
 import * as tts from "../tts";
 import type {
@@ -40,16 +41,71 @@ export function statRollLine(sr: StatRollView): string {
   return `${sr.entity} ${sr.key} ${amount} (${sr.count}d${sr.sides}${bonus}=${sr.rolls.join("+")})`;
 }
 
-// アセット絶対パス → asset:// URL のメモ化 (convertFileSrc を毎回呼ばない。spec 01 小論点2)。
-const assetUrlCache = new Map<string, string>();
-function assetUrl(path: string | null): string | null {
-  if (!path) return null;
-  let url = assetUrlCache.get(path);
-  if (!url) {
-    url = convertFileSrc(path);
-    assetUrlCache.set(path, url);
+// アセット ID → asset:// URL のキャッシュ (spec 23 Phase A: DTO は絶対パスでなく ID を運ぶ)。
+// 解決は resolve_asset_path command (**transport seam の外** — 各クライアントが自分の
+// ローカルパッケージで解決する Multiplayer 契約 asset_wire)。key = `${kind}/${id}`。
+// 解決失敗 (ファイル不在・不正 ID) は null を覚え、表示スキップでプレイ継続。
+// ID はパッケージ内でのみ一意なので、パッケージが替わる applyGameView でクリアする。
+type AssetKind = "images" | "audios";
+const assetUrlCache = new Map<string, string | null>();
+
+/** prefetch 済みの ID を同期で URL に引く (未 prefetch / 解決失敗は null = 表示スキップ)。 */
+export function assetUrl(kind: AssetKind, id: string | null | undefined): string | null {
+  if (!id) return null;
+  return assetUrlCache.get(`${kind}/${id}`) ?? null;
+}
+
+/** view/turn に載っている ID 群を先に解決してキャッシュへ (以後の assetUrl は同期で引ける)。 */
+async function prefetchAssets(
+  entries: Array<[AssetKind, string | null | undefined]>,
+): Promise<void> {
+  const wanted = new Set<string>();
+  for (const [kind, id] of entries) {
+    if (id && !assetUrlCache.has(`${kind}/${id}`)) wanted.add(`${kind}/${id}`);
   }
-  return url;
+  await Promise.all(
+    [...wanted].map(async (key) => {
+      const slash = key.indexOf("/");
+      const kind = key.slice(0, slash);
+      const id = key.slice(slash + 1);
+      try {
+        const p = await invoke<string | null>("resolve_asset_path", { kind, id });
+        assetUrlCache.set(key, p ? convertFileSrc(p) : null);
+      } catch {
+        assetUrlCache.set(key, null); // セッション未開始等 — 表示スキップで続行
+      }
+    }),
+  );
+}
+
+/** GameView/TurnView 共通のアセット欄 (背景/BGM/顔アイコン/マップ CG) を集める。 */
+function collectViewAssets(v: {
+  background?: string | null;
+  bgm?: string | null;
+  present_characters?: Array<{ icon: string | null }>;
+  map?: MapView | null;
+}): Array<[AssetKind, string | null | undefined]> {
+  const out: Array<[AssetKind, string | null | undefined]> = [
+    ["images", v.background],
+    ["audios", v.bgm],
+  ];
+  for (const c of v.present_characters ?? []) out.push(["images", c.icon]);
+  for (const n of v.map?.nodes ?? []) out.push(["images", n.image]);
+  return out;
+}
+
+/** ビート (イベント CG/SE) と判定 (結末 SE) のアセット欄を集める。 */
+function collectTurnAssets(
+  beats: Array<{ image?: string | null; sound?: string | null }>,
+  checks: Array<{ sound?: string | null }>,
+): Array<[AssetKind, string | null | undefined]> {
+  const out: Array<[AssetKind, string | null | undefined]> = [];
+  for (const b of beats) {
+    out.push(["images", b.image]);
+    out.push(["audios", b.sound]);
+  }
+  for (const c of checks) out.push(["audios", c.sound]);
+  return out;
 }
 
 // localStorage キー: ユーザーが選べるパッケージフォルダのパス一覧 (配布物の置き場)。
@@ -1063,7 +1119,7 @@ export const useGameStore = defineStore("game", {
     async factsAdd(text: string) {
       if (!text.trim()) return;
       try {
-        const res = await invoke<FactsOpView>("facts_add", { text });
+        const res = await transport.request<FactsOpView>("facts_add", { text });
         this.facts = res.facts;
         // 満杯で押し出された行はトーストで可視化する (silent な退場を作らない)。
         if (res.evicted) this.logToast = t("state.factsEvicted", { text: res.evicted });
@@ -1074,7 +1130,7 @@ export const useGameStore = defineStore("game", {
     async factsEdit(id: number, text: string) {
       if (!text.trim()) return;
       try {
-        const res = await invoke<FactsOpView>("facts_edit", { id, text });
+        const res = await transport.request<FactsOpView>("facts_edit", { id, text });
         this.facts = res.facts;
       } catch (e) {
         this.logToast = String(e);
@@ -1082,7 +1138,7 @@ export const useGameStore = defineStore("game", {
     },
     async factsDelete(id: number) {
       try {
-        const res = await invoke<FactsOpView>("facts_delete", { id });
+        const res = await transport.request<FactsOpView>("facts_delete", { id });
         this.facts = res.facts;
       } catch (e) {
         this.logToast = String(e);
@@ -1090,7 +1146,11 @@ export const useGameStore = defineStore("game", {
     },
 
     // new_game / resume_game 共通の view 反映。resume なら再開マーカーと前回までの語りをログに出す。
-    applyGameView(view: GameView, path: string) {
+    async applyGameView(view: GameView, path: string) {
+      // アセット ID はパッケージ内でのみ一意 — 盤面が替わるここでキャッシュを捨て、
+      // この view の分を先に解決しておく (以後の assetUrl は同期で引ける)。
+      assetUrlCache.clear();
+      await prefetchAssets(collectViewAssets(view));
       this.started = true;
       this.packagePath = path;
       // このゲームが「プレイ中の真実」。以後コンボリストを別へ切り替えても動かない
@@ -1101,9 +1161,9 @@ export const useGameStore = defineStore("game", {
       saveLastPlayed(path);
       this.title = view.title;
       this.state = view.state;
-      this.background = assetUrl(view.background);
-      this.bgm = assetUrl(view.bgm);
-      this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
+      this.background = assetUrl("images", view.background);
+      this.bgm = assetUrl("audios", view.bgm);
+      this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl("images", c.icon) }));
       this.map = view.map ?? { nodes: [], edges: [] };
       this.log = [{ kind: "opening", text: view.description }];
       this.cacheWarned = false; // 新しいセッション = 新しいクライアント (計測もゼロから)
@@ -1151,7 +1211,7 @@ export const useGameStore = defineStore("game", {
         // 言語設定タブの選択 (localStorage) を backend へ。却下理由の localize に効く。
         const lang = localStorage.getItem("kataribe.lang") || null;
         const view = await invoke<GameView>("new_game", { packagePath: path, lang });
-        this.applyGameView(view, path);
+        await this.applyGameView(view, path);
       } catch (e) {
         this.error = String(e);
       } finally {
@@ -1168,7 +1228,7 @@ export const useGameStore = defineStore("game", {
       try {
         const lang = localStorage.getItem("kataribe.lang") || null;
         const view = await invoke<GameView>("resume_game", { packagePath: path, lang });
-        this.applyGameView(view, path);
+        await this.applyGameView(view, path);
       } catch (e) {
         this.error = String(e);
       } finally {
@@ -1213,7 +1273,7 @@ export const useGameStore = defineStore("game", {
           slot,
           lang,
         });
-        this.applyGameView(view, this.packagePath);
+        await this.applyGameView(view, this.packagePath);
         return true;
       } catch (e) {
         this.error = String(e);
@@ -1242,7 +1302,7 @@ export const useGameStore = defineStore("game", {
       } else if (e.kind === "checks" && e.revealed < e.checks.length) {
         const c = e.checks[e.revealed];
         e.revealed++;
-        this.playSe(assetUrl(c.sound)); // 結末 SE は開帳と同時 (先に鳴ったら開帳の意味がない)
+        this.playSe(assetUrl("audios", c.sound)); // 結末 SE は開帳と同時 (先に鳴ったら開帳の意味がない)
       } else if (e.kind === "statrolls" && e.revealed < e.stat_rolls.length) {
         e.revealed++;
       } else {
@@ -1269,10 +1329,14 @@ export const useGameStore = defineStore("game", {
       if (!this.decision || this.deciding) return;
       this.deciding = true;
       try {
-        const r = await invoke<DecisionResultView>("resolve_dice_decision", {
+        const r = await transport.request<DecisionResultView>("resolve_dice_decision", {
           choice,
           degree: degree ?? null,
         });
+        await prefetchAssets([
+          ...collectTurnAssets(r.beats, [r.check]),
+          ...collectViewAssets({ map: r.map }),
+        ]);
         // 凍結されていた判定行 (pending) を最終結果で差し替える。
         const entryIdx = this.log.findIndex(
           (e) => e.kind === "checks" && e.checks.some((c) => c.pending),
@@ -1288,7 +1352,7 @@ export const useGameStore = defineStore("game", {
               entry.revealed = itemIdx;
             } else {
               // 受け入れ/買いは出目が変わらない → その場で確定表示 + 結末 SE。
-              this.playSe(assetUrl(r.check.sound));
+              this.playSe(assetUrl("audios", r.check.sound));
             }
           }
         }
@@ -1302,8 +1366,8 @@ export const useGameStore = defineStore("game", {
           if (b.narration.trim() || b.recalled.length) {
             pushTail({ kind: "beat", narration: b.narration, recalled: b.recalled, expanded: false });
           }
-          if (isPush) this.pendingSe.push(assetUrl(b.sound));
-          else this.playSe(assetUrl(b.sound));
+          if (isPush) this.pendingSe.push(assetUrl("audios", b.sound));
+          else this.playSe(assetUrl("audios", b.sound));
         }
         // 決断の帰結で goal に達しうる (押して失敗 → HP0 の死など)。
         if (r.goal_reached) {
@@ -1331,15 +1395,19 @@ export const useGameStore = defineStore("game", {
       if (!this.contest || this.fighting) return;
       this.fighting = true;
       try {
-        const r = await invoke<ContestRoundView>("play_contest_round", {});
+        const r = await transport.request<ContestRoundView>("play_contest_round", {});
+        await prefetchAssets([
+          ...collectTurnAssets(r.beats, [r.player, r.opponent]),
+          ...collectViewAssets({ map: r.map }),
+        ]);
         const reveal = this.diceReveal;
         // player の振り: 伏せカード (開帳)。演出オフなら即開示。
         this.log.push({ kind: "checks", checks: [r.player], revealed: reveal ? 0 : 1 });
         // 相手の振り + ラウンド帰結文/SE は開帳後に (漏洩防止は Phase A の機構を使い回す)。
         const tail = (e: LogEntry) => (reveal ? this.pendingTail.push(e) : this.log.push(e));
         tail({ kind: "checks", checks: [r.opponent], revealed: 1 });
-        if (!reveal) this.playSe(assetUrl(r.opponent.sound));
-        else this.pendingSe.push(assetUrl(r.opponent.sound));
+        if (!reveal) this.playSe(assetUrl("audios", r.opponent.sound));
+        else this.pendingSe.push(assetUrl("audios", r.opponent.sound));
         if (r.stat_rolls.length) {
           tail({ kind: "statrolls", stat_rolls: r.stat_rolls, revealed: r.stat_rolls.length });
         }
@@ -1347,8 +1415,8 @@ export const useGameStore = defineStore("game", {
           if (b.narration.trim() || b.recalled.length) {
             tail({ kind: "beat", narration: b.narration, recalled: b.recalled, expanded: false });
           }
-          if (reveal) this.pendingSe.push(assetUrl(b.sound));
-          else this.playSe(assetUrl(b.sound));
+          if (reveal) this.pendingSe.push(assetUrl("audios", b.sound));
+          else this.playSe(assetUrl("audios", b.sound));
         }
         if (r.ended) {
           tail({ kind: "system", text: r.ended.digest });
@@ -1398,7 +1466,12 @@ export const useGameStore = defineStore("game", {
       this.loading = true;
       this.error = null;
       try {
-        const turn = await invoke<TurnView>("play_turn", { action: trimmed });
+        const turn = await transport.request<TurnView>("play_turn", { action: trimmed });
+        // このターンに載っているアセット ID を先に解決する (以後は同期で引ける)。
+        await prefetchAssets([
+          ...collectViewAssets(turn),
+          ...collectTurnAssets(turn.beats, turn.checks),
+        ]);
         // 開帳演出が有効で、このターンにダイスが在るか (spec 18 Phase A)。
         const hasDice =
           turn.accepted &&
@@ -1427,7 +1500,7 @@ export const useGameStore = defineStore("game", {
           if (turn.checks.length) {
             this.log.push({ kind: "checks", checks: turn.checks, revealed: revealing ? 0 : turn.checks.length });
             // 結末効果音: 演出中は各判定の開帳時に鳴らす (revealNext)。オフなら従来どおり即時。
-            if (!revealing) for (const c of turn.checks) this.playSe(assetUrl(c.sound));
+            if (!revealing) for (const c of turn.checks) this.playSe(assetUrl("audios", c.sound));
           }
           // 可変量ダイス (spec 16): 「SAN -4 (1d6=4)」の監査行。
           if (turn.stat_rolls.length) {
@@ -1444,8 +1517,8 @@ export const useGameStore = defineStore("game", {
               pushLog({ kind: "beat", narration: b.narration, recalled: b.recalled, expanded: false });
             }
             // 発火 SE (受理ターンのみ)。ビートは判定の帰結でありうる = 開帳前に鳴ると漏洩。
-            if (revealing) this.pendingSe.push(assetUrl(b.sound));
-            else this.playSe(assetUrl(b.sound));
+            if (revealing) this.pendingSe.push(assetUrl("audios", b.sound));
+            else this.playSe(assetUrl("audios", b.sound));
           }
           if (turn.attempts > 1) {
             // 自己修復は既定で畳む (⚠ アイコンのみ) — メタ情報の没入低下を避ける。
@@ -1523,7 +1596,7 @@ export const useGameStore = defineStore("game", {
           this.recentLog = this.recentLog.filter((l) => l.turn > s.upto_turn);
         }
         this.state = turn.state;
-        this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl(c.icon) }));
+        this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl("images", c.icon) }));
         // マップ (spec 15) — 移動/遷移で backend が差し替える (却下でも現状スナップショット)。
         if (turn.map) this.map = turn.map;
         // 背景は受理ターンのみ更新する。却下 = 物語が進んでいないので現在の背景 (=直前の CG) を保つ。
@@ -1535,8 +1608,8 @@ export const useGameStore = defineStore("game", {
             : [...turn.beats]
                 .reverse()
                 .find((b) => b.image && (b.image_mode ?? "background") === "background");
-          const nextBackground = cgBeat?.image ? assetUrl(cgBeat.image) : assetUrl(turn.background);
-          const nextBgm = assetUrl(turn.bgm);
+          const nextBackground = cgBeat?.image ? assetUrl("images", cgBeat.image) : assetUrl("images", turn.background);
+          const nextBgm = assetUrl("audios", turn.bgm);
           if (revealing) {
             // 発火 CG・場面転換は判定の帰結でありうる = 開帳前に見えたら漏洩。flush で適用。
             this.pendingVisual = { background: nextBackground, bgm: nextBgm };

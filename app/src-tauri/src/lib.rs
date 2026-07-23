@@ -468,21 +468,19 @@ struct TransitionView {
     description: String,
 }
 
-/// 現在地の背景画像を解決して絶対パス文字列にする (frontend が convertFileSrc で URL 化)。
-/// gm_core は不透明 ID を持つだけ。ここ (提示層) が package_root を起点に解決する。
-fn background_for(scenario: &Scenario, state: &GameState, root: &Path) -> Option<String> {
-    let id = scenario.location(&state.location)?.image.as_ref()?;
-    resolve_asset(root, AssetKind::Images, id).map(|p| p.to_string_lossy().into_owned())
+/// 現在地の背景画像の**アセット ID** (spec 23 Phase A: DTO は絶対パスでなく ID を運ぶ)。
+/// gm_core の不透明 ID をそのまま通す。解決は各クライアントが `resolve_asset_path`
+/// command + convertFileSrc で行う (ゲストは自分のローカルパッケージで解決する契約)。
+fn background_for(scenario: &Scenario, state: &GameState) -> Option<String> {
+    scenario.location(&state.location)?.image.clone()
 }
 
-/// 現在地のループ BGM を解決して絶対パス文字列にする (frontend が convertFileSrc で URL 化)。
-/// `images` でなく `audios` フォルダから引く以外は `background_for` と同経路。無ければ None。
-fn bgm_for(scenario: &Scenario, state: &GameState, root: &Path) -> Option<String> {
-    let id = scenario.location(&state.location)?.bgm.as_ref()?;
-    resolve_asset(root, AssetKind::Audios, id).map(|p| p.to_string_lossy().into_owned())
+/// 現在地のループ BGM の**アセット ID** (audios/)。無ければ None。
+fn bgm_for(scenario: &Scenario, state: &GameState) -> Option<String> {
+    scenario.location(&state.location)?.bgm.clone()
 }
 
-/// 顔アイコン行の 1 キャラ。`icon` は解決済み絶対パス (無ければ None → frontend が initials)。
+/// 顔アイコン行の 1 キャラ。`icon` はアセット ID (無ければ None → frontend が initials)。
 #[derive(Serialize)]
 struct CharacterView {
     id: String,
@@ -492,12 +490,8 @@ struct CharacterView {
 
 /// 現在地に「いる」キャラを顔アイコン行用に列挙する (presence)。
 /// 先頭に主人公 (player) を常に置き、続けて現在地の NPC (`present` が非空ならそれ、空なら全 characters)。
-fn present_characters(scenario: &Scenario, state: &GameState, root: &Path) -> Vec<CharacterView> {
-    let resolve_icon = |icon: &Option<String>| -> Option<String> {
-        icon.as_ref()
-            .and_then(|i| resolve_asset(root, AssetKind::Images, i))
-            .map(|p| p.to_string_lossy().into_owned())
-    };
+fn present_characters(scenario: &Scenario, state: &GameState) -> Vec<CharacterView> {
+    let resolve_icon = |icon: &Option<String>| -> Option<String> { icon.clone() };
     // 主人公は常にこの場に居る。名前は protagonist.name (無ければ "あなた")。
     let player_name = if scenario.protagonist.name.trim().is_empty() {
         "あなた".to_string()
@@ -583,12 +577,7 @@ struct MapView {
 ///   (campaign 遷移で前モジュールの location が history に残るのを除外)。
 /// - frontier = visited の各出口先 (1歩先・未訪問でも名前を出す)。奥は霧 = 出さない。
 /// - edges = visited ノードの exits のみ (frontier からの辺は描かない = その先は霧)。
-fn map_view(
-    scenario: &Scenario,
-    state: &GameState,
-    history: &[TurnLog],
-    root: &Path,
-) -> MapView {
+fn map_view(scenario: &Scenario, state: &GameState, history: &[TurnLog]) -> MapView {
     use std::collections::BTreeSet;
     // 訪問済み: 現 scenario に実在する location のみ採る (幻ノード・他モジュールを除外)。
     let mut visited: BTreeSet<String> = BTreeSet::new();
@@ -634,9 +623,8 @@ fn map_view(
                 loc.map(|l| if l.title.is_empty() { id.clone() } else { l.title.clone() })
                     .unwrap_or_else(|| id.clone()),
                 loc.map(|l| normalize(&l.description)).unwrap_or_default(),
-                loc.and_then(|l| l.image.as_ref())
-                    .and_then(|im| resolve_asset(root, AssetKind::Images, im))
-                    .map(|p| p.to_string_lossy().into_owned()),
+                // spec 23 Phase A: アセット ID をそのまま運ぶ (解決は frontend)。
+                loc.and_then(|l| l.image.clone()),
             )
         } else {
             (String::new(), String::new(), None)
@@ -2052,9 +2040,9 @@ async fn new_game(
             .map(|l| l.description.clone())
             .unwrap_or_default(),
         state: state_view(&state, &scenario, &[]),
-        background: background_for(&scenario, &state, &pkg_dir),
-        bgm: bgm_for(&scenario, &state, &pkg_dir),
-        present_characters: present_characters(&scenario, &state, &pkg_dir),
+        background: background_for(&scenario, &state),
+        bgm: bgm_for(&scenario, &state),
+        present_characters: present_characters(&scenario, &state),
         resumed: None,
         warnings: {
             let mut w = lint_warnings;
@@ -2063,7 +2051,7 @@ async fn new_game(
         },
         synopsis: Vec::new(),
         recent_log: Vec::new(),
-        map: map_view(&scenario, &state, &[], &pkg_dir),
+        map: map_view(&scenario, &state, &[]),
         decision: None, // 新規開始に決断の持ち越しは無い
         contest: None,
         facts: Vec::new(), // 新規開始に既成事実は無い (spec 20)
@@ -2169,9 +2157,9 @@ async fn restore_session(
             .map(|l| l.description.clone())
             .unwrap_or_default(),
         state: state_view(&state, &scenario, &save.history),
-        background: background_for(&scenario, &state, &pkg_dir),
-        bgm: bgm_for(&scenario, &state, &pkg_dir),
-        present_characters: present_characters(&scenario, &state, &pkg_dir),
+        background: background_for(&scenario, &state),
+        bgm: bgm_for(&scenario, &state),
+        present_characters: present_characters(&scenario, &state),
         resumed: Some(ResumeView {
             turn: state.turn,
             last_narration: normalize(&save.last_narration),
@@ -2188,7 +2176,7 @@ async fn restore_session(
             let upto = save.synopsis.compressed_upto();
             save.history.iter().filter(|l| l.turn > upto).map(log_line_view).collect()
         },
-        map: map_view(&scenario, &state, &save.history, &pkg_dir),
+        map: map_view(&scenario, &state, &save.history),
         // 決断待ち・対決はセーブを跨いで生きる (spec 18) — 再開直後にパネルを復元する。
         decision: decision_view(&state, &scenario),
         contest: contest_view(&state, &scenario),
@@ -2326,10 +2314,27 @@ async fn facts_delete(
 // 手動セーブスロット (spec 07 Phase D) — 「気に入ったシーンから何度でもやり直す」
 // =============================================================================
 
-/// 手動セーブスロットの一覧 (5 本、空きも含む)。
-/// `package_path` 省略時は**プレイ中 session のパッケージ** (セーブモード = 保存先の真実は
-/// session が握る — ヘッダーの選択を後から変えても保存先はプレイ中のゲーム)。
-/// 指定時はそのパッケージ (ロードモード = ヘッダーで選択中のパッケージ、「続きから」と同じ意味論)。
+/// アセット ID → 絶対パス解決 (spec 23 Phase A)。DTO は ID を運び、各クライアントが
+/// **自分の**ローカルパッケージで解決する (transport seam の外 — ホストへ問い合わせない。
+/// ゲストは自分のコピーで解決する Multiplayer 契約 asset_wire の実装)。
+/// 検証 (トラバーサル遮断・実在確認) は harness::resolve_asset がそのまま担う。
+/// 不在/不正 ID は None = frontend は表示スキップ (プレイ継続)。
+#[tauri::command]
+async fn resolve_asset_path(
+    kind: String,
+    id: String,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<Option<String>, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let k = match kind.as_str() {
+        "images" => AssetKind::Images,
+        "audios" => AssetKind::Audios,
+        _ => return Err(format!("未知のアセット種別: {kind}")),
+    };
+    Ok(resolve_asset(&sess.package_root, k, &id).map(|p| p.to_string_lossy().into_owned()))
+}
+
 /// **ダイスの seed を振り直す** (プレイヤーの meta 操作)。
 ///
 /// 決定論の裏返しで、セーブ地点からやり直しても出目が同じになり別の筋を見られない。
@@ -2353,6 +2358,10 @@ async fn reset_seed(session: tauri::State<'_, SharedSession>) -> Result<u64, Str
     Ok(seed)
 }
 
+/// 手動セーブスロットの一覧 (5 本、空きも含む)。
+/// `package_path` 省略時は**プレイ中 session のパッケージ** (セーブモード = 保存先の真実は
+/// session が握る — ヘッダーの選択を後から変えても保存先はプレイ中のゲーム)。
+/// 指定時はそのパッケージ (ロードモード = ヘッダーで選択中のパッケージ、「続きから」と同じ意味論)。
 #[tauri::command]
 async fn list_save_slots(
     app: tauri::AppHandle,
@@ -2525,20 +2534,13 @@ async fn play_turn(
                 .map(|b| BeatView {
                     narration: normalize(&b.narration),
                     recalled: b.recalled.iter().map(|f| normalize(&f.text)).collect(),
-                    // イベント CG の ID を package_root 起点に解決 (背景と同経路)。
-                    image: b.image.as_ref().and_then(|id| {
-                        resolve_asset(&sess.package_root, AssetKind::Images, id)
-                            .map(|p| p.to_string_lossy().into_owned())
-                    }),
+                    // イベント CG / 発火 SE はアセット ID をそのまま運ぶ (spec 23 Phase A)。
+                    image: b.image.clone(),
                     image_mode: b.image_mode.map(|m| match m {
                         ImageMode::Background => "background".to_string(),
                         ImageMode::Overlay => "overlay".to_string(),
                     }),
-                    // 発火 SE の ID を package_root 起点に解決 (背景と同経路、audios フォルダ)。
-                    sound: b.sound.as_ref().and_then(|id| {
-                        resolve_asset(&sess.package_root, AssetKind::Audios, id)
-                            .map(|p| p.to_string_lossy().into_owned())
-                    }),
+                    sound: b.sound.clone(),
                 })
                 .collect();
             // 次ターンの語りに織り込ませる伏線を持ち越す。
@@ -2558,11 +2560,8 @@ async fn play_turn(
                     dc: c.dc,
                     success: c.success,
                     narration: normalize(&c.narration),
-                    // 結末効果音 ID を audios/ から解決 (発火ビートの SE と同経路)。
-                    sound: (!c.sound.is_empty())
-                        .then(|| resolve_asset(&sess.package_root, AssetKind::Audios, &c.sound))
-                        .flatten()
-                        .map(|p| p.to_string_lossy().into_owned()),
+                    // 結末効果音はアセット ID をそのまま運ぶ (spec 23 Phase A)。
+                    sound: (!c.sound.is_empty()).then(|| c.sound.clone()),
                     degree: c.degree.clone(),
                     pushed: c.pushed,
                     spent: c.spent,
@@ -2621,9 +2620,9 @@ async fn play_turn(
                 goal_id,
                 goal_title,
                 goal_narration,
-                background: background_for(&sess.scenario, &sess.state, &sess.package_root),
-                bgm: bgm_for(&sess.scenario, &sess.state, &sess.package_root),
-                present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
+                background: background_for(&sess.scenario, &sess.state),
+                bgm: bgm_for(&sess.scenario, &sess.state),
+                present_characters: present_characters(&sess.scenario, &sess.state),
                 transition: None,
                 cache: sess.client.cache_stat(),
                 new_synopsis: Vec::new(), // 圧縮ジョブの後に差分で埋める
@@ -2632,7 +2631,7 @@ async fn play_turn(
                 facts: None, // GM は既成事実を書かない (ユーザー編集のみが変える)
                 facts_policy: facts_policy_str(sess.scenario.facts_policy),
                 use_tts: sess.scenario.use_tts,
-                map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
+                map: map_view(&sess.scenario, &sess.state, &sess.history),
                 // spec 18 Phase B: 決断つき判定が凍結されたらパネル素材を載せる。
                 decision: decision_view(&sess.state, &sess.scenario),
                 // spec 18 Phase C: attempt_contest で対決が開いたらパネル素材を載せる。
@@ -2656,9 +2655,9 @@ async fn play_turn(
             goal_id: goal_view(&sess.state, &sess.scenario).0,
             goal_title: goal_view(&sess.state, &sess.scenario).1,
             goal_narration: goal_view(&sess.state, &sess.scenario).2,
-            background: background_for(&sess.scenario, &sess.state, &sess.package_root),
-            bgm: bgm_for(&sess.scenario, &sess.state, &sess.package_root),
-            present_characters: present_characters(&sess.scenario, &sess.state, &sess.package_root),
+            background: background_for(&sess.scenario, &sess.state),
+            bgm: bgm_for(&sess.scenario, &sess.state),
+            present_characters: present_characters(&sess.scenario, &sess.state),
             transition: None,
             cache: sess.client.cache_stat(),
             new_synopsis: Vec::new(),
@@ -2668,7 +2667,7 @@ async fn play_turn(
             facts: None,
             facts_policy: facts_policy_str(sess.scenario.facts_policy),
             use_tts: sess.scenario.use_tts,
-            map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
+            map: map_view(&sess.scenario, &sess.state, &sess.history),
             // 却下 = state 無傷 (決断があったならそのまま残っているはずだが、そもそも決断中は
             // play_turn 自体をガードで弾く)。
             decision: decision_view(&sess.state, &sess.scenario),
@@ -2736,13 +2735,13 @@ async fn play_turn(
                 });
                 // パネル類は遷移先を指す (goal_* は遷移元の結末のまま残す)。
                 view.state = state_view(&sess.state, &sess.scenario, &sess.history);
-                view.background = background_for(&sess.scenario, &sess.state, &sess.package_root);
-                view.bgm = bgm_for(&sess.scenario, &sess.state, &sess.package_root);
+                view.background = background_for(&sess.scenario, &sess.state);
+                view.bgm = bgm_for(&sess.scenario, &sess.state);
                 view.present_characters =
-                    present_characters(&sess.scenario, &sess.state, &sess.package_root);
+                    present_characters(&sess.scenario, &sess.state);
                 // マップは遷移先モジュールのグラフへ差し替え (history は章跨ぎで残るが
                 // map_view が現 scenario の location だけに絞るので前章のノードは出ない)。
-                view.map = map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root);
+                view.map = map_view(&sess.scenario, &sess.state, &sess.history);
                 // キャンペーンは続くので入力を締めない (終端は advance=None で締まる)。
                 view.goal_reached = false;
             }
@@ -2887,18 +2886,13 @@ async fn resolve_dice_decision(
         .map(|b| BeatView {
             narration: normalize(&b.narration),
             recalled: b.recalled.iter().map(|f| normalize(&f.text)).collect(),
-            image: b.image.as_ref().and_then(|id| {
-                resolve_asset(&sess.package_root, AssetKind::Images, id)
-                    .map(|p| p.to_string_lossy().into_owned())
-            }),
+            // spec 23 Phase A: アセット ID をそのまま運ぶ (解決は frontend)。
+            image: b.image.clone(),
             image_mode: b.image_mode.map(|m| match m {
                 ImageMode::Background => "background".to_string(),
                 ImageMode::Overlay => "overlay".to_string(),
             }),
-            sound: b.sound.as_ref().and_then(|id| {
-                resolve_asset(&sess.package_root, AssetKind::Audios, id)
-                    .map(|p| p.to_string_lossy().into_owned())
-            }),
+            sound: b.sound.clone(),
         })
         .collect();
     let check = CheckView {
@@ -2913,10 +2907,7 @@ async fn resolve_dice_decision(
         dc: r.check.dc,
         success: r.check.success,
         narration: normalize(&r.check.narration),
-        sound: (!r.check.sound.is_empty())
-            .then(|| resolve_asset(&sess.package_root, AssetKind::Audios, &r.check.sound))
-            .flatten()
-            .map(|p| p.to_string_lossy().into_owned()),
+        sound: (!r.check.sound.is_empty()).then(|| r.check.sound.clone()),
         degree: r.check.degree.clone(),
         pushed: r.check.pushed,
         spent: r.check.spent,
@@ -2962,7 +2953,7 @@ async fn resolve_dice_decision(
         goal_title,
         goal_narration,
         decision: decision_view(&sess.state, &sess.scenario),
-        map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
+        map: map_view(&sess.scenario, &sess.state, &sess.history),
     })
 }
 
@@ -3023,18 +3014,13 @@ async fn play_contest_round(
         .map(|b| BeatView {
             narration: normalize(&b.narration),
             recalled: b.recalled.iter().map(|f| normalize(&f.text)).collect(),
-            image: b.image.as_ref().and_then(|id| {
-                resolve_asset(&sess.package_root, AssetKind::Images, id)
-                    .map(|p| p.to_string_lossy().into_owned())
-            }),
+            // spec 23 Phase A: アセット ID をそのまま運ぶ (解決は frontend)。
+            image: b.image.clone(),
             image_mode: b.image_mode.map(|m| match m {
                 ImageMode::Background => "background".to_string(),
                 ImageMode::Overlay => "overlay".to_string(),
             }),
-            sound: b.sound.as_ref().and_then(|id| {
-                resolve_asset(&sess.package_root, AssetKind::Audios, id)
-                    .map(|p| p.to_string_lossy().into_owned())
-            }),
+            sound: b.sound.clone(),
         })
         .collect();
 
@@ -3050,10 +3036,7 @@ async fn play_contest_round(
         dc: c.dc,
         success: c.success,
         narration: normalize(narration),
-        sound: (!sound.is_empty())
-            .then(|| resolve_asset(&sess.package_root, AssetKind::Audios, sound))
-            .flatten()
-            .map(|p| p.to_string_lossy().into_owned()),
+        sound: (!sound.is_empty()).then(|| sound.to_string()),
         degree: c.degree.clone(),
         pushed: false,
         spent: 0,
@@ -3119,7 +3102,7 @@ async fn play_contest_round(
         goal_title,
         goal_narration,
         contest: contest_view(&sess.state, &sess.scenario),
-        map: map_view(&sess.scenario, &sess.state, &sess.history, &sess.package_root),
+        map: map_view(&sess.scenario, &sess.state, &sess.history),
     })
 }
 
@@ -3146,6 +3129,7 @@ pub fn run() {
             list_packages,
             list_save_slots,
             reset_seed,
+            resolve_asset_path,
             save_slot,
             load_slot,
             get_llm_config,
@@ -3369,7 +3353,7 @@ mod tests {
         // 過去に b を通った記録 (現在地は a に戻っている)。
         let history =
             vec![harness::TurnLog { turn: 1, location: "b".into(), ..Default::default() }];
-        let m = super::map_view(&sc, &s, &history, Path::new("."));
+        let m = super::map_view(&sc, &s, &history);
 
         let ids: std::collections::BTreeSet<&str> =
             m.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -3405,7 +3389,7 @@ mod tests {
         ))
         .unwrap();
         let s = sc.initial_state(1); // 現在地 a、flag open は未設定 (=false)。
-        let m = super::map_view(&sc, &s, &[], Path::new("."));
+        let m = super::map_view(&sc, &s, &[]);
 
         let e = m.edges.iter().find(|e| e.from == "a" && e.to == "b").expect("a→b がある");
         assert!(e.locked, "gate (flag open=true) 未達なので locked (🔒)");
